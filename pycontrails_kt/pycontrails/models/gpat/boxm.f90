@@ -1,3 +1,513 @@
+MODULE DEFINE_TYPES
+    USE NETCDF
+    IMPLICIT NONE
+    PRIVATE
+    PUBLIC :: DP, FL_DS_TYPE, PL_DS_TYPE, BOXM_DS_TYPE
+    PUBLIC :: PL_OUT_TYPE, BOXM_OUT_TYPE, PATCH_TABLE_TYPE
+
+    INTEGER, PARAMETER :: DP = KIND(1.0D0)
+
+    ! INPUT DATA TYPES
+    TYPE :: FL_DS_TYPE
+        ! ---------- PUBLIC DATA YOU ACTUALLY USE ----------
+
+        ! FL DIMLENS
+        INTEGER :: NFL = 0
+        INTEGER :: NWP = 0
+
+        ! FL DIMS
+        INTEGER, ALLOCATABLE :: FL_ID(:)
+        INTEGER,   ALLOCATABLE :: WP(:)
+
+        ! FL VARS
+        REAL(DP), ALLOCATABLE :: LONGITUDE(:,:)
+        REAL(DP), ALLOCATABLE :: LATITUDE(:,:)
+        REAL(DP), ALLOCATABLE :: LEVEL(:,:)
+        REAL(DP), ALLOCATABLE :: ALTITUDE(:,:)
+        CHARACTER(LEN=20), ALLOCATABLE :: TIME(:,:)
+        INTEGER, ALLOCATABLE :: TIME_REL_S(:,:)
+        INTEGER, ALLOCATABLE :: TIME_IDX(:,:)
+        REAL(DP), ALLOCATABLE :: TRUE_AIRSPEED(:,:)
+        REAL(DP), ALLOCATABLE :: AIRCRAFT_MASS(:,:)
+        REAL(DP), ALLOCATABLE :: ENGINE_EFFICIENCY(:,:)
+        REAL(DP), ALLOCATABLE :: FUEL_FLOW(:,:)
+        REAL(DP), ALLOCATABLE :: FUEL_BURN(:,:)
+        REAL(DP), ALLOCATABLE :: THRUST(:,:)
+        REAL(DP), ALLOCATABLE :: ROCD(:,:)
+
+        ! ---------- PRIVATE NETCDF PLUMBING ----------
+        PRIVATE
+
+        INTEGER :: FL_NCID = -1
+
+        ! FL DIM IDs
+        INTEGER :: DIMID_FL_ID = -1
+        INTEGER :: DIMID_WP = -1
+
+        ! FL VAR IDs
+        INTEGER :: VARID_TIME = -1
+        INTEGER :: VARID_TIME_REL_S = -1
+        INTEGER :: VARID_LATITUDE = -1
+        INTEGER :: VARID_LONGITUDE = -1
+        INTEGER :: VARID_LEVEL = -1
+        INTEGER :: VARID_ALTITUDE = -1
+        INTEGER :: VARID_TRUE_AIRSPEED = -1
+        INTEGER :: VARID_AIRCRAFT_MASS = -1
+        INTEGER :: VARID_ENGINE_EFFICIENCY = -1
+        INTEGER :: VARID_FUEL_FLOW = -1
+        INTEGER :: VARID_FUEL_BURN = -1
+        INTEGER :: VARID_THRUST = -1
+        INTEGER :: VARID_ROCD = -1
+
+        ! NETCDF STATUS
+        LOGICAL :: IS_OPEN = .FALSE.
+
+    CONTAINS
+        PROCEDURE, PASS :: INIT        => FL_INIT
+        PROCEDURE, PASS :: READ_STATIC => FL_READ_STATIC
+        PROCEDURE, PASS :: SUMMARY     => FL_SUMMARY
+        PROCEDURE, PASS :: CLOSE       => FL_CLOSE
+        FINAL           :: FL_FINALIZE
+    
+    END TYPE FL_DS_TYPE
+
+    TYPE :: PL_DS_TYPE
+        ! ---------- PUBLIC DATA YOU ACTUALLY USE ----------
+
+        ! PL DIMLENS
+        INTEGER :: NFLI = 0
+        INTEGER :: NWP = 0
+        INTEGER :: NTPL = 0
+        INTEGER :: NSEMI = 0
+
+        ! PL DIMS
+        INTEGER, ALLOCATABLE :: FL_ID(:)
+        INTEGER,   ALLOCATABLE :: WP(:)
+        CHARACTER(LEN=20), ALLOCATABLE :: TIME(:)
+        CHARACTER(LEN=20), ALLOCATABLE :: SPECIES_EMI(:)
+
+        ! PL VARS
+        INTEGER, ALLOCATABLE :: TIME_REL_S(:)
+        INTEGER, ALLOCATABLE :: TIME_IDX(:)
+        REAL(DP), ALLOCATABLE :: AGE(:,:,:)
+        REAL(DP), ALLOCATABLE :: AGE_S(:,:,:)
+        REAL(DP), ALLOCATABLE :: LONGITUDE(:,:,:)
+        REAL(DP), ALLOCATABLE :: LATITUDE(:,:,:)
+        REAL(DP), ALLOCATABLE :: LEVEL(:,:,:)
+        REAL(DP), ALLOCATABLE :: ALTITUDE(:,:,:)
+        REAL(DP), ALLOCATABLE :: WIDTH(:,:,:)
+        REAL(DP), ALLOCATABLE :: DEPTH(:,:,:)
+        REAL(DP), ALLOCATABLE :: HEADING(:,:,:)
+        REAL(DP), ALLOCATABLE :: SIGMA_YY(:,:,:)
+        REAL(DP), ALLOCATABLE :: SIGMA_YZ(:,:,:)
+        REAL(DP), ALLOCATABLE :: SIGMA_ZZ(:,:,:)
+        REAL(DP), ALLOCATABLE :: SPECIES_EMI_MASS(:,:,:)
+
+        ! ---------- PRIVATE NETCDF PLUMBING ----------
+        PRIVATE
+
+        ! PL NC IDs
+        INTEGER :: PL_NCID = -1
+
+        ! PL DIM IDs
+        INTEGER :: DIMID_FL_ID = -1
+        INTEGER :: DIMID_WP = -1
+        INTEGER :: DIMID_TIME = -1
+        INTEGER :: DIMID_SPECIES_EMI = -1
+
+        ! PL VAR IDs
+        INTEGER :: VARID_AGE = -1
+        INTEGER :: VARID_LONGITUDE = -1
+        INTEGER :: VARID_LATITUDE = -1
+        INTEGER :: VARID_LEVEL = -1
+        INTEGER :: VARID_ALTITUDE = -1
+        INTEGER :: VARID_WIDTH = -1
+        INTEGER :: VARID_DEPTH = -1
+        INTEGER :: VARID_HEADING = -1
+        INTEGER :: VARID_SIGMA_YY = -1
+        INTEGER :: VARID_SIGMA_YZ = -1
+        INTEGER :: VARID_SIGMA_ZZ = -1
+        INTEGER :: VARID_SPECIES_EMI_MASS = -1
+        
+        ! ATTRIBUTES
+        INTEGER :: TS_FL
+        INTEGER :: TS_PL
+        INTEGER :: TS_SIM
+        INTEGER :: TS_OUT
+        INTEGER, ALLOCATABLE :: SPECIES_EMI_NUM(:)
+        INTEGER, ALLOCATABLE :: SPECIES_PLUME_NUM(:)
+
+        ! NETCDF STATUS
+        LOGICAL :: IS_OPEN = .FALSE.
+
+    CONTAINS
+        PROCEDURE, PASS :: INIT        => PL_INIT
+        PROCEDURE, PASS :: READ_STATIC => PL_READ_STATIC
+        PROCEDURE, PASS :: SUMMARY     => PL_SUMMARY
+        PROCEDURE, PASS :: CLOSE       => PL_CLOSE
+        FINAL           :: PL_FINALIZE
+
+    END TYPE PL_DS_TYPE
+
+    TYPE :: BOXM_DS_TYPE
+        ! ---------- PUBLIC DATA YOU ACTUALLY USE ----------
+
+        ! BOXM DIMLENS
+        INTEGER :: NTBOXM = 0
+        INTEGER :: NCELL = 0
+        INTEGER :: NS = 219
+        
+        ! BOXM DIMS
+        CHARACTER(LEN=20), ALLOCATABLE :: TIME(:)
+        REAL(DP), ALLOCATABLE :: TIME_REL_S(:)
+        INTEGER,   ALLOCATABLE :: CELL(:)
+        INTEGER,   ALLOCATABLE :: SPECIES_BOXM(:)
+
+        ! BOXM VARS
+        REAL(DP), ALLOCATABLE :: CONC(:,:,:)
+
+        ! ---------- PRIVATE NETCDF PLUMBING ----------
+        PRIVATE
+
+        ! BOXM NC IDs
+        INTEGER :: BOXM_NCID = -1
+
+        ! BOXM DIM IDs
+        INTEGER :: DIMID_TIME = -1
+        INTEGER :: DIMID_CELL = -1
+        INTEGER :: DIMID_NS = -1
+
+        ! BOXM VAR IDs
+        INTEGER :: VARID_CONC = -1
+
+        LOGICAL :: IS_OPEN = .FALSE.
+
+    CONTAINS
+        PROCEDURE, PASS :: INIT        => BOXM_INIT
+        PROCEDURE, PASS :: READ_STATIC => BOXM_READ_STATIC
+        PROCEDURE, PASS :: READ_DYNAMIC => BOXM_READ_DYNAMIC
+        PROCEDURE, PASS :: SUMMARY     => BOXM_SUMMARY
+        PROCEDURE, PASS :: CLOSE       => BOXM_CLOSE
+        FINAL           :: BOXM_FINALIZE
+
+    END TYPE BOXM_DS_TYPE
+
+    ! STATE TYPES
+    TYPE :: PL_STATE_TYPE
+        INTEGER :: NSEG = 0
+        INTEGER :: NS_PLUME = 0
+
+        ! TIME TRACKING
+        INTEGER :: T_REL_S = 0
+        INTEGER :: TIME_IDX = 0
+
+        ! PL STATE DIMS
+        INTEGER, ALLOCATABLE :: FL_ID(:)
+        INTEGER,   ALLOCATABLE :: WP(:)
+        CHARACTER(LEN=20), ALLOCATABLE :: SPECIES_PLUME(:)
+
+        ! AGE TRACKING
+        CHARACTER(LEN=20), ALLOCATABLE :: AGE(:,:,:)
+        INTEGER, ALLOCATABLE :: AGE_S(:,:,:)
+
+        ! GEOMETRY PER SEGMENT (ALL (NSEG))
+        REAL(DP), ALLOCATABLE :: LONGITUDE(:)      ! (NSEG)
+        REAL(DP), ALLOCATABLE :: LATITUDE(:)      ! (NSEG)
+        REAL(DP), ALLOCATABLE :: ALTITUDE(:)      ! (NSEG)
+        REAL(DP), ALLOCATABLE :: LEVEL(:)    ! (NSEG) optional if you use model levels
+
+        REAL(DP), ALLOCATABLE :: WIDTH(:)    ! (NSEG) m (or sigma_y derived)
+        REAL(DP), ALLOCATABLE :: DEPTH(:)    ! (NSEG) m (sigma_z)
+        REAL(DP), ALLOCATABLE :: HEADING(:)  ! (NSEG) rad or deg
+
+        ! Dispersion tensors
+        REAL(DP), ALLOCATABLE :: SIG_YY(:)   ! (NSEG)
+        REAL(DP), ALLOCATABLE :: SIG_YZ(:)   ! (NSEG)
+        REAL(DP), ALLOCATABLE :: SIG_ZZ(:)   ! (NSEG)
+
+        ! Plume-carried species mass
+        ! Choose canonical: kg (recommended, since EI gives kg)
+        REAL(DP), ALLOCATABLE :: SPECIES_PLUME_MASS(:,:)      ! (NS_PLUME, NSEG) kg
+
+    CONTAINS
+        PROCEDURE, PASS :: INIT_FROM_PL_DS => PL_STATE_INIT_FROM_PL_DS
+        PROCEDURE, PASS :: ADVANCE_GEOM    => PL_STATE_ADVANCE_GEOM
+        PROCEDURE, PASS :: APPLY_DMASS     => PL_STATE_APPLY_DMASS
+        PROCEDURE, PASS :: TOTAL_MASS      => PL_STATE_TOTAL_MASS
+
+    END TYPE PL_STATE_TYPE
+
+    TYPE :: BOXM_STATE_TYPE
+        
+        ! BOXM DIMS
+        INTEGER :: NCELL = 0
+        INTEGER :: NS_BOXM = 219
+
+        ! BOXM DIMS
+        INTEGER, ALLOCATABLE :: CELL(:)
+        INTEGER, ALLOCATABLE :: SPECIES_BOXM(:)
+
+        ! BOXM COORDS
+        INTEGER :: T_REL_S = 0
+        INTEGER :: TIME_IDX = 0
+
+        REAL(DP), ALLOCATABLE :: LONGITUDE_C(:)     ! (NCELL)
+        REAL(DP), ALLOCATABLE :: LATITUDE_C(:)     ! (NCELL)
+        REAL(DP), ALLOCATABLE :: ALTITUDE_C(:)     ! (NCELL)
+        REAL(DP), ALLOCATABLE :: LEVEL_C(:)     ! (NCELL) or altitude midpoints
+
+
+        ! Met used for post conversion to ppb (store for analysis, not required for solver)
+        REAL(DP), ALLOCATABLE :: TEMP(:)      ! (NCELL) K
+        REAL(DP), ALLOCATABLE :: H2O(:)       ! (NCELL) WV CONCS mol/m3
+        REAL(DP), ALLOCATABLE :: M(:)  ! (NCELL) NUMBER DENSITY mol/m3
+        REAL(DP), ALLOCATABLE :: O2(:)  ! (NCELL) OXYGEN CONCS mol/m3
+        REAL(DP), ALLOCATABLE :: N2(:)  ! (NCELL) NITROGEN CONCS mol/m3
+        REAL(DP), ALLOCATABLE :: SZA(:)      ! (NCELL) SOLAR ZENITH ANGLE deg
+
+        ! Chemistry state on coarse grid, in concentrations (analysis-friendly)
+        REAL(DP), ALLOCATABLE :: Y_BG(:,:)    ! (NCELL, NS_BOXM) mol/m3
+        REAL(DP), ALLOCATABLE :: Y_DEL_C(:,:)   ! (NCELL, NS_BOXM) mol/m3
+        LOGICAL, ALLOCATABLE :: ACTIVE_FLAG(:)     ! (NCELL)
+
+    CONTAINS
+        PROCEDURE, PASS :: INIT_FROM_BOXM_DS => BOXM_STATE_INIT_FROM_BOXM_DS
+        PROCEDURE, PASS :: RESET_DELTAS      => BOXM_STATE_RESET_DELTAS
+        PROCEDURE, PASS :: SET_ACTIVE        => BOXM_STATE_SET_ACTIVE
+        PROCEDURE, PASS :: ACCUM_DELTA       => BOXM_STATE_ACCUM_DELTA
+
+    END TYPE BOXM_STATE_TYPE
+
+    TYPE :: PATCH_STATE_TYPE
+
+        ! PATCH DIMLENS
+        INTEGER :: N_PATCHES = 0
+        INTEGER :: N_ROWS = 0
+        INTEGER :: NS_BOXM = 219
+
+        ! PATCH DIMS
+        INTEGER, ALLOCATABLE :: ROW(:)
+        INTEGER, ALLOCATABLE :: SPECIES_BOXM(:)
+
+        ! PATCH COORDS
+        INTEGER, ALLOCATABLE :: PATCH_ID(:)
+        INTEGER, ALLOCATABLE :: TIME_REL_S(:)
+        INTEGER, ALLOCATABLE :: TIME_IDX(:)
+
+        ! PATCH VARS
+        REAL(DP), ALLOCATABLE :: Y_DEL_F(:,:)
+
+    CONTAINS
+        PROCEDURE, PASS :: INIT_FROM_BOXM_DS => PATCH_STATE_INIT_FROM_BOXM_DS
+        PROCEDURE, PASS :: ACCUM_DELTA       => PATCH_STATE_ACCUM_DELTA
+
+    END TYPE PATCH_STATE_TYPE
+
+    ! OUTPUT DATA TYPES
+    TYPE :: PL_OUT_TYPE
+        
+        ! PL OUT DIMLENS
+        INTEGER :: NFLI = 0
+        INTEGER :: NWP = 0
+        INTEGER :: NTPL = 0
+        INTEGER :: NSPLUME = 0
+
+        ! PL OUT DIMS
+        INTEGER, ALLOCATABLE :: FL_ID(:)
+        INTEGER,   ALLOCATABLE :: WP(:)
+        CHARACTER(LEN=20), ALLOCATABLE :: TIME(:)
+        CHARACTER(LEN=20), ALLOCATABLE :: SPECIES_PLUME(:)
+
+        ! PL OUT COORDS
+        INTEGER, ALLOCATABLE :: TIME_REL_S(:)
+        INTEGER, ALLOCATABLE :: TIME_IDX(:)
+
+        ! PL OUT VARS
+        REAL(DP), ALLOCATABLE :: SPECIES_PLUME_MASS(:,:,:)
+
+        ! PRIVATE NETCDF PLUMBING
+        PRIVATE
+        INTEGER :: PL_OUT_NCID = -1
+
+        ! PL_OUT DIM IDs
+        INTEGER :: DIMID_FL_ID = -1
+        INTEGER :: DIMID_WP = -1
+        INTEGER :: DIMID_TIME = -1
+        INTEGER :: DIMID_SPECIES_PLUME = -1
+        ! PL_OUT VAR IDs
+        INTEGER :: VARID_TIME_REL_S = -1
+        INTEGER :: VARID_TIME_IDX = -1
+        INTEGER :: VARID_SPECIES_PLUME_MASS = -1
+
+        ! NETCDF STATUS
+        LOGICAL :: IS_OPEN = .FALSE.
+
+    CONTAINS
+        PROCEDURE, PASS :: INIT => PL_OUT_INIT
+        PROCEDURE, PASS :: WRITE => PL_OUT_WRITE
+
+    END TYPE PL_OUT_TYPE
+
+    TYPE :: BOXM_OUT_TYPE
+        ! BOXM OUT DIMLENS
+        INTEGER :: NTBOXM = 0
+        INTEGER :: NCELL = 0
+        INTEGER :: NS_BOXM = 219
+
+        ! BOXM OUT DIMS
+        CHARACTER(LEN=20), ALLOCATABLE :: TIME(:)
+        REAL(DP), ALLOCATABLE :: TIME_REL_S(:)
+        INTEGER,   ALLOCATABLE :: CELL(:)
+        INTEGER,   ALLOCATABLE :: SPECIES_BOXM(:)
+
+        ! BOXM OUT VARS
+        REAL(DP), ALLOCATABLE :: Y_DEL_C(:,:,:)
+
+        ! PRIVATE NETCDF PLUMBING
+        PRIVATE
+        INTEGER :: BOXM_OUT_NCID = -1
+
+        ! BOXM_OUT DIM IDs
+        INTEGER :: DIMID_TIME = -1
+        INTEGER :: DIMID_CELL = -1
+        INTEGER :: DIMID_NS = -1
+
+        ! BOXM_OUT VAR IDs
+        INTEGER :: VARID_TIME_REL_S = -1
+        INTEGER :: VARID_Y_DEL_C = -1
+
+        ! NETCDF STATUS
+        LOGICAL :: IS_OPEN = .FALSE.
+
+    CONTAINS
+        PROCEDURE, PASS :: INIT => BOXM_OUT_INIT
+        PROCEDURE, PASS :: WRITE => BOXM_OUT_WRITE    
+    
+    END TYPE BOXM_OUT_TYPE
+
+    TYPE :: PATCH_TABLE_TYPE
+        INTEGER :: NROWS = 0
+        INTEGER, ALLOCATABLE :: ROW(:)
+        CHARACTER(LEN=20), ALLOCATABLE :: SPECIES_OUT(:)
+
+        INTEGER, ALLOCATABLE :: PATCH_ID(:)
+        INTEGER, ALLOCATABLE :: TIME_REL_S(:)
+        INTEGER, ALLOCATABLE :: TIME_IDX(:)
+        REAL(DP), ALLOCATABLE :: Y_DEL_F(:,:)
+    END TYPE PATCH_TABLE_TYPE
+
+
+
+CONTAINS
+
+  SUBROUTINE FL_INIT(THIS, FILEPATH)
+    CLASS(FL_DS_TYPE), INTENT(INOUT) :: THIS
+    CHARACTER(LEN=*),  INTENT(IN)    :: FILEPATH
+
+    INTEGER :: STATUS, DIMID_TIME
+
+    CALL THIS%CLOSE()  ! safe re-init
+
+    STATUS = NF90_OPEN(TRIM(FILEPATH), NF90_NOWRITE, THIS%NCID)
+    CALL NC_CHECK(STATUS, "NF90_OPEN(FL)")
+
+    THIS%IS_OPEN = .TRUE.
+
+    ! Dimension size (assumes dim name is "time")
+    STATUS = NF90_INQ_DIMID(THIS%NCID, "time", DIMID_TIME)
+    CALL NC_CHECK(STATUS, "NF90_INQ_DIMID(time)")
+
+    STATUS = NF90_INQUIRE_DIMENSION(THIS%NCID, DIMID_TIME, LEN=THIS%NT)
+    CALL NC_CHECK(STATUS, "NF90_INQUIRE_DIMENSION(time)")
+
+    ! Variable IDs
+    STATUS = NF90_INQ_VARID(THIS%NCID, "time", THIS%VARID_TIME)
+    CALL NC_CHECK(STATUS, "NF90_INQ_VARID(time)")
+
+    STATUS = NF90_INQ_VARID(THIS%NCID, "latitude", THIS%VARID_LAT)
+    CALL NC_CHECK(STATUS, "NF90_INQ_VARID(latitude)")
+
+    STATUS = NF90_INQ_VARID(THIS%NCID, "longitude", THIS%VARID_LON)
+    CALL NC_CHECK(STATUS, "NF90_INQ_VARID(longitude)")
+
+    ! Use whichever exists in your file: "altitude" or "level"
+    STATUS = NF90_INQ_VARID(THIS%NCID, "altitude", THIS%VARID_ALT)
+    IF (STATUS /= NF90_NOERR) THEN
+      STATUS = NF90_INQ_VARID(THIS%NCID, "level", THIS%VARID_ALT)
+      CALL NC_CHECK(STATUS, "NF90_INQ_VARID(altitude/level)")
+    END IF
+
+  END SUBROUTINE FL_INIT
+
+  SUBROUTINE FL_READ_STATIC(THIS)
+    CLASS(FL_DS_TYPE), INTENT(INOUT) :: THIS
+    INTEGER :: STATUS
+
+    IF (.NOT. THIS%IS_OPEN) STOP "FL_READ_STATIC: FILE NOT OPEN (CALL INIT FIRST)"
+    IF (THIS%NT <= 0) STOP "FL_READ_STATIC: NT NOT SET"
+
+    IF (.NOT. ALLOCATED(THIS%TIME)) ALLOCATE(THIS%TIME(THIS%NT))
+    IF (.NOT. ALLOCATED(THIS%LAT )) ALLOCATE(THIS%LAT (THIS%NT))
+    IF (.NOT. ALLOCATED(THIS%LON )) ALLOCATE(THIS%LON (THIS%NT))
+    IF (.NOT. ALLOCATED(THIS%ALT )) ALLOCATE(THIS%ALT (THIS%NT))
+
+    STATUS = NF90_GET_VAR(THIS%NCID, THIS%VARID_TIME, THIS%TIME)
+    CALL NC_CHECK(STATUS, "NF90_GET_VAR(time)")
+
+    STATUS = NF90_GET_VAR(THIS%NCID, THIS%VARID_LAT, THIS%LAT)
+    CALL NC_CHECK(STATUS, "NF90_GET_VAR(latitude)")
+
+    STATUS = NF90_GET_VAR(THIS%NCID, THIS%VARID_LON, THIS%LON)
+    CALL NC_CHECK(STATUS, "NF90_GET_VAR(longitude)")
+
+    STATUS = NF90_GET_VAR(THIS%NCID, THIS%VARID_ALT, THIS%ALT)
+    CALL NC_CHECK(STATUS, "NF90_GET_VAR(altitude/level)")
+
+  END SUBROUTINE FL_READ_STATIC
+
+  SUBROUTINE FL_SUMMARY(THIS)
+    CLASS(FL_DS_TYPE), INTENT(IN) :: THIS
+    PRINT *, "FL_DS SUMMARY:"
+    PRINT *, "  NT = ", THIS%NT
+    PRINT *, "  IS_OPEN = ", THIS%IS_OPEN
+    IF (ALLOCATED(THIS%TIME)) THEN
+      PRINT *, "  TIME(1), TIME(NT) = ", THIS%TIME(1), THIS%TIME(THIS%NT)
+    END IF
+  END SUBROUTINE FL_SUMMARY
+
+  SUBROUTINE FL_CLOSE(THIS)
+    CLASS(FL_DS_TYPE), INTENT(INOUT) :: THIS
+    INTEGER :: STATUS
+
+    IF (THIS%IS_OPEN) THEN
+      STATUS = NF90_CLOSE(THIS%NCID)
+      CALL NC_CHECK(STATUS, "NF90_CLOSE(FL)")
+    END IF
+
+    THIS%NCID = -1
+    THIS%VARID_TIME = -1
+    THIS%VARID_LAT  = -1
+    THIS%VARID_LON  = -1
+    THIS%VARID_ALT  = -1
+    THIS%IS_OPEN = .FALSE.
+  END SUBROUTINE FL_CLOSE
+
+  SUBROUTINE FL_FINALIZE(THIS)
+    TYPE(FL_DS_TYPE), INTENT(INOUT) :: THIS
+    CALL THIS%CLOSE()
+  END SUBROUTINE FL_FINALIZE
+
+  SUBROUTINE NC_CHECK(STATUS, WHERE)
+    INTEGER, INTENT(IN) :: STATUS
+    CHARACTER(LEN=*), INTENT(IN) :: WHERE
+    IF (STATUS /= NF90_NOERR) THEN
+      PRINT *, "NETCDF ERROR IN ", TRIM(WHERE), ": ", TRIM(NF90_STRERROR(STATUS))
+      STOP 1
+    END IF
+  END SUBROUTINE NC_CHECK
+
+END MODULE DEFINE_TYPES
+
 MODULE FILE_IO
 CONTAINS
 
@@ -12,12 +522,52 @@ CONTAINS
         END IF
     END SUBROUTINE CHECK
 
+    SUBROUTINE PRINT_GLOBAL_ATT(NCID, ATTNAME)
+        IMPLICIT NONE
+
+        CHARACTER(LEN=*), INTENT(IN) :: ATTNAME
+
+        INTEGER :: STATUS, XTYPE, ATTLEN
+        CHARACTER(LEN=:), ALLOCATABLE :: CVAL
+        INTEGER, ALLOCATABLE :: IVAL(:)
+        REAL,    ALLOCATABLE :: RVAL(:)
+
+        ! Skip verbose text attributes explicitly
+        IF (TRIM(ATTNAME) == "DESCRIPTION" .OR. TRIM(ATTNAME) == "NOTE") RETURN
+
+        STATUS = NF90_INQUIRE_ATTRIBUTE(NCID, NF90_GLOBAL, TRIM(ATTNAME), XTYPE, ATTLEN)
+        IF (STATUS /= NF90_NOERR) RETURN
+
+        SELECT CASE (XTYPE)
+
+        CASE (NF90_CHAR)
+            ALLOCATE(CHARACTER(LEN=ATTLEN) :: CVAL)
+            CALL NF90_GET_ATT(NCID, NF90_GLOBAL, TRIM(ATTNAME), CVAL)
+            PRINT *, TRIM(ATTNAME)//" = ", TRIM(CVAL)
+            DEALLOCATE(CVAL)
+
+        CASE (NF90_INT, NF90_SHORT, NF90_BYTE, NF90_INT64)
+            ALLOCATE(IVAL(ATTLEN))
+            CALL NF90_GET_ATT(NCID, NF90_GLOBAL, TRIM(ATTNAME), IVAL)
+            PRINT *, TRIM(ATTNAME), " = ", IVAL
+            DEALLOCATE(IVAL)
+
+        CASE (NF90_FLOAT, NF90_DOUBLE)
+            ALLOCATE(RVAL(ATTLEN))
+            CALL NF90_GET_ATT(NCID, NF90_GLOBAL, TRIM(ATTNAME), RVAL)
+            PRINT *, TRIM(ATTNAME), " = ", RVAL
+            DEALLOCATE(RVAL)
+
+        END SELECT
+
+    END SUBROUTINE PRINT_GLOBAL_ATT
+
     SUBROUTINE OPEN_INPUT_NCS(JOB_ID)
         IMPLICIT NONE
         CHARACTER(LEN=256), INTENT(IN) :: JOB_ID
         CHARACTER(LEN=256) :: IN_PATH
 
-        IN_PATH = '/home/ktait98/GPAT2025/pycontrails_kt/pycontrails/models/gpat/data/inputs/'
+        IN_PATH = '/home/ktait98/GPAT2026/pycontrails_kt/pycontrails/models/gpat/data/inputs/'
 
         ! OPEN BOXM INPUT NC
         IERR = NF90_OPEN(TRIM(IN_PATH)//TRIM(JOB_ID)//'/boxm.nc', NF90_WRITE, BOXM_NCID)
@@ -47,7 +597,7 @@ CONTAINS
         CHARACTER(LEN=256), INTENT(IN) :: JOB_ID
         CHARACTER(LEN=256) :: OUT_PATH
 
-        OUT_PATH = '/home/ktait98/GPAT2025/pycontrails_kt/pycontrails/models/gpat/data/outputs/'
+        OUT_PATH = '/home/ktait98/GPAT2026/pycontrails_kt/pycontrails/models/gpat/data/outputs/'
 
         ! OPEN BOXM OUTPUT NC
         IERR = NF90_OPEN(TRIM(OUT_PATH)//TRIM(JOB_ID)//'/boxm_out.nc', NF90_WRITE, BOXM_OUT_NCID)
@@ -100,7 +650,7 @@ CONTAINS
         IERR = NF90_INQUIRE_DIMENSION(PL_NCID, DIMID_WAYPOINT, LEN=NWAYPOINT)
         CALL CHECK(IERR, 'ERROR: CANNOT GET WAYPOINT LENGTH')
 
-        IERR = NF90_INQ_DIMID(PL_NCID, 'time', DIMID_TIME)
+        IERR = NF90_INQ_DIMID(PL_NCID, 'time_pl', DIMID_TIME)
         CALL CHECK(IERR, 'ERROR: CANNOT GET TIME DIMID')
         IERR = NF90_INQUIRE_DIMENSION(PL_NCID, DIMID_TIME, LEN=NTS)
         CALL CHECK(IERR, 'ERROR: CANNOT GET TIME LENGTH')
@@ -124,27 +674,31 @@ CONTAINS
         IERR = NF90_INQUIRE_DIMENSION(BOXM_NCID, DIMID_CELL, LEN=NCELL)
         CALL CHECK(IERR, 'ERROR: CANNOT GET CELL LENGTH')
 
-        IERR = NF90_INQ_DIMID(BOXM_NCID, 'species_in', DIMID_NS)
+        IERR = NF90_INQ_DIMID(BOXM_NCID, 'species', DIMID_NS)
         CALL CHECK(IERR, 'ERROR: CANNOT GET NS DIMID')
         IERR = NF90_INQUIRE_DIMENSION(BOXM_NCID, DIMID_NS, LEN=NS)
         CALL CHECK(IERR, 'ERROR: CANNOT GET NS LENGTH')
-
-        IERR = NF90_INQ_DIMID(BOXM_NCID, 'species_out', DIMID_NEMI)
-        CALL CHECK(IERR, 'ERROR: CANNOT GET NEMI DIMID')
-        IERR = NF90_INQUIRE_DIMENSION(BOXM_NCID, DIMID_NEMI, LEN=NEMI)
-        CALL CHECK(IERR, 'ERROR: CANNOT GET NEMI LENGTH')
-
-        IERR = NF90_INQUIRE_ATTRIBUTE(BOXM_NCID, NF90_GLOBAL, "species_out_num", LEN=NS_OUT)
-        CALL CHECK(IERR, 'ERROR: CANNOT GET NS_OUT LENGTH')
-
-        NPP = 57
-        NPC = 96
-        NTC = 512
-        NFL = 130
-        
-        TIME1 = 0.0
-        TSTORE = 0.0
+       
     END SUBROUTINE GET_BOXM_DIMS
+
+    SUBROUTINE GET_BOXM_ATTS
+        IMPLICIT NONE
+        
+        CALL PRINT_GLOBAL_ATT(BOXM_NCID, 'ts_fl')
+        CALL PRINT_GLOBAL_ATT(BOXM_NCID, 'ts_pl')
+        CALL PRINT_GLOBAL_ATT(BOXM_NCID, 'ts_sim')
+        CALL PRINT_GLOBAL_ATT(BOXM_NCID, 'hres_sim_c')
+        CALL PRINT_GLOBAL_ATT(BOXM_NCID, 'vres_sim_c')
+        CALL PRINT_GLOBAL_ATT(BOXM_NCID, 'hres_sim_f')
+        CALL PRINT_GLOBAL_ATT(BOXM_NCID, 'vres_sim_f')
+        CALL PRINT_GLOBAL_ATT(BOXM_NCID, 'species_emi')
+        CALL PRINT_GLOBAL_ATT(BOXM_NCID, 'species_plume')
+        CALL PRINT_GLOBAL_ATT(BOXM_NCID, 'species_out')
+        CALL PRINT_GLOBAL_ATT(BOXM_NCID, 'species_emi_num')
+        CALL PRINT_GLOBAL_ATT(BOXM_NCID, 'species_plume_num')
+        CALL PRINT_GLOBAL_ATT(BOXM_NCID, 'species_out_num')
+
+    END SUBROUTINE GET_BOXM_ATTS
 
     SUBROUTINE INIT_VARS
         IMPLICIT NONE
@@ -795,26 +1349,6 @@ CONTAINS
 
     END SUBROUTINE GET_PRE_INT_VARS
 
-    SUBROUTINE GET_PRE_INT_ATTS
-        IMPLICIT NONE
-        ! ALLOCATE AND POPULATE CONSTANT INPUT ATTRIBUTES
-        IERR = NF90_GET_ATT(NCID, NF90_GLOBAL, 'ns', NS)
-
-        IERR = NF90_GET_ATT(NCID, NF90_GLOBAL, 'dts', DTS)
-        CALL CHECK(IERR, 'ERROR: CANNOT GET DTS ATTRIBUTE')
-
-        PRINT *, 'DTS: ', DTS
-
-        IERR = NF90_GET_ATT(NCID, NF90_GLOBAL, 'species_out_num', SPECIES_OUT_NUM)
-        IF (IERR /= NF90_NOERR) THEN
-            PRINT *, NF90_STRERROR(IERR)
-        END IF
-        CALL CHECK(IERR, 'ERROR: CANNOT GET SPECIES_OUT ATTRIBUTE')
-
-        PRINT *, 'SPECIES_OUT_NUM: ', SPECIES_OUT_NUM
-
-    END SUBROUTINE GET_PRE_INT_ATTS
-
     ! INTEGRATION
     SUBROUTINE GET_INT_VARS(TS)
         IMPLICIT NONE
@@ -873,7 +1407,7 @@ MODULE RUN_CHEM
     IMPLICIT NONE
 
     INTEGER :: IOSTAT
-    REAL :: PI, TIME1, TSTORE, DTS
+    REAL :: PI, TIME1, DTS
 
     INTEGER :: NTS, NCELL, NS, NS_OUT
     INTEGER :: NTC, NPC, NPP, NFL, NEMI
@@ -5432,8 +5966,6 @@ CONTAINS
         IERR = NF90_PUT_VAR(NCID, VARID_EMI, EMI_PPB(:, :), START=[1, 1, TS], COUNT=[NCELL, NEMI, 1])
         CALL CHECK(IERR, 'EMI WRITE FAILED')
 
-        TIME1 = TIME1 + DTS
-
     END SUBROUTINE WRITE
     
 END MODULE RUN_CHEM
@@ -5517,7 +6049,7 @@ PROGRAM BOXM_RUN
             ! RUN_CHEMISTRY should update FINE_MASS(i,sp) in place over DT_CHEM.
             ! ACTIVE_FINE mask identifies which fine cells contain active plumes.
             !------------------------------------------------------------
-            CALL RUN_CHEMISTRY(FINE_MASS, ACTIVE_FINE, DT_CHEM)
+            CALL RUN_CHEM(FINE_MASS, ACTIVE_FINE, DT_CHEM)
 
 
             ! ------------------------------------------------------------

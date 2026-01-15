@@ -64,6 +64,14 @@ class SimParams:
         )
     )  # (start time, time step, run time)
 
+    t_out: tuple[pd.Timestamp, pd.Timedelta, pd.Timedelta] = field(
+        default_factory=lambda: (
+            pd.to_datetime("2022-01-20 12:00:00"),
+            pd.Timedelta(minutes=5),
+            pd.Timedelta(hours=4),
+        )
+    )  # (start time, time step, run time)
+
     #  spatial domain
     lat_bounds: tuple[float, float] = (0.0, 1.0)  # lat bounds [deg]
     lon_bounds: tuple[float, float] = (0.0, 1.0)  # lon bounds [deg]
@@ -144,6 +152,8 @@ class ChemParams:
 
 # @dataclass
 # class ContrailParams:
+    # """Default contrail parameters."""
+    # run_contrails: bool = True
 
 
 class GPAT(Model):
@@ -218,7 +228,13 @@ class GPAT(Model):
             end=sim_params.t_sim[0] + sim_params.t_sim[2],
             freq=sim_params.t_sim[1],
         )
-        
+
+        self.times_out = pd.date_range(
+            start=sim_params.t_out[0],
+            end=sim_params.t_out[0] + sim_params.t_out[2],
+            freq=sim_params.t_out[1],
+        )
+
         if sim_params.run_path is None:
             self.run_path = os.environ["PYCONTRAILSDIR"] + "models/gpat/"
 
@@ -335,7 +351,7 @@ class GPATSetup:
             if fl_params.file is None:
                 raise ValueError("Flight file must be provided for direct mode.")
             fl = Flight.read_csv(fl_params.file)
-            fl.attrs = {"flight_id": 0, "aircraft_type": fl_params.ac_type}
+            fl.attrs = {"flight_id": int(0), "aircraft_type": fl_params.ac_type}
             mask = (
                 (fl["latitude"] > sim_params.lat_bounds[0] + 0.01)
                 & (fl["latitude"] < sim_params.lat_bounds[1] - 0.01)
@@ -379,11 +395,11 @@ class GPATSetup:
             df["latitude"] = [lat0, lat1]
             df["altitude"] = [alt0, alt0]
             df["time"] = [sim_params.t_fl[0], (sim_params.t_fl[0] + sim_params.t_fl[2])]
-
             ts_fl_min = int(sim_params.t_fl[1].total_seconds() / 60)
 
             fl0 = Flight(df).resample_and_fill(freq=f"{ts_fl_min}min")
-            fl0.attrs = {"flight_id": 0, "aircraft_type": fl_params.ac_type}
+            #fl0["time_rel_s"] = (fl0.dataframe["time"] - sim_params.t_sim[0]).dt.total_seconds()
+            fl0.attrs = {"flight_id": int(0), "aircraft_type": fl_params.ac_type}
             mask = (
                 (fl0["latitude"] > sim_params.lat_bounds[0] + 0.01)
                 & (fl0["latitude"] < sim_params.lat_bounds[1] - 0.01)
@@ -461,7 +477,7 @@ class GPATSetup:
                 "longitude": self.gpat.lons,
                 "latitude": self.gpat.lats,
                 "level": self.gpat.levels,
-                "time": self.gpat.times_sim,
+                "time": pd.to_datetime(self.gpat.times_sim.values).strftime("%Y-%m-%dT%H:%M:%SZ"),
             },
         )
 
@@ -523,6 +539,12 @@ class GPATSetup:
             ),
         )
 
+        # # add time relative to simulation start time
+        # time_rel_s = (met["time"].values - np.datetime64(self.gpat.times_sim[0])).astype("timedelta64[s]").astype(float)
+        # met.data = met.data.assign_coords({
+        #     "time_rel_s": (("time"), time_rel_s)
+        # })
+
         return met
 
     def gen_bg_chem(self) -> xr.Dataset:
@@ -532,6 +554,7 @@ class GPATSetup:
         bg_chem = (
             xr.open_dataset(self.gpat.inputs_glob + "species.nc", engine="netcdf4")
             .sel(month=month - 1)
+            .rename({"species": "species_boxm"})
         )
 
         for s in [1,2,3,5,7,9,10,13,15,16,17,18,19,20,22,24,26,27,29,31,33,35,36,37,38,40,
@@ -564,6 +587,7 @@ class GPATSetup:
             fl[i]["air_temperature"] = models.interpolate_met(met, fli, "air_temperature")
             fl[i]["specific_humidity"] = models.interpolate_met(met, fli, "specific_humidity")
             fl[i]["true_airspeed"] = fli.segment_groundspeed()
+            
             print(f"flight {i} done")
 
             # get ac performance data using Poll-Schumann Model
@@ -637,6 +661,16 @@ class GPATSetup:
 
             # convert both flights and plumes to dataframes
             fl[i] = fl[i].dataframe
+
+            # Add level to flight dataframe right after converting
+            fl[i]["level"] = units.m_to_pl(fl[i]["altitude"].values)
+
+            # Reorder columns to have level after latitude
+            var_list = list(fl[i])
+            var_list.remove("level")
+            var_list.insert(var_list.index("latitude") + 1, "level")
+            fl[i] = fl[i][var_list]
+
             for column in fl[i].columns:
                 # Replace NaN values in the column with the value from the previous row
                 fl[i][column] = fl[i][column].fillna(method="ffill")
@@ -723,6 +757,123 @@ class GPATSetup:
         self.init_pl_out_nc()  
 
     # Initialize input datasets
+
+    def init_fl_ds_nc(self):
+        """Initialize the flight dataset for BOXM."""
+        df = self.gpat.fl.copy()
+
+        # change flight id to int
+        df["flight_id"] = df["flight_id"].astype(int)
+
+        # Set multi-index (flight_id, waypoint) and convert to xarray
+        self.gpat.fl_ds = df.set_index(["flight_id", "waypoint"]).to_xarray()
+
+        self.gpat.fl_ds["time_rel_s"] = (self.gpat.fl_ds["time"] - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int)
+        self.gpat.fl_ds["time_idx"] = (self.gpat.fl_ds["time"] - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int) // int(self.gpat.sim_params.t_fl[1].total_seconds())
+        self.gpat.fl_ds["time"] = self.gpat.fl_ds["time"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        # Drop individual species variables
+        self.gpat.fl_ds = self.gpat.fl_ds.drop_vars(["air_temperature", "specific_humidity", 
+                                 "nox_ei", "co_ei", "hc_ei", "nvpm_ei_m",
+                                 "nvpm_ei_n", "co2", "h2o", "so2", 
+                                 "sulphates", "oc", "nox", "co", "hc", 
+                                 "nvpm_mass", "nvpm_number", "nvPM",
+                                 "CO2", "H2O", "SO2", "NO", "NO2",
+                                 "CO", "HCHO", "CH3CHO", "C2H4", "C3H6", "C2H2", "BENZENE"])
+        
+        # --- Assign useful metadata ---
+        self.gpat.fl_ds = self.gpat.fl_ds.assign_attrs(
+            description="Flight trajectory and emissions data for BOXM",
+        )
+
+        # Save to NetCDF
+        nc_path = pathlib.Path(f"{self.gpat.inputs_job}/fl_ds.nc")
+        if nc_path.exists():
+            nc_path.unlink()
+        self.gpat.fl_ds.to_netcdf(nc_path, mode="w")
+        print(f"Saved {nc_path}")
+    
+    def init_pl_ds_nc(self):
+        """Initialize the plume dataset for the box model (PL_DS.NC)."""
+        df = self.gpat.pl.copy()
+        sim_params = self.gpat.sim_params
+        chem_params = self.gpat.chem_params
+
+        # change flight id to int
+        df["flight_id"] = df["flight_id"].astype(int)
+
+        species_cols = list(self.gpat.chem_params.species_emi)
+        
+        # Set multi-index (flight_id, waypoint, time)
+        self.gpat.pl_ds = df.set_index(["flight_id", "waypoint", "time"]).to_xarray()
+
+        # Extract species emission mass directly from flight data (once per waypoint)
+        # fl contains emissions indexed by (flight_id, waypoint) - perfect!
+        fl_xr = self.gpat.fl.set_index(["flight_id", "waypoint"]).to_xarray()
+        
+        # Stack species into single variable: (flight_id, waypoint, species_emi)
+        species_data = [fl_xr[col] for col in species_cols]
+        
+        # Concatenate along species dimension
+        species_emi_mass = xr.concat(
+            species_data,
+            dim=pd.Index(species_cols, name="species_emi")
+        ).transpose("flight_id", "waypoint", "species_emi")
+        
+        # Add to plume dataset
+        self.gpat.pl_ds["species_emi_mass"] = species_emi_mass
+        
+        # Drop all individual species columns
+        # Drop ALL emission species variables (both stacked and unstacked)
+        all_species_cols = ['CO2', 'H2O', 'SO2', 'NO', 
+                            'NO2', 'CO', 'HCHO', 'CH3CHO', 
+                            'C2H4', 'C3H6', 'C2H2', 'BENZENE', 'nvPM']
+
+        self.gpat.pl_ds = self.gpat.pl_ds.drop_vars(all_species_cols + ["fuel_flow", "fuel_burn", "true_airspeed", "sin_a", "cos_a"])
+
+        # Convert timedelta to total seconds, handling NaT values
+        age_values = self.gpat.pl_ds["age"].values
+        age_seconds = (age_values / np.timedelta64(1, 's')).astype(int)
+
+        # Replace overflow values (NaT) with a fill value like -1 or 0
+        age_seconds = np.where(np.isnat(age_values), 0, (age_values / np.timedelta64(1, 's')).astype(int))
+
+
+        self.gpat.pl_ds = self.gpat.pl_ds.assign_coords(
+            time_rel_s = ("time", (self.gpat.pl_ds["time"].values - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int)),
+            time_idx = ("time", (self.gpat.pl_ds["time"].values - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int) // int(sim_params.t_pl[1].total_seconds()) + 1)
+        )
+
+        self.gpat.pl_ds["time"] = self.gpat.pl_ds["time"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.gpat.pl_ds["age"].values = self.gpat.pl_ds["age"].values.astype(str)
+        self.gpat.pl_ds["age_s"] = (("flight_id", "waypoint", "time"), age_seconds)
+
+        # Assign useful metadata
+        self.gpat.pl_ds = self.gpat.pl_ds.assign_attrs(
+            ts_fl=sim_params.t_fl[1].total_seconds(),
+            ts_pl=sim_params.t_pl[1].total_seconds(),
+            ts_sim=sim_params.t_sim[1].total_seconds(),
+            # species definitions
+            species_emi=chem_params.species_emi,
+            species_plume=chem_params.species_plume,
+            # species nums
+            species_emi_num=chem_params.species_emi_num,
+            species_plume_num=chem_params.species_plume_num,
+        )
+
+        # Assign metadata
+        self.gpat.pl_ds = self.gpat.pl_ds.assign_attrs(
+            description="Emission species mass in plume segments",
+        )
+
+        # Save to NetCDF
+        nc_path = pathlib.Path(f"{self.gpat.inputs_job}/pl_ds.nc")
+        if nc_path.exists():
+            print("Deleting existing pl_ds.nc")
+            nc_path.unlink()
+        self.gpat.pl_ds.to_netcdf(nc_path, mode="w")
+        print(f"Saved {nc_path}")
+
     def init_boxm_ds_nc(self):
         """Initialize the box model dataset (met + background chem on coarse grid)."""
         sim_params = self.gpat.sim_params
@@ -730,6 +881,14 @@ class GPATSetup:
 
         # --- Merge meteorology and background chemistry fields ---
         self.gpat.boxm_ds = xr.merge([self.gpat.met.data, self.gpat.bg_chem])
+
+        #self.gpat.boxm_ds["time_rel_s"] = (self.gpat.boxm_ds["time"] - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(float)
+        # add altitude coordinate
+        self.gpat.boxm_ds = self.gpat.boxm_ds.assign_coords(
+            time_rel_s = ("time", (self.gpat.boxm_ds["time"].values - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int)),
+            time_idx = ("time", (self.gpat.boxm_ds["time"].values - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int) // int(sim_params.t_sim[1].total_seconds()) + 1)
+        )
+        self.gpat.boxm_ds["time"] = self.gpat.boxm_ds["time"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
         # --- Drop unneeded diagnostic fields ---
         drop_vars = [
@@ -760,6 +919,11 @@ class GPATSetup:
             species_emi_num=chem_params.species_emi_num,
             species_plume_num=chem_params.species_plume_num,
             species_out_num=chem_params.species_out_num,
+            # chem coeffs
+            photol_params=57,
+            photol_coeffs=96,
+            therm_coeffs=512,
+            flux_species=130,
 
             description="BOXM coarse-grid meteorology and background chemistry fields",
             note="Emissions and plume segments handled separately via PL_DS.NC and FL_DS.NC",
@@ -781,95 +945,18 @@ class GPATSetup:
         self.gpat.boxm_ds_stacked.to_netcdf(nc_path, mode="w")
         print(f"Saved {nc_path}")
 
-    def init_fl_ds_nc(self):
-        """Initialize the flight dataset for BOXM."""
-        df = self.gpat.fl.copy()
-
-        # Set multi-index (flight_id, waypoint) and convert to xarray
-        fl_ds = df.set_index(["flight_id", "waypoint"]).to_xarray()
-
-        # Drop individual species variables
-        fl_ds = fl_ds.drop_vars(["air_temperature", "specific_humidity", 
-                                 "nox_ei", "co_ei", "hc_ei", "nvpm_ei_m",
-                                 "nvpm_ei_n", "co2", "h2o", "so2", 
-                                 "sulphates", "oc", "nox", "co", "hc", 
-                                 "nvpm_mass", "nvpm_number", "nvPM"])
-        
-        # --- Assign useful metadata ---
-        fl_ds = fl_ds.assign_attrs(
-            description="Flight trajectory and emissions data for BOXM",
-        )
-
-        # Save to NetCDF
-        nc_path = pathlib.Path(f"{self.gpat.inputs_job}/fl_ds.nc")
-        if nc_path.exists():
-            nc_path.unlink()
-        fl_ds.to_netcdf(nc_path, mode="w")
-        print(f"Saved {nc_path}")
-    
-    def init_pl_ds_nc(self):
-        """Initialize the plume dataset for the box model (PL_DS.NC)."""
-        df = self.gpat.pl.copy()
-        sim_params = self.gpat.sim_params
-        chem_params = self.gpat.chem_params
-
-        species_cols = self.gpat.chem_params.species_emi
-        all_species_cols = ['CO2', 'H2O', 'SO2', 'NO', 
-                            'NO2', 'CO', 'HCHO', 'CH3CHO', 
-                            'C2H4', 'C3H6', 'C2H2', 'BENZENE', 'nvPM']
-        # Set multi-index (flight_id, waypoint, time)
-        pl_ds = df.set_index(["flight_id", "waypoint", "time"]).to_xarray()
-
-        # Stack species into a single 4D DataArray (flight_id, waypoint, time, species)
-        species_data = []
-        for col in species_cols:
-            species_data.append(pl_ds[col])
-        
-        pl_ds["emi_species_mass"] = xr.concat(
-            species_data,
-            dim=pd.Index(species_cols, name="species")
-        ).transpose("flight_id", "waypoint", "time", "species")  # <-- ensure correct order
-        
-        # Drop ALL emission species variables (both stacked and unstacked)
-        vars_to_drop = [col for col in all_species_cols if col in pl_ds.data_vars]
-        if vars_to_drop:
-            pl_ds = pl_ds.drop_vars(vars_to_drop)
-
-        # drop remaining unneeded variables
-        # pl_ds = pl_ds.drop_vars(["sin_a", "cos_a", "
-
-        # Assign useful metadata
-        pl_ds = pl_ds.assign_attrs(
-            ts_fl=sim_params.t_fl[1].total_seconds(),
-            ts_pl=sim_params.t_pl[1].total_seconds(),
-            ts_sim=sim_params.t_sim[1].total_seconds(),
-
-            species_emi=chem_params.species_emi,
-            species_plume=chem_params.species_plume,
-        )
-
-        # Save to NetCDF
-        nc_path = pathlib.Path(f"{self.gpat.inputs_job}/pl_ds.nc")
-        if nc_path.exists():
-            print("Deleting existing pl_ds.nc")
-            nc_path.unlink()
-        pl_ds.to_netcdf(nc_path, mode="w")
-        print(f"Saved {nc_path}")
-
     # Initialize output datasets
     def init_boxm_out_nc(self):
         """Initialize the box model coarse output dataset (BOXM_C_OUT.NC)."""
         species_out = np.array(self.gpat.chem_params.species_out, dtype="U10")
-        sim_params = self.gpat.sim_params
-        chem_params = self.gpat.chem_params
 
         self.gpat.boxm_out = xr.Dataset(
             data_vars={
                 "Y_bg_c": (
-                    ("time", "level", "longitude", "latitude", "species_out"),
+                    ("time", "level_c", "longitude_c", "latitude_c", "species_out"),
                     da.zeros(
                         (
-                            len(self.gpat.times_sim), 
+                            len(self.gpat.times_out), 
                             len(self.gpat.levels), 
                             len(self.gpat.lons), 
                             len(self.gpat.lats),
@@ -880,10 +967,10 @@ class GPATSetup:
                     {"units": "mol_cm3"},
                 ),
                 "Y_del_c": (
-                    ("time", "level", "longitude", "latitude", "species_out"),
+                    ("time", "level_c", "longitude_c", "latitude_c", "species_out"),
                     da.zeros(
                         (
-                            len(self.gpat.times_sim), 
+                            len(self.gpat.times_out), 
                             len(self.gpat.levels), 
                             len(self.gpat.lons), 
                             len(self.gpat.lats),
@@ -894,10 +981,10 @@ class GPATSetup:
                     {"units": "mol_cm3"},
                 ),
                 "active_flag": (
-                    ("time", "level", "longitude", "latitude"),
+                    ("time", "level_c", "longitude_c", "latitude_c"),
                     da.zeros(
                         (
-                            len(self.gpat.times_sim), 
+                            len(self.gpat.times_out), 
                             len(self.gpat.levels), 
                             len(self.gpat.lons), 
                             len(self.gpat.lats)
@@ -907,10 +994,13 @@ class GPATSetup:
                 ),
             },
             coords={
-                "time": self.gpat.times_sim,
-                "level": self.gpat.levels,
-                "longitude": self.gpat.lons,
-                "latitude": self.gpat.lats,
+                "time": pd.to_datetime(self.gpat.times_out.values).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "time_rel_s": ("time", (self.gpat.times_out.values - np.datetime64(self.gpat.sim_params.t_out[0])).astype("timedelta64[s]").astype(int)),
+                "time_idx": ("time", (self.gpat.times_out.values - np.datetime64(self.gpat.sim_params.t_out[0])).astype("timedelta64[s]").astype(int) // int(self.gpat.sim_params.t_sim[1].total_seconds()) + 1),
+                "level_c": self.gpat.levels,
+                "altitude_c": ("level_c", units.pl_to_m(self.gpat.levels)),
+                "longitude_c": self.gpat.lons,
+                "latitude_c": self.gpat.lats,
                 "species_out": species_out,
             }
         )
@@ -918,30 +1008,12 @@ class GPATSetup:
         # Flatten spatial dimensions for easy Fortran indexing
         # (Fortran expects a 1D cell index)
         self.gpat.boxm_out_stacked = self.gpat.boxm_out.stack(
-            {"cell": ["level", "longitude", "latitude"]}
+            {"cell": ["level_c", "longitude_c", "latitude_c"]}
         ).reset_index("cell")
 
         # --- Assign useful metadata ---
-        self.gpat.boxm_out = self.gpat.boxm_out.assign_attrs(
-            #domain params
-            ts_fl=sim_params.t_fl[1].total_seconds(),
-            ts_pl=sim_params.t_pl[1].total_seconds(),
-            ts_sim=sim_params.t_sim[1].total_seconds(),
-            hres_sim_c=sim_params.hres_sim_c,
-            vres_sim_c=sim_params.vres_sim_c,
-            hres_sim_f=sim_params.hres_sim_f,
-            vres_sim_f=sim_params.vres_sim_f,
-            # species definitions
-            species_emi=chem_params.species_emi,
-            species_plume=chem_params.species_plume,
-            species_out=chem_params.species_out,
-            # species nums
-            species_emi_num=chem_params.species_emi_num,
-            species_plume_num=chem_params.species_plume_num,
-            species_out_num=chem_params.species_out_num,
-
-            description="BOXM coarse-grid meteorology and background chemistry fields",
-            note="Emissions and plume segments handled separately via PL_DS.NC and FL_DS.NC",
+        self.gpat.boxm_out_stacked = self.gpat.boxm_out_stacked.assign_attrs(
+            description="BOXM output coarse-grid chemistry fields",
         )
 
         # Delete any existing NetCDF
@@ -956,62 +1028,36 @@ class GPATSetup:
         
     def init_patch_table_nc(self):
         """Initialize the patch output dataset (PATCH_OUT.NC)."""
-        species_plume = np.array(self.gpat.chem_params.species_plume, dtype="U10")
-        sim_params = self.gpat.sim_params
-        chem_params = self.gpat.chem_params
+        species_out = self.gpat.chem_params.species_out
+
 
         self.gpat.patch_table = xr.Dataset(
             data_vars={
                 "Y_del_f": (
-                    ("row", "species_plume"), 
-                    da.zeros(
-                        (
-                            0, 
-                            len(species_plume)
-                        ),
-                        dtype=float,
-                    ),  
+                    ("row", "species_out"), 
+                    da.zeros((0, len(species_out)), dtype=float),
                     {"units": "mol_cm3"},
                 ),
+                # per-row columns (treat like a table)
+                "time":   ("row", np.array([], dtype="object")),
+                "time_rel_s": ("row", np.array([], dtype="int64")),
+                
+                "latitude_f":  ("row", np.array([], dtype="float64")),
+                "longitude_f": ("row", np.array([], dtype="float64")),
+                "altitude_f":  ("row", np.array([], dtype="float64")),
+                "level_f":     ("row", np.array([], dtype="float64")),
             },
             coords={
-            "row": ("row", np.array([], dtype=int)),   # 0-length row dimension
-            "time": ("row", np.array([], dtype="datetime64[ns]")),
-            "patch_id": ("row", np.array([], dtype=int)),
-
-            "latitude": ("row", np.array([], dtype=float)),
-            "longitude": ("row", np.array([], dtype=float)),
-            "level": ("row", np.array([], dtype=int)),
-
-            "latitude_f": ("row", np.array([], dtype=float)),
-            "longitude_f": ("row", np.array([], dtype=float)),
-            "level_f": ("row", np.array([], dtype=int)),
-
-            "species_plume": ("species_plume", species_plume),
+            "time_idx":   ("row", np.array([], dtype="int64")),
+            "row": np.array([], dtype=int),   # 0-length row dimension
+            "patch_id":   ("row", np.array([], dtype="int64")),
+            "species_out": np.array(species_out),
             }
         )
 
         # --- Assign useful metadata ---
-        self.gpat.boxm_ds = self.gpat.boxm_ds.assign_attrs(
-            #domain params
-            ts_fl=sim_params.t_fl[1].total_seconds(),
-            ts_pl=sim_params.t_pl[1].total_seconds(),
-            ts_sim=sim_params.t_sim[1].total_seconds(),
-            hres_sim_c=sim_params.hres_sim_c,
-            vres_sim_c=sim_params.vres_sim_c,
-            hres_sim_f=sim_params.hres_sim_f,
-            vres_sim_f=sim_params.vres_sim_f,
-            # species definitions
-            species_emi=chem_params.species_emi,
-            species_plume=chem_params.species_plume,
-            species_out=chem_params.species_out,
-            # species nums
-            species_emi_num=chem_params.species_emi_num,
-            species_plume_num=chem_params.species_plume_num,
-            species_out_num=chem_params.species_out_num,
-
-            description="BOXM coarse-grid meteorology and background chemistry fields",
-            note="Emissions and plume segments handled separately via PL_DS.NC and FL_DS.NC",
+        self.gpat.patch_table = self.gpat.patch_table.assign_attrs(
+            description="Fine grid plume patch output for BOXM",
         )
 
         # Delete any existing NetCDF
@@ -1028,28 +1074,27 @@ class GPATSetup:
         """Initialize the plume output dataset (PL_OUT.NC)."""
         # Load the input plume dataset
         pl_ds = xr.open_dataset(f"{self.gpat.inputs_job}/pl_ds.nc")
-
-        sim_params = self.gpat.sim_params
-        chem_params = self.gpat.chem_params
         
         # Create output dataset with same structure
         self.gpat.pl_out = pl_ds.copy(deep=True)
         
         # Rename and repurpose the species mass variable
         # Store DELTA mass (change from initial emissions due to chemistry)
-        self.gpat.pl_out = self.gpat.pl_out.rename({"emi_species_mass": "delta_species_mass"})
+        self.gpat.pl_out = self.gpat.pl_out.rename({"species_emi_mass": "species_plume_mass"})
         
+        self.gpat.pl_out = self.gpat.pl_out.drop_vars("age", "age_s", "longitude")
+
         # Zero out delta mass (initially, no chemistry has occurred)
-        self.gpat.pl_out["delta_species_mass"].values[:] = 0.0
+        self.gpat.pl_out["species_plume_mass"].values[:] = 0.0
         
         # If output species differ from input species, create new variable
         if set(self.gpat.chem_params.species_emi) != set(self.gpat.chem_params.species_out):
-            self.gpat.pl_out = self.gpat.pl_out.drop_vars("species")
+            self.gpat.pl_out = self.gpat.pl_out.drop_vars("species_emi")
             
             species_plume = np.array(self.gpat.chem_params.species_plume, dtype="U10")
             
             # Create delta_species_mass for output species
-            self.gpat.pl_out["delta_species_mass"] = (
+            self.gpat.pl_out["species_plume_mass"] = (
                 ("flight_id", "waypoint", "time", "species_plume"),
                 np.zeros((
                     len(self.gpat.pl_out.flight_id),
@@ -1066,25 +1111,15 @@ class GPATSetup:
             self.gpat.pl_out["species_plume"] = species_plume
         else:
             # Just update metadata
-            self.gpat.pl_out["delta_species_mass"].attrs = {
+            self.gpat.pl_out["species_plume_mass"].attrs = {
                 "units": "kg",
                 "long_name": "Change in species mass due to chemistry",
                 "note": "Add to initial emission mass (from fl_ds.nc) to get total mass"
             }
-
-        # Add aspect ratio column
-        self.gpat.pl_out["aspect_ratio"] = (
-            self.gpat.pl_out["width"] / self.gpat.pl_out["depth"]
-        )
         
         # Add metadata
-        self.gpat.pl_out.assign_attrs(
-            ts_fl=sim_params.t_fl[1].total_seconds(),
-            ts_pl=sim_params.t_pl[1].total_seconds(),
-            ts_sim=sim_params.t_sim[1].total_seconds(),
-
-            species_emi=chem_params.species_emi,
-            species_plume=chem_params.species_plume,
+        self.gpat.pl_out = self.gpat.pl_out.assign_attrs(
+            description="Plume segment output for BOXM",
         )
         
         # Save
@@ -1372,9 +1407,9 @@ class GPATAnalysis:
 # Helper functions for GPAT
 def grab_species_num(run_path, species_out: np.array) -> np.array:
     """Grab the species numbers for the species of interest in output."""
-    # Read species names from the file into a list
+    # Read species names from the file into a list, skip empty lines
     with open(f"{run_path}species_num.txt") as file:
-        species_list = [line.strip() for line in file]
+        species_list = [line.strip() for line in file if line.strip()]
 
     # Create a dictionary mapping species names to their line numbers
     species_dict = {species: index for index, species in enumerate(species_list)}
