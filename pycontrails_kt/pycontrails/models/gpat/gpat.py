@@ -935,6 +935,9 @@ class GPATSetup:
             {"cell": ["level", "longitude", "latitude"]}
         ).reset_index("cell")
 
+        # Transpose so that cell is the fastest-varying dimension
+        self.gpat.boxm_ds_stacked = self.gpat.boxm_ds_stacked.transpose("cell", "species_boxm", "time")
+
         # Delete any existing NetCDF
         nc_path = pathlib.Path(f"{self.gpat.inputs_job}/boxm_ds.nc")
         if nc_path.exists():
@@ -1011,6 +1014,9 @@ class GPATSetup:
             {"cell": ["level_c", "longitude_c", "latitude_c"]}
         ).reset_index("cell")
 
+        # Transpose so that cell is the fastest-varying dimension
+        self.gpat.boxm_out_stacked = self.gpat.boxm_out_stacked.transpose("cell", "species_out", "time")
+
         # --- Assign useful metadata ---
         self.gpat.boxm_out_stacked = self.gpat.boxm_out_stacked.assign_attrs(
             description="BOXM output coarse-grid chemistry fields",
@@ -1030,7 +1036,6 @@ class GPATSetup:
         """Initialize the patch output dataset (PATCH_OUT.NC)."""
         species_out = self.gpat.chem_params.species_out
 
-
         self.gpat.patch_table = xr.Dataset(
             data_vars={
                 "Y_del_f": (
@@ -1038,20 +1043,20 @@ class GPATSetup:
                     da.zeros((0, len(species_out)), dtype=float),
                     {"units": "mol_cm3"},
                 ),
-                # per-row columns (treat like a table)
-                "time":   ("row", np.array([], dtype="object")),
-                "time_rel_s": ("row", np.array([], dtype="int64")),
                 
-                "latitude_f":  ("row", np.array([], dtype="float64")),
-                "longitude_f": ("row", np.array([], dtype="float64")),
-                "altitude_f":  ("row", np.array([], dtype="float64")),
-                "level_f":     ("row", np.array([], dtype="float64")),
             },
             coords={
-            "time_idx":   ("row", np.array([], dtype="int64")),
+            
             "row": np.array([], dtype=int),   # 0-length row dimension
             "patch_id":   ("row", np.array([], dtype="int64")),
             "species_out": np.array(species_out),
+            "time":   ("row", np.array([], dtype="object")),
+            "time_rel_s": ("row", np.array([], dtype="int64")),
+            "time_idx":   ("row", np.array([], dtype="int64")),
+            "latitude_f":  ("row", np.array([], dtype="float64")),
+            "longitude_f": ("row", np.array([], dtype="float64")),
+            "altitude_f":  ("row", np.array([], dtype="float64")),
+            "level_f":     ("row", np.array([], dtype="float64")),
             }
         )
 
@@ -1082,7 +1087,7 @@ class GPATSetup:
         # Store DELTA mass (change from initial emissions due to chemistry)
         self.gpat.pl_out = self.gpat.pl_out.rename({"species_emi_mass": "species_plume_mass"})
         
-        self.gpat.pl_out = self.gpat.pl_out.drop_vars("age", "age_s", "longitude")
+        self.gpat.pl_out = self.gpat.pl_out.drop_vars(["age", "age_s", "longitude"])
 
         # Zero out delta mass (initially, no chemistry has occurred)
         self.gpat.pl_out["species_plume_mass"].values[:] = 0.0
@@ -1095,12 +1100,12 @@ class GPATSetup:
             
             # Create delta_species_mass for output species
             self.gpat.pl_out["species_plume_mass"] = (
-                ("flight_id", "waypoint", "time", "species_plume"),
+                ("flight_id", "waypoint", "species_plume", "time"),
                 np.zeros((
                     len(self.gpat.pl_out.flight_id),
                     len(self.gpat.pl_out.waypoint),
+                    len(species_plume),
                     len(self.gpat.pl_out.time),
-                    len(species_plume)
                 ), dtype=float),
                 {
                     "units": "kg",

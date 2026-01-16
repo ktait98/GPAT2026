@@ -75,15 +75,17 @@ MODULE DEFINE_TYPES
         ! ---------- PUBLIC DATA YOU ACTUALLY USE ----------
 
         ! PL DIMLENS
-        INTEGER :: NFLI = 0
-        INTEGER :: NWP = 0
+        INTEGER :: NSEG = 0
         INTEGER :: NTPL = 0
         INTEGER :: NSEMI = 0
 
         ! PL DIMS
+        INTEGER, ALLOCATABLE :: SEG_ID(:)
+        CHARACTER(LEN=20), ALLOCATABLE :: TIME(:)
+
+        ! PL COORDS
         INTEGER, ALLOCATABLE :: FL_ID(:)
         INTEGER,   ALLOCATABLE :: WP(:)
-        CHARACTER(LEN=20), ALLOCATABLE :: TIME(:)
         CHARACTER(LEN=20), ALLOCATABLE :: SPECIES_EMI(:)
 
         ! PL VARS
@@ -158,13 +160,26 @@ MODULE DEFINE_TYPES
         INTEGER :: NS = 219
         
         ! BOXM DIMS
-        CHARACTER(LEN=20), ALLOCATABLE :: TIME(:)
-        REAL(DP), ALLOCATABLE :: TIME_REL_S(:)
+        INTEGER,   ALLOCATABLE :: TIME_REL_S(:)
+        INTEGER,   ALLOCATABLE :: TIME_IDX(:)
         INTEGER,   ALLOCATABLE :: CELL(:)
         INTEGER,   ALLOCATABLE :: SPECIES_BOXM(:)
+        CHARACTER(LEN=20), ALLOCATABLE :: TIME(:)
+
+        ! BOXM COORDS
+        REAL(DP), ALLOCATABLE :: LONGITUDE_C(:)
+        REAL(DP), ALLOCATABLE :: LATITUDE_C(:)
+        REAL(DP), ALLOCATABLE :: ALTITUDE_C(:)
+        REAL(DP), ALLOCATABLE :: LEVEL_C(:)
 
         ! BOXM VARS
-        REAL(DP), ALLOCATABLE :: CONC(:,:,:)
+        REAL(DP), ALLOCATABLE :: TEMP(:,:)
+        REAL(DP), ALLOCATABLE :: H2O(:,:)
+        REAL(DP), ALLOCATABLE :: M(:,:)
+        REAL(DP), ALLOCATABLE :: O2(:,:)
+        REAL(DP), ALLOCATABLE :: N2(:,:)
+        REAL(DP), ALLOCATABLE :: SZA(:,:)
+        REAL(DP), ALLOCATABLE :: Y_BG(:,:)
 
         ! ---------- PRIVATE NETCDF PLUMBING ----------
         PRIVATE
@@ -178,7 +193,8 @@ MODULE DEFINE_TYPES
         INTEGER :: DIMID_NS = -1
 
         ! BOXM VAR IDs
-        INTEGER :: VARID_CONC = -1
+
+        INTEGER :: VARID_Y_BG = -1
 
         LOGICAL :: IS_OPEN = .FALSE.
 
@@ -195,22 +211,25 @@ MODULE DEFINE_TYPES
     ! STATE TYPES
     TYPE :: PL_STATE_TYPE
         INTEGER :: NSEG = 0
-        INTEGER :: NS_PLUME = 0
+        INTEGER :: NSPL = 0
 
         ! TIME TRACKING
         INTEGER :: T_REL_S = 0
         INTEGER :: TIME_IDX = 0
 
         ! PL STATE DIMS
+        INTEGER, ALLOCATABLE :: SEG_ID(:)
+        INTEGER, ALLOCATABLE :: SPECIES_PLUME(:)
+
+        ! PL STATE COORDS
         INTEGER, ALLOCATABLE :: FL_ID(:)
         INTEGER,   ALLOCATABLE :: WP(:)
         CHARACTER(LEN=20), ALLOCATABLE :: SPECIES_PLUME(:)
 
-        ! AGE TRACKING
-        CHARACTER(LEN=20), ALLOCATABLE :: AGE(:,:,:)
-        INTEGER, ALLOCATABLE :: AGE_S(:,:,:)
+        ! PL STATE VARS
+        CHARACTER(LEN=20), ALLOCATABLE :: AGE(:)
+        INTEGER, ALLOCATABLE :: AGE_S(:)
 
-        ! GEOMETRY PER SEGMENT (ALL (NSEG))
         REAL(DP), ALLOCATABLE :: LONGITUDE(:)      ! (NSEG)
         REAL(DP), ALLOCATABLE :: LATITUDE(:)      ! (NSEG)
         REAL(DP), ALLOCATABLE :: ALTITUDE(:)      ! (NSEG)
@@ -220,7 +239,6 @@ MODULE DEFINE_TYPES
         REAL(DP), ALLOCATABLE :: DEPTH(:)    ! (NSEG) m (sigma_z)
         REAL(DP), ALLOCATABLE :: HEADING(:)  ! (NSEG) rad or deg
 
-        ! Dispersion tensors
         REAL(DP), ALLOCATABLE :: SIG_YY(:)   ! (NSEG)
         REAL(DP), ALLOCATABLE :: SIG_YZ(:)   ! (NSEG)
         REAL(DP), ALLOCATABLE :: SIG_ZZ(:)   ! (NSEG)
@@ -241,7 +259,7 @@ MODULE DEFINE_TYPES
         
         ! BOXM DIMS
         INTEGER :: NCELL = 0
-        INTEGER :: NS_BOXM = 219
+        INTEGER :: NSBOXM = 219
 
         ! BOXM DIMS
         INTEGER, ALLOCATABLE :: CELL(:)
@@ -352,7 +370,7 @@ MODULE DEFINE_TYPES
         ! BOXM OUT DIMLENS
         INTEGER :: NTBOXM = 0
         INTEGER :: NCELL = 0
-        INTEGER :: NS_BOXM = 219
+        INTEGER :: NSBOXM = 219
 
         ! BOXM OUT DIMS
         CHARACTER(LEN=20), ALLOCATABLE :: TIME(:)
@@ -386,14 +404,52 @@ MODULE DEFINE_TYPES
     END TYPE BOXM_OUT_TYPE
 
     TYPE :: PATCH_TABLE_TYPE
+
+        ! PATCH TABLE DIMLENS
         INTEGER :: NROWS = 0
+        INTEGER :: NSOUT
+
+        ! PATCH TABLE DIMS
         INTEGER, ALLOCATABLE :: ROW(:)
         CHARACTER(LEN=20), ALLOCATABLE :: SPECIES_OUT(:)
 
+        ! PATCH TABLE COORDS
         INTEGER, ALLOCATABLE :: PATCH_ID(:)
+        INTEGER, ALLOCATABLE :: TIME(:)
         INTEGER, ALLOCATABLE :: TIME_REL_S(:)
         INTEGER, ALLOCATABLE :: TIME_IDX(:)
+        INTEGER, ALLOCATABLE :: LATITUDE_F(:)
+        INTEGER, ALLOCATABLE :: LONGITUDE_F(:)
+        INTEGER, ALLOCATABLE :: ALTITUDE_F(:)
+        INTEGER, ALLOCATABLE :: LEVEL_F(:)
+        
+        ! PATCH TABLE VARS
         REAL(DP), ALLOCATABLE :: Y_DEL_F(:,:)
+
+        ! PRIVATE NETCDF PLUMBING
+        PRIVATE
+        INTEGER :: PATCH_TABLE_NCID = -1
+        ! PATCH TABLE DIM IDs
+        INTEGER :: DIMID_ROW = -1
+        INTEGER :: DIMID_NSOUT = -1
+        ! PATCH TABLE VAR IDs
+        INTEGER :: VARID_PATCH_ID = -1
+        INTEGER :: VARID_TIME = -1
+        INTEGER :: VARID_TIME_REL_S = -1
+        INTEGER :: VARID_TIME_IDX = -1
+        INTEGER :: VARID_LATITUDE_F = -1
+        INTEGER :: VARID_LONGITUDE_F = -1
+        INTEGER :: VARID_ALTITUDE_F = -1
+        INTEGER :: VARID_LEVEL_F = -1
+
+        INTEGER :: VARID_Y_DEL_F = -1
+        ! NETCDF STATUS
+        LOGICAL :: IS_OPEN = .FALSE.
+
+    CONTAINS
+        PROCEDURE, PASS :: INIT => PATCH_TABLE_INIT
+        PROCEDURE, PASS :: WRITE => PATCH_TABLE_WRITE
+
     END TYPE PATCH_TABLE_TYPE
 
 
