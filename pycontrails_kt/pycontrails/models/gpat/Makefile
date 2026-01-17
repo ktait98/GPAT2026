@@ -18,8 +18,8 @@ FLPATH=$(shell nf-config --prefix)
 # We have to guess that nf-config libs are in /lib and not /lib64, nf-config has no --libdir
 LPATH=${CLPATH}:${FLPATH}/lib
 
-RUNDIR=/home/ktait98/GPAT2025/pycontrails_kt/pycontrails/
-DATADIR=/home/ktait98/GPAT2025/pycontrails_kt/pycontrails/models/gpat/data/
+RUNDIR=/home/ktait98/GPAT2026/pycontrails_kt/pycontrails/
+DATADIR=/home/ktait98/GPAT2026/pycontrails_kt/pycontrails/models/gpat/data/
 
 #Anything relying on PHONY will ALWAYS be rebuilt when make us run
 PHONY:
