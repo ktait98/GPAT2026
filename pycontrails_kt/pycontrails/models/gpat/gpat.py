@@ -765,8 +765,18 @@ class GPATSetup:
         # change flight id to int
         df["flight_id"] = df["flight_id"].astype(int)
 
+        # Sort by flight_id, waypoint to establish the seg_id ordering
+        df = df.sort_values(by=["flight_id", "waypoint"]).reset_index(drop=True)
+        df["seg_id"] = df.groupby(["flight_id", "waypoint"]).ngroup()
+
         # Set multi-index (flight_id, waypoint) and convert to xarray
-        self.gpat.fl_ds = df.set_index(["flight_id", "waypoint"]).to_xarray()
+        self.gpat.fl_ds = df.set_index(["seg_id"]).to_xarray()
+
+        # Set flight id and waypoint as coordinates
+        self.gpat.fl_ds = self.gpat.fl_ds.assign_coords(
+            flight_id = ("seg_id", df["flight_id"].values),
+            waypoint = ("seg_id", df["waypoint"].values)
+        )
 
         self.gpat.fl_ds["time_rel_s"] = (self.gpat.fl_ds["time"] - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int)
         self.gpat.fl_ds["time_idx"] = (self.gpat.fl_ds["time"] - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int) // int(self.gpat.sim_params.t_fl[1].total_seconds())
@@ -802,42 +812,58 @@ class GPATSetup:
         # change flight id to int
         df["flight_id"] = df["flight_id"].astype(int)
 
+        # Sort by flight_id, waypoint to establish the seg_id ordering
+        df = df.sort_values(by=["flight_id", "waypoint"]).reset_index(drop=True)
+        
+        # Create segment index: assign same seg_id to all rows with same (flight_id, waypoint)
+        df["seg_id"] = df.groupby(["flight_id", "waypoint"]).ngroup() + 1 # start seg_id from 1 (FORTRAN)
+
+        # Calculate total number of unique segments
+        nseg = df["seg_id"].max()
+
+        # Get unique flight_id and waypoint for each seg_id
+        seg_unique = df.drop_duplicates(subset=["seg_id"])[["seg_id", "flight_id", "waypoint"]].set_index("seg_id").sort_index()
+        
+        # Set multi-index (seg_id, time)
+        self.gpat.pl_ds = df.set_index(["seg_id", "time"]).to_xarray()
+
+        # Set flight id and waypoint as coordinates using unique values per seg_id
+        self.gpat.pl_ds = self.gpat.pl_ds.assign_coords(
+            flight_id = ("seg_id", seg_unique["flight_id"].values),
+            waypoint = ("seg_id", seg_unique["waypoint"].values)
+        )
+
         species_cols = list(self.gpat.chem_params.species_emi)
         
-        # Set multi-index (flight_id, waypoint, time)
-        self.gpat.pl_ds = df.set_index(["flight_id", "waypoint", "time"]).to_xarray()
-
-        # Extract species emission mass directly from flight data (once per waypoint)
-        # fl contains emissions indexed by (flight_id, waypoint) - perfect!
-        fl_xr = self.gpat.fl.set_index(["flight_id", "waypoint"]).to_xarray()
+        # Extract species emission mass directly from plume dataframe (once per waypoint)
+        # Use the dataframe before conversion to xarray to ensure species columns are available
+        species_data = [df[col] for col in species_cols if col in df.columns]
         
-        # Stack species into single variable: (flight_id, waypoint, species_emi)
-        species_data = [fl_xr[col] for col in species_cols]
-        
+        # Stack species into single variable: (seg_id, species_emi)
         # Concatenate along species dimension
-        species_emi_mass = xr.concat(
-            species_data,
-            dim=pd.Index(species_cols, name="species_emi")
-        ).transpose("flight_id", "waypoint", "species_emi")
-        
-        # Add to plume dataset
-        self.gpat.pl_ds["species_emi_mass"] = species_emi_mass
+        if species_data:
+            species_emi_mass = xr.concat(
+                [xr.DataArray(data, dims="seg_id") for data in species_data],
+                dim=pd.Index([col for col in species_cols if col in df.columns], name="species_emi")
+            ).transpose("seg_id", "species_emi")
+
+            # Add to plume dataset
+            self.gpat.pl_ds["species_emi_mass"] = species_emi_mass
         
         # Drop all individual species columns
-        # Drop ALL emission species variables (both stacked and unstacked)
         all_species_cols = ['CO2', 'H2O', 'SO2', 'NO', 
                             'NO2', 'CO', 'HCHO', 'CH3CHO', 
                             'C2H4', 'C3H6', 'C2H2', 'BENZENE', 'nvPM']
 
-        self.gpat.pl_ds = self.gpat.pl_ds.drop_vars(all_species_cols + ["fuel_flow", "fuel_burn", "true_airspeed", "sin_a", "cos_a"])
+        self.gpat.pl_ds = self.gpat.pl_ds.drop_vars(all_species_cols + 
+                                                    ["fuel_flow", "fuel_burn", 
+                                                     "true_airspeed", "sin_a", 
+                                                     "cos_a"])
 
         # Convert timedelta to total seconds, handling NaT values
         age_values = self.gpat.pl_ds["age"].values
-        age_seconds = (age_values / np.timedelta64(1, 's')).astype(int)
-
-        # Replace overflow values (NaT) with a fill value like -1 or 0
         age_seconds = np.where(np.isnat(age_values), 0, (age_values / np.timedelta64(1, 's')).astype(int))
-
+        self.gpat.pl_ds["age_s"] = (("seg_id", "time"), age_seconds)
 
         self.gpat.pl_ds = self.gpat.pl_ds.assign_coords(
             time_rel_s = ("time", (self.gpat.pl_ds["time"].values - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int)),
@@ -846,23 +872,20 @@ class GPATSetup:
 
         self.gpat.pl_ds["time"] = self.gpat.pl_ds["time"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
         self.gpat.pl_ds["age"].values = self.gpat.pl_ds["age"].values.astype(str)
-        self.gpat.pl_ds["age_s"] = (("flight_id", "waypoint", "time"), age_seconds)
 
         # Assign useful metadata
         self.gpat.pl_ds = self.gpat.pl_ds.assign_attrs(
+            nseg=nseg,
             ts_fl=sim_params.t_fl[1].total_seconds(),
             ts_pl=sim_params.t_pl[1].total_seconds(),
             ts_sim=sim_params.t_sim[1].total_seconds(),
+            ts_out=sim_params.t_out[1].total_seconds(),
             # species definitions
             species_emi=chem_params.species_emi,
             species_plume=chem_params.species_plume,
             # species nums
             species_emi_num=chem_params.species_emi_num,
             species_plume_num=chem_params.species_plume_num,
-        )
-
-        # Assign metadata
-        self.gpat.pl_ds = self.gpat.pl_ds.assign_attrs(
             description="Emission species mass in plume segments",
         )
 
@@ -907,6 +930,8 @@ class GPATSetup:
             ts_fl=sim_params.t_fl[1].total_seconds(),
             ts_pl=sim_params.t_pl[1].total_seconds(),
             ts_sim=sim_params.t_sim[1].total_seconds(),
+            ts_out=sim_params.t_out[1].total_seconds(),
+
             hres_sim_c=sim_params.hres_sim_c,
             vres_sim_c=sim_params.vres_sim_c,
             hres_sim_f=sim_params.hres_sim_f,
@@ -1087,7 +1112,11 @@ class GPATSetup:
         # Store DELTA mass (change from initial emissions due to chemistry)
         self.gpat.pl_out = self.gpat.pl_out.rename({"species_emi_mass": "species_plume_mass"})
         
-        self.gpat.pl_out = self.gpat.pl_out.drop_vars(["age", "age_s", "longitude"])
+        self.gpat.pl_out = self.gpat.pl_out.drop_vars(["age", "age_s", 
+                                                       "latitude", "longitude",
+                                                       "level", "altitude",
+                                                       "width", "depth",
+                                                       "heading", "sigma_yy", "sigma_yz", "sigma_zz"])
 
         # Zero out delta mass (initially, no chemistry has occurred)
         self.gpat.pl_out["species_plume_mass"].values[:] = 0.0
@@ -1098,22 +1127,29 @@ class GPATSetup:
             
             species_plume = np.array(self.gpat.chem_params.species_plume, dtype="U10")
             
-            # Create delta_species_mass for output species
-            self.gpat.pl_out["species_plume_mass"] = (
-                ("flight_id", "waypoint", "species_plume", "time"),
+            # Create delta_species_mass for output species using actual dataset dimensions
+            # The dataset has dimensions (seg_id, time), add species_plume dimension
+            self.gpat.pl_out = self.gpat.pl_out.assign_coords(species_plume=species_plume)
+            
+            species_plume_mass = xr.DataArray(
                 np.zeros((
-                    len(self.gpat.pl_out.flight_id),
-                    len(self.gpat.pl_out.waypoint),
+                    len(self.gpat.pl_out.seg_id),
                     len(species_plume),
                     len(self.gpat.pl_out.time),
                 ), dtype=float),
-                {
+                coords={
+                    "seg_id": self.gpat.pl_out.seg_id,
+                    "species_plume": species_plume,
+                    "time": self.gpat.pl_out.time,
+                },
+                dims=("seg_id", "species_plume", "time"),
+                attrs={
                     "units": "kg",
                     "long_name": "Change in species mass due to chemistry",
                     "note": "Add to initial emission mass (from fl_ds.nc) to get total mass"
                 }
             )
-            self.gpat.pl_out["species_plume"] = species_plume
+            self.gpat.pl_out["species_plume_mass"] = species_plume_mass
         else:
             # Just update metadata
             self.gpat.pl_out["species_plume_mass"].attrs = {
