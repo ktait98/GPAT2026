@@ -262,6 +262,7 @@ class GPAT(Model):
         chem_params.species_emi_num = grab_species_num(self.run_path, chem_params.species_emi)
         chem_params.species_plume_num = grab_species_num(self.run_path, chem_params.species_plume)
         chem_params.species_out_num = grab_species_num(self.run_path, chem_params.species_out)
+        chem_params.species_boxm_num = grab_species_num_boxm(self.run_path)
 
         self.inputs_job = self.data_path + "inputs/" + self.job_id + "/"
         self.inputs_glob = self.data_path + "inputs/glob/"
@@ -779,7 +780,6 @@ class GPATSetup:
         )
 
         self.gpat.fl_ds["time_rel_s"] = (self.gpat.fl_ds["time"] - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int)
-        self.gpat.fl_ds["time_idx"] = (self.gpat.fl_ds["time"] - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int) // int(self.gpat.sim_params.t_fl[1].total_seconds())
         self.gpat.fl_ds["time"] = self.gpat.fl_ds["time"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
         # Drop individual species variables
@@ -816,7 +816,7 @@ class GPATSetup:
         df = df.sort_values(by=["flight_id", "waypoint"]).reset_index(drop=True)
         
         # Create segment index: assign same seg_id to all rows with same (flight_id, waypoint)
-        df["seg_id"] = df.groupby(["flight_id", "waypoint"]).ngroup() + 1 # start seg_id from 1 (FORTRAN)
+        df["seg_id"] = df.groupby(["flight_id", "waypoint"]).ngroup() # start seg_id from 1 (FORTRAN)
 
         # Calculate total number of unique segments
         nseg = df["seg_id"].max()
@@ -830,7 +830,8 @@ class GPATSetup:
         # Set flight id and waypoint as coordinates using unique values per seg_id
         self.gpat.pl_ds = self.gpat.pl_ds.assign_coords(
             flight_id = ("seg_id", seg_unique["flight_id"].values),
-            waypoint = ("seg_id", seg_unique["waypoint"].values)
+            waypoint = ("seg_id", seg_unique["waypoint"].values),
+            species_emi_num = ("species_emi", chem_params.species_emi_num)
         )
 
         species_cols = list(self.gpat.chem_params.species_emi)
@@ -867,7 +868,7 @@ class GPATSetup:
 
         self.gpat.pl_ds = self.gpat.pl_ds.assign_coords(
             time_rel_s = ("time", (self.gpat.pl_ds["time"].values - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int)),
-            time_idx = ("time", (self.gpat.pl_ds["time"].values - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int) // int(sim_params.t_pl[1].total_seconds()) + 1)
+            species_emi_num = ("species_emi", chem_params.species_emi_num)
         )
 
         self.gpat.pl_ds["time"] = self.gpat.pl_ds["time"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -909,7 +910,7 @@ class GPATSetup:
         # add altitude coordinate
         self.gpat.boxm_ds = self.gpat.boxm_ds.assign_coords(
             time_rel_s = ("time", (self.gpat.boxm_ds["time"].values - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int)),
-            time_idx = ("time", (self.gpat.boxm_ds["time"].values - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int) // int(sim_params.t_sim[1].total_seconds()) + 1)
+            species_boxm_num = ("species_boxm", chem_params.species_boxm_num)
         )
         self.gpat.boxm_ds["time"] = self.gpat.boxm_ds["time"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -936,15 +937,8 @@ class GPATSetup:
             vres_sim_c=sim_params.vres_sim_c,
             hres_sim_f=sim_params.hres_sim_f,
             vres_sim_f=sim_params.vres_sim_f,
-            # species definitions
-            species_emi=chem_params.species_emi,
-            species_plume=chem_params.species_plume,
-            species_out=chem_params.species_out,
-            # species nums
-            species_emi_num=chem_params.species_emi_num,
-            species_plume_num=chem_params.species_plume_num,
-            species_out_num=chem_params.species_out_num,
-            # chem coeffs
+            
+            # chem model params
             photol_params=57,
             photol_coeffs=96,
             therm_coeffs=512,
@@ -960,6 +954,11 @@ class GPATSetup:
             {"cell": ["level", "longitude", "latitude"]}
         ).reset_index("cell")
 
+        # Change to latitude_c, longitude_c, level_c for consistency with BOXM_C_OUT.NC
+        self.gpat.boxm_ds_stacked = self.gpat.boxm_ds_stacked.rename(
+            {"level": "level_c", "altitude": "altitude_c", "longitude": "longitude_c", "latitude": "latitude_c"}
+        )
+
         # Transpose so that cell is the fastest-varying dimension
         self.gpat.boxm_ds_stacked = self.gpat.boxm_ds_stacked.transpose("cell", "species_boxm", "time")
 
@@ -974,9 +973,83 @@ class GPATSetup:
         print(f"Saved {nc_path}")
 
     # Initialize output datasets
+    def init_pl_out_nc(self):
+        """Initialize the plume output dataset (PL_OUT.NC)."""
+        # Load the input plume dataset
+        pl_ds = xr.open_dataset(f"{self.gpat.inputs_job}/pl_ds.nc")
+        chem_params = self.gpat.chem_params
+        
+        # Create output dataset with same structure
+        self.gpat.pl_out = pl_ds.copy(deep=True)
+        
+        # Rename and repurpose the species mass variable
+        # Store DELTA mass (change from initial emissions due to chemistry)
+        self.gpat.pl_out = self.gpat.pl_out.rename({"species_emi_mass": "species_plume_mass"})
+        
+        self.gpat.pl_out = self.gpat.pl_out.drop_vars(["age", "age_s", "species_emi_num",
+                                                       "latitude", "longitude",
+                                                       "level", "altitude",
+                                                       "width", "depth",
+                                                       "heading", "sigma_yy", "sigma_yz", "sigma_zz"])
+
+        # Zero out delta mass (initially, no chemistry has occurred)
+        self.gpat.pl_out["species_plume_mass"].values[:] = 0.0
+        
+        # If output species differ from input species, create new variable
+        if set(chem_params.species_emi) != set(chem_params.species_out):
+            self.gpat.pl_out = self.gpat.pl_out.drop_vars("species_emi")
+            
+            species_plume = np.array(chem_params.species_plume, dtype="U10")
+            
+            # Create delta_species_mass for output species using actual dataset dimensions
+            # The dataset has dimensions (seg_id, time), add species_plume dimension
+            self.gpat.pl_out = self.gpat.pl_out.assign_coords(species_plume=species_plume)
+            
+            species_plume_mass = xr.DataArray(
+                np.zeros((
+                    len(self.gpat.pl_out.seg_id),
+                    len(species_plume),
+                    len(self.gpat.pl_out.time),
+                ), dtype=float),
+                coords={
+                    "seg_id": self.gpat.pl_out.seg_id,
+                    "species_plume": species_plume,
+                    "species_plume_num": ("species_plume", chem_params.species_plume_num),
+                    "time": self.gpat.pl_out.time,
+                },
+                dims=("seg_id", "species_plume", "time"),
+                attrs={
+                    "units": "kg",
+                    "long_name": "Change in species mass due to chemistry",
+                    "note": "Add to initial emission mass (from fl_ds.nc) to get total mass"
+                }
+            )
+            self.gpat.pl_out["species_plume_mass"] = species_plume_mass
+        else:
+            # Just update metadata
+            self.gpat.pl_out["species_plume_mass"].attrs = {
+                "units": "kg",
+                "long_name": "Change in species mass due to chemistry",
+                "note": "Add to initial emission mass (from fl_ds.nc) to get total mass"
+            }
+        
+        # Add metadata
+        self.gpat.pl_out = self.gpat.pl_out.assign_attrs(
+            description="Plume segment output for BOXM",
+        )
+        
+        # Save
+        nc_path = pathlib.Path(f"{self.gpat.outputs_job}/pl_out.nc")
+        if nc_path.exists():
+            print("Deleting existing pl_out.nc")
+            nc_path.unlink()
+        self.gpat.pl_out.to_netcdf(nc_path, mode="w")
+        print(f"Saved {nc_path}")
+    
     def init_boxm_out_nc(self):
         """Initialize the box model coarse output dataset (BOXM_C_OUT.NC)."""
         species_out = np.array(self.gpat.chem_params.species_out, dtype="U10")
+        chem_params = self.gpat.chem_params
 
         self.gpat.boxm_out = xr.Dataset(
             data_vars={
@@ -1024,12 +1097,12 @@ class GPATSetup:
             coords={
                 "time": pd.to_datetime(self.gpat.times_out.values).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "time_rel_s": ("time", (self.gpat.times_out.values - np.datetime64(self.gpat.sim_params.t_out[0])).astype("timedelta64[s]").astype(int)),
-                "time_idx": ("time", (self.gpat.times_out.values - np.datetime64(self.gpat.sim_params.t_out[0])).astype("timedelta64[s]").astype(int) // int(self.gpat.sim_params.t_sim[1].total_seconds()) + 1),
                 "level_c": self.gpat.levels,
                 "altitude_c": ("level_c", units.pl_to_m(self.gpat.levels)),
                 "longitude_c": self.gpat.lons,
                 "latitude_c": self.gpat.lats,
                 "species_out": species_out,
+                "species_out_num": ("species_out", chem_params.species_out_num),
             }
         )
 
@@ -1060,6 +1133,7 @@ class GPATSetup:
     def init_patch_table_nc(self):
         """Initialize the patch output dataset (PATCH_OUT.NC)."""
         species_out = self.gpat.chem_params.species_out
+        chem_params = self.gpat.chem_params
 
         self.gpat.patch_table = xr.Dataset(
             data_vars={
@@ -1075,9 +1149,9 @@ class GPATSetup:
             "row": np.array([], dtype=int),   # 0-length row dimension
             "patch_id":   ("row", np.array([], dtype="int64")),
             "species_out": np.array(species_out),
+            "species_out_num": ("species_out", chem_params.species_out_num),
             "time":   ("row", np.array([], dtype="object")),
             "time_rel_s": ("row", np.array([], dtype="int64")),
-            "time_idx":   ("row", np.array([], dtype="int64")),
             "latitude_f":  ("row", np.array([], dtype="float64")),
             "longitude_f": ("row", np.array([], dtype="float64")),
             "altitude_f":  ("row", np.array([], dtype="float64")),
@@ -1100,76 +1174,7 @@ class GPATSetup:
         self.gpat.patch_table.to_netcdf(nc_path, mode="w")
         print(f"Saved {nc_path}")
         
-    def init_pl_out_nc(self):
-        """Initialize the plume output dataset (PL_OUT.NC)."""
-        # Load the input plume dataset
-        pl_ds = xr.open_dataset(f"{self.gpat.inputs_job}/pl_ds.nc")
-        
-        # Create output dataset with same structure
-        self.gpat.pl_out = pl_ds.copy(deep=True)
-        
-        # Rename and repurpose the species mass variable
-        # Store DELTA mass (change from initial emissions due to chemistry)
-        self.gpat.pl_out = self.gpat.pl_out.rename({"species_emi_mass": "species_plume_mass"})
-        
-        self.gpat.pl_out = self.gpat.pl_out.drop_vars(["age", "age_s", 
-                                                       "latitude", "longitude",
-                                                       "level", "altitude",
-                                                       "width", "depth",
-                                                       "heading", "sigma_yy", "sigma_yz", "sigma_zz"])
-
-        # Zero out delta mass (initially, no chemistry has occurred)
-        self.gpat.pl_out["species_plume_mass"].values[:] = 0.0
-        
-        # If output species differ from input species, create new variable
-        if set(self.gpat.chem_params.species_emi) != set(self.gpat.chem_params.species_out):
-            self.gpat.pl_out = self.gpat.pl_out.drop_vars("species_emi")
-            
-            species_plume = np.array(self.gpat.chem_params.species_plume, dtype="U10")
-            
-            # Create delta_species_mass for output species using actual dataset dimensions
-            # The dataset has dimensions (seg_id, time), add species_plume dimension
-            self.gpat.pl_out = self.gpat.pl_out.assign_coords(species_plume=species_plume)
-            
-            species_plume_mass = xr.DataArray(
-                np.zeros((
-                    len(self.gpat.pl_out.seg_id),
-                    len(species_plume),
-                    len(self.gpat.pl_out.time),
-                ), dtype=float),
-                coords={
-                    "seg_id": self.gpat.pl_out.seg_id,
-                    "species_plume": species_plume,
-                    "time": self.gpat.pl_out.time,
-                },
-                dims=("seg_id", "species_plume", "time"),
-                attrs={
-                    "units": "kg",
-                    "long_name": "Change in species mass due to chemistry",
-                    "note": "Add to initial emission mass (from fl_ds.nc) to get total mass"
-                }
-            )
-            self.gpat.pl_out["species_plume_mass"] = species_plume_mass
-        else:
-            # Just update metadata
-            self.gpat.pl_out["species_plume_mass"].attrs = {
-                "units": "kg",
-                "long_name": "Change in species mass due to chemistry",
-                "note": "Add to initial emission mass (from fl_ds.nc) to get total mass"
-            }
-        
-        # Add metadata
-        self.gpat.pl_out = self.gpat.pl_out.assign_attrs(
-            description="Plume segment output for BOXM",
-        )
-        
-        # Save
-        nc_path = pathlib.Path(f"{self.gpat.outputs_job}/pl_out.nc")
-        if nc_path.exists():
-            print("Deleting existing pl_out.nc")
-            nc_path.unlink()
-        self.gpat.pl_out.to_netcdf(nc_path, mode="w")
-        print(f"Saved {nc_path}")
+    
 
     # Helper functions used in GPAT Setup
     def calc_heading(self, pl_df: pd.DataFrame) -> pd.DataFrame:
@@ -1261,7 +1266,7 @@ class GPATRun:
         """Run BOXM."""
         # Run the box model
         subprocess.call(
-            [self.run_path + "boxm", self.job_id],
+            [self.gpat.run_path + "boxm", self.gpat.job_id, self.gpat.data_path],
         )
 
     # def run_contrails(self) -> xr.Dataset:
@@ -1456,6 +1461,15 @@ def grab_species_num(run_path, species_out: np.array) -> np.array:
     species_dict = {species: index for index, species in enumerate(species_list)}
 
     return np.array([species_dict[species] + 1 for species in species_out])
+
+def grab_species_num_boxm(run_path) -> np.array:
+    """Grab all species numbers from the species_num.txt file for BOXM."""
+    # Read species names from the file into a list, skip empty lines
+    with open(f"{run_path}species_num.txt") as file:
+        species_list = [line.strip() for line in file if line.strip()]
+
+    # Return all species numbers (1-indexed for FORTRAN)
+    return np.arange(1, len(species_list) + 1)
 
 # Function to convert dictionary to dataclass instance
 def dict_to_dataclass(cls, dict_obj):
