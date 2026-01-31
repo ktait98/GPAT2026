@@ -124,7 +124,7 @@ class ChemParams:
 
     species_emi: tuple = ("NO",)
     
-    species_plume: tuple = (
+    species_pl: tuple = (
     # Core NOx–O3 photochemistry memory
     "NO", "NO2", "O3", "NO3", "N2O5",
     "HNO3", "HONO", "HO2NO2",  # HO2NO2 = pernitric acid
@@ -169,7 +169,7 @@ class GPAT(Model):
         Simulation parameters.
     fl_params : FlParams
         Flight parameters.
-    plume_params : PlumeParams
+    pl_params : PlumeParams
         Plume dispersion parameters.
     met_params : MetParams
         Meteorological parameters.
@@ -186,7 +186,7 @@ class GPAT(Model):
     
     def __init__(self, sim_params: SimParams, 
                  fl_params: FlParams,
-                 plume_params: PlumeParams, 
+                 pl_params: PlumeParams, 
                  met_params: MetParams, 
                  chem_params: ChemParams):
         super().__init__()
@@ -260,9 +260,13 @@ class GPAT(Model):
         sim_params.date_created = pd.Timestamp.now()
 
         chem_params.species_emi_num = grab_species_num(self.run_path, chem_params.species_emi)
-        chem_params.species_plume_num = grab_species_num(self.run_path, chem_params.species_plume)
+        chem_params.species_pl_num = grab_species_num(self.run_path, chem_params.species_pl)
         chem_params.species_out_num = grab_species_num(self.run_path, chem_params.species_out)
         chem_params.species_boxm_num = grab_species_num_boxm(self.run_path)
+
+        # Validate species and time hierarchies
+        validate_species_hierarchy(chem_params)
+        validate_time_hierarchy(sim_params)
 
         self.inputs_job = self.data_path + "inputs/" + self.job_id + "/"
         self.inputs_glob = self.data_path + "inputs/glob/"
@@ -280,7 +284,7 @@ class GPAT(Model):
         all_params = {
             "sim_params": sim_params,
             "fl_params": fl_params,
-            "plume_params": plume_params,
+            "pl_params": pl_params,
             "met_params": met_params,
             "chem_params": chem_params,
         }
@@ -288,7 +292,7 @@ class GPAT(Model):
         # Set the model parameters
         self.sim_params = sim_params
         self.fl_params = fl_params
-        self.plume_params = plume_params
+        self.pl_params = pl_params
         self.met_params = met_params
         self.chem_params = chem_params
         self.all_params = all_params
@@ -332,7 +336,7 @@ class GPAT(Model):
         # Load outputs
         self.analysis.load_output_datasets()
         # self.analysis.load_patch_table()
-        # self.analysis.load_plume_out()
+        # self.analysis.load_pl_out()
         # self.analysis.plume_to_grid()
         
 class GPATSetup:
@@ -641,7 +645,7 @@ class GPATSetup:
 
     def sim_plumes(self) -> list[pd.DataFrame]:
         """Simulate plume dispersion/advection using Pycontrails Dry Advection Model."""
-        plume_params = self.gpat.plume_params
+        pl_params = self.gpat.pl_params
         sim_params = self.gpat.sim_params
         
         met = self.gpat.met
@@ -651,7 +655,7 @@ class GPATSetup:
             met,
             max_age=sim_params.t_pl[2],
             dt_integration=sim_params.t_pl[1],
-            shear=plume_params.shear,
+            shear=pl_params.shear,
         )
 
         pl = []
@@ -780,6 +784,7 @@ class GPATSetup:
         )
 
         self.gpat.fl_ds["time_rel_s"] = (self.gpat.fl_ds["time"] - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int)
+        self.gpat.fl_ds["time_idx"] = (self.gpat.fl_ds["time"] - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int) // int(self.gpat.sim_params.t_sim[1].total_seconds())
         self.gpat.fl_ds["time"] = self.gpat.fl_ds["time"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
         # Drop individual species variables
@@ -843,13 +848,13 @@ class GPATSetup:
         # Stack species into single variable: (seg_id, species_emi)
         # Concatenate along species dimension
         if species_data:
-            species_emi_mass = xr.concat(
+            emi_pl_mass = xr.concat(
                 [xr.DataArray(data, dims="seg_id") for data in species_data],
                 dim=pd.Index([col for col in species_cols if col in df.columns], name="species_emi")
             ).transpose("seg_id", "species_emi")
 
             # Add to plume dataset
-            self.gpat.pl_ds["species_emi_mass"] = species_emi_mass
+            self.gpat.pl_ds["emi_pl_mass"] = emi_pl_mass
         
         # Drop all individual species columns
         all_species_cols = ['CO2', 'H2O', 'SO2', 'NO', 
@@ -868,6 +873,7 @@ class GPATSetup:
 
         self.gpat.pl_ds = self.gpat.pl_ds.assign_coords(
             time_rel_s = ("time", (self.gpat.pl_ds["time"].values - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int)),
+            time_idx = ("time", ((self.gpat.pl_ds["time"].values - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int) // int(self.gpat.sim_params.t_sim[1].total_seconds()))),
             species_emi_num = ("species_emi", chem_params.species_emi_num)
         )
 
@@ -883,10 +889,10 @@ class GPATSetup:
             ts_out=sim_params.t_out[1].total_seconds(),
             # species definitions
             species_emi=chem_params.species_emi,
-            species_plume=chem_params.species_plume,
+            species_pl=chem_params.species_pl,
             # species nums
             species_emi_num=chem_params.species_emi_num,
-            species_plume_num=chem_params.species_plume_num,
+            species_pl_num=chem_params.species_pl_num,
             description="Emission species mass in plume segments",
         )
 
@@ -910,6 +916,7 @@ class GPATSetup:
         # add altitude coordinate
         self.gpat.boxm_ds = self.gpat.boxm_ds.assign_coords(
             time_rel_s = ("time", (self.gpat.boxm_ds["time"].values - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int)),
+            time_idx = ("time", ((self.gpat.boxm_ds["time"].values - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int) // int(self.gpat.sim_params.t_sim[1].total_seconds()))),
             species_boxm_num = ("species_boxm", chem_params.species_boxm_num)
         )
         self.gpat.boxm_ds["time"] = self.gpat.boxm_ds["time"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -959,6 +966,9 @@ class GPATSetup:
             {"level": "level_c", "altitude": "altitude_c", "longitude": "longitude_c", "latitude": "latitude_c"}
         )
 
+        # Set bg_chem to y_bg_c for consistency with FORTRAN naming
+        self.gpat.boxm_ds_stacked = self.gpat.boxm_ds_stacked.rename({"bg_chem": "Y_bg_c"})
+
         # Transpose so that cell is the fastest-varying dimension
         self.gpat.boxm_ds_stacked = self.gpat.boxm_ds_stacked.transpose("cell", "species_boxm", "time")
 
@@ -984,7 +994,7 @@ class GPATSetup:
         
         # Rename and repurpose the species mass variable
         # Store DELTA mass (change from initial emissions due to chemistry)
-        self.gpat.pl_out = self.gpat.pl_out.rename({"species_emi_mass": "species_plume_mass"})
+        self.gpat.pl_out = self.gpat.pl_out.rename({"emi_pl_mass": "del_pl_mass"})
         
         self.gpat.pl_out = self.gpat.pl_out.drop_vars(["age", "age_s", "species_emi_num",
                                                        "latitude", "longitude",
@@ -993,41 +1003,41 @@ class GPATSetup:
                                                        "heading", "sigma_yy", "sigma_yz", "sigma_zz"])
 
         # Zero out delta mass (initially, no chemistry has occurred)
-        self.gpat.pl_out["species_plume_mass"].values[:] = 0.0
+        self.gpat.pl_out["del_pl_mass"].values[:] = 0.0
         
         # If output species differ from input species, create new variable
         if set(chem_params.species_emi) != set(chem_params.species_out):
             self.gpat.pl_out = self.gpat.pl_out.drop_vars("species_emi")
             
-            species_plume = np.array(chem_params.species_plume, dtype="U10")
+            species_out = np.array(chem_params.species_out, dtype="U10")
             
             # Create delta_species_mass for output species using actual dataset dimensions
-            # The dataset has dimensions (seg_id, time), add species_plume dimension
-            self.gpat.pl_out = self.gpat.pl_out.assign_coords(species_plume=species_plume)
+            # The dataset has dimensions (seg_id, time), add species_out dimension
+            self.gpat.pl_out = self.gpat.pl_out.assign_coords(species_out=species_out)
             
-            species_plume_mass = xr.DataArray(
+            del_pl_mass = xr.DataArray(
                 np.zeros((
                     len(self.gpat.pl_out.seg_id),
-                    len(species_plume),
+                    len(species_out),
                     len(self.gpat.pl_out.time),
                 ), dtype=float),
                 coords={
                     "seg_id": self.gpat.pl_out.seg_id,
-                    "species_plume": species_plume,
-                    "species_plume_num": ("species_plume", chem_params.species_plume_num),
+                    "species_out": species_out,
+                    "species_out_num": ("species_out", chem_params.species_out_num),
                     "time": self.gpat.pl_out.time,
                 },
-                dims=("seg_id", "species_plume", "time"),
+                dims=("seg_id", "species_out", "time"),
                 attrs={
                     "units": "kg",
                     "long_name": "Change in species mass due to chemistry",
                     "note": "Add to initial emission mass (from fl_ds.nc) to get total mass"
                 }
             )
-            self.gpat.pl_out["species_plume_mass"] = species_plume_mass
+            self.gpat.pl_out["del_pl_mass"] = del_pl_mass
         else:
             # Just update metadata
-            self.gpat.pl_out["species_plume_mass"].attrs = {
+            self.gpat.pl_out["del_pl_mass"].attrs = {
                 "units": "kg",
                 "long_name": "Change in species mass due to chemistry",
                 "note": "Add to initial emission mass (from fl_ds.nc) to get total mass"
@@ -1097,6 +1107,7 @@ class GPATSetup:
             coords={
                 "time": pd.to_datetime(self.gpat.times_out.values).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "time_rel_s": ("time", (self.gpat.times_out.values - np.datetime64(self.gpat.sim_params.t_out[0])).astype("timedelta64[s]").astype(int)),
+                "time_idx": ("time", ((self.gpat.times_out.values - np.datetime64(self.gpat.sim_params.t_out[0])).astype("timedelta64[s]").astype(int) // int(self.gpat.sim_params.t_out[1].total_seconds()))),
                 "level_c": self.gpat.levels,
                 "altitude_c": ("level_c", units.pl_to_m(self.gpat.levels)),
                 "longitude_c": self.gpat.lons,
@@ -1152,6 +1163,7 @@ class GPATSetup:
             "species_out_num": ("species_out", chem_params.species_out_num),
             "time":   ("row", np.array([], dtype="object")),
             "time_rel_s": ("row", np.array([], dtype="int64")),
+            "time_idx": ("row", np.array([], dtype="int64")),
             "latitude_f":  ("row", np.array([], dtype="float64")),
             "longitude_f": ("row", np.array([], dtype="float64")),
             "altitude_f":  ("row", np.array([], dtype="float64")),
@@ -1451,6 +1463,48 @@ class GPATAnalysis:
 
 
 # Helper functions for GPAT
+def validate_species_hierarchy(chem_params):
+    """Validate that species_emi, species_plume, species_out all belong to species_boxm."""
+    species_boxm = set(chem_params.species_boxm_num)
+    
+    # Check species_emi
+    for s in chem_params.species_emi_num:
+        if s not in species_boxm:
+            raise ValueError(f"species_emi {s} not found in species_boxm")
+    
+    # Check species_plume
+    for s in chem_params.species_pl_num:
+        if s not in species_boxm:
+            raise ValueError(f"species_plume {s} not found in species_boxm")
+    
+    # Check species_out
+    for s in chem_params.species_out_num:
+        if s not in species_boxm:
+            raise ValueError(f"species_out {s} not found in species_boxm")
+
+def validate_time_hierarchy(sim_params):
+    """Validate that time_fl, time_pl, time_out all belong within time_sim (boxm)."""
+    t_sim_start = sim_params.t_sim[0]
+    t_sim_end = sim_params.t_sim[0] + sim_params.t_sim[2]
+    
+    # Check time_fl
+    t_fl_start = sim_params.t_fl[0]
+    t_fl_end = sim_params.t_fl[0] + sim_params.t_fl[2]
+    if t_fl_start < t_sim_start or t_fl_end > t_sim_end:
+        raise ValueError(f"time_fl [{t_fl_start}, {t_fl_end}] outside time_sim [{t_sim_start}, {t_sim_end}]")
+    
+    # Check time_pl
+    t_pl_start = sim_params.t_pl[0]
+    t_pl_end = sim_params.t_pl[0] + sim_params.t_pl[2]
+    if t_pl_start < t_sim_start or t_pl_end > t_sim_end:
+        raise ValueError(f"time_pl [{t_pl_start}, {t_pl_end}] outside time_sim [{t_sim_start}, {t_sim_end}]")
+    
+    # Check time_out
+    t_out_start = sim_params.t_out[0]
+    t_out_end = sim_params.t_out[0] + sim_params.t_out[2]
+    if t_out_start < t_sim_start or t_out_end > t_sim_end:
+        raise ValueError(f"time_out [{t_out_start}, {t_out_end}] outside time_sim [{t_sim_start}, {t_sim_end}]")
+
 def grab_species_num(run_path, species_out: np.array) -> np.array:
     """Grab the species numbers for the species of interest in output."""
     # Read species names from the file into a list, skip empty lines
