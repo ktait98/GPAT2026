@@ -877,6 +877,34 @@ class GPATSetup:
             species_emi_num = ("species_emi", chem_params.species_emi_num)
         )
 
+        # Add head/tail dimension (1=tail, 2=head) for geometry fields
+        ht = xr.DataArray(np.array(["tail", "head"], dtype="U4"), dims=("ht",))
+        self.gpat.pl_ds = self.gpat.pl_ds.assign_coords(ht=ht)
+        geom_vars = [
+            "longitude",
+            "latitude",
+            "level",
+            "altitude",
+            "heading",
+            "width",
+            "depth",
+            "sigma_yy",
+            "sigma_yz",
+            "sigma_zz",
+        ]
+        # Only link head -> next seg within same flight_id
+        seg_flight_id = self.gpat.pl_ds["flight_id"].broadcast_like(self.gpat.pl_ds["longitude"])
+        for var in geom_vars:
+            tail = self.gpat.pl_ds[var]
+            head = tail.shift(seg_id=-1)
+            same_flight = seg_flight_id.shift(seg_id=-1) == seg_flight_id
+            head = head.where(same_flight, other=tail)
+            self.gpat.pl_ds[var] = (
+                xr.concat([tail, head], dim="ht")
+                .assign_coords(ht=ht)
+                .transpose("seg_id", "ht", "time")
+            )
+
         self.gpat.pl_ds["time"] = self.gpat.pl_ds["time"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
         self.gpat.pl_ds["age"].values = self.gpat.pl_ds["age"].values.astype(str)
 
@@ -994,7 +1022,7 @@ class GPATSetup:
         
         # Rename and repurpose the species mass variable
         # Store DELTA mass (change from initial emissions due to chemistry)
-        self.gpat.pl_out = self.gpat.pl_out.rename({"emi_pl_mass": "del_pl_mass"})
+        self.gpat.pl_out = self.gpat.pl_out.rename({"emi_pl_mass": "pl_mass"})
         
         self.gpat.pl_out = self.gpat.pl_out.drop_vars(["age", "age_s", "species_emi_num",
                                                        "latitude", "longitude",
@@ -1003,7 +1031,7 @@ class GPATSetup:
                                                        "heading", "sigma_yy", "sigma_yz", "sigma_zz"])
 
         # Zero out delta mass (initially, no chemistry has occurred)
-        self.gpat.pl_out["del_pl_mass"].values[:] = 0.0
+        self.gpat.pl_out["pl_mass"].values[:] = 0.0
         
         # If output species differ from input species, create new variable
         if set(chem_params.species_emi) != set(chem_params.species_out):
@@ -1015,7 +1043,7 @@ class GPATSetup:
             # The dataset has dimensions (seg_id, time), add species_out dimension
             self.gpat.pl_out = self.gpat.pl_out.assign_coords(species_out=species_out)
             
-            del_pl_mass = xr.DataArray(
+            pl_mass = xr.DataArray(
                 np.zeros((
                     len(self.gpat.pl_out.seg_id),
                     len(species_out),
@@ -1034,10 +1062,10 @@ class GPATSetup:
                     "note": "Add to initial emission mass (from fl_ds.nc) to get total mass"
                 }
             )
-            self.gpat.pl_out["del_pl_mass"] = del_pl_mass
+            self.gpat.pl_out["pl_mass"] = pl_mass
         else:
             # Just update metadata
-            self.gpat.pl_out["del_pl_mass"].attrs = {
+            self.gpat.pl_out["pl_mass"].attrs = {
                 "units": "kg",
                 "long_name": "Change in species mass due to chemistry",
                 "note": "Add to initial emission mass (from fl_ds.nc) to get total mass"
@@ -1186,8 +1214,7 @@ class GPATSetup:
         self.gpat.patch_table.to_netcdf(nc_path, mode="w")
         print(f"Saved {nc_path}")
         
-    
-
+        
     # Helper functions used in GPAT Setup
     def calc_heading(self, pl_df: pd.DataFrame) -> pd.DataFrame:
         """Calculate heading for each plume.
