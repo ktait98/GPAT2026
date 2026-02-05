@@ -102,12 +102,13 @@ class FlParams:
     n_ac: Optional[int] = 1  # number of aircraft
 
 @dataclass
-class PlumeParams:
+class PlParams:
     """Default plume dispersion parameters."""
     depth: float = 50.0  # initial plume depth, [m]
     width: float = 50.0  # initial plume width, [m]
     verbose_outputs: bool = False  # print verbose outputs
-    n_slices: int = 5  # number of slices in the plume
+    n_slices: int = 3  # number of slices in the plume
+    f_max: float = 0.99  # maximum fraction of total emissions in any slice
     shear: float = 0.01  # shear [m/s]
 
 @dataclass
@@ -149,7 +150,6 @@ class ChemParams:
     "HO2NO2", "PAN", "SO2"
     )
 
-
 # @dataclass
 # class ContrailParams:
     # """Default contrail parameters."""
@@ -169,7 +169,7 @@ class GPAT(Model):
         Simulation parameters.
     fl_params : FlParams
         Flight parameters.
-    pl_params : PlumeParams
+    pl_params : PlParams
         Plume dispersion parameters.
     met_params : MetParams
         Meteorological parameters.
@@ -181,12 +181,12 @@ class GPAT(Model):
 
     name = "GPAT"
     long_name = "Gridded Plume Analysis Tool"
-    # default_params = (FlParams, PlumeParams, SimParams)
+    # default_params = (FlParams, PlParams, SimParams)
 
     
     def __init__(self, sim_params: SimParams, 
                  fl_params: FlParams,
-                 pl_params: PlumeParams, 
+                 pl_params: PlParams, 
                  met_params: MetParams, 
                  chem_params: ChemParams):
         super().__init__()
@@ -784,7 +784,7 @@ class GPATSetup:
         )
 
         self.gpat.fl_ds["time_rel_s"] = (self.gpat.fl_ds["time"] - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int)
-        self.gpat.fl_ds["time_idx"] = (self.gpat.fl_ds["time"] - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int) // int(self.gpat.sim_params.t_sim[1].total_seconds())
+        self.gpat.fl_ds["time_idx"] = (self.gpat.fl_ds["time"] - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int) // int(self.gpat.sim_params.t_sim[1].total_seconds()) + 1
         self.gpat.fl_ds["time"] = self.gpat.fl_ds["time"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
         # Drop individual species variables
@@ -812,6 +812,7 @@ class GPATSetup:
         """Initialize the plume dataset for the box model (PL_DS.NC)."""
         df = self.gpat.pl.copy()
         sim_params = self.gpat.sim_params
+        pl_params = self.gpat.pl_params
         chem_params = self.gpat.chem_params
 
         # change flight id to int
@@ -873,7 +874,7 @@ class GPATSetup:
 
         self.gpat.pl_ds = self.gpat.pl_ds.assign_coords(
             time_rel_s = ("time", (self.gpat.pl_ds["time"].values - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int)),
-            time_idx = ("time", ((self.gpat.pl_ds["time"].values - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int) // int(self.gpat.sim_params.t_sim[1].total_seconds()))),
+            time_idx = ("time", ((self.gpat.pl_ds["time"].values - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int) // int(self.gpat.sim_params.t_sim[1].total_seconds())) + 1),
             species_emi_num = ("species_emi", chem_params.species_emi_num)
         )
 
@@ -921,6 +922,10 @@ class GPATSetup:
             # species nums
             species_emi_num=chem_params.species_emi_num,
             species_pl_num=chem_params.species_pl_num,
+            # boxm attrs
+            n_slices=pl_params.n_slices,
+            f_max=pl_params.f_max,
+
             description="Emission species mass in plume segments",
         )
 
@@ -944,7 +949,7 @@ class GPATSetup:
         # add altitude coordinate
         self.gpat.boxm_ds = self.gpat.boxm_ds.assign_coords(
             time_rel_s = ("time", (self.gpat.boxm_ds["time"].values - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int)),
-            time_idx = ("time", ((self.gpat.boxm_ds["time"].values - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int) // int(self.gpat.sim_params.t_sim[1].total_seconds()))),
+            time_idx = ("time", ((self.gpat.boxm_ds["time"].values - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int) // int(self.gpat.sim_params.t_sim[1].total_seconds())) + 1),
             species_boxm_num = ("species_boxm", chem_params.species_boxm_num)
         )
         self.gpat.boxm_ds["time"] = self.gpat.boxm_ds["time"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1017,59 +1022,57 @@ class GPATSetup:
         pl_ds = xr.open_dataset(f"{self.gpat.inputs_job}/pl_ds.nc")
         chem_params = self.gpat.chem_params
         
-        # Create output dataset with same structure
-        self.gpat.pl_out = pl_ds.copy(deep=True)
-        
-        # Rename and repurpose the species mass variable
-        # Store DELTA mass (change from initial emissions due to chemistry)
-        self.gpat.pl_out = self.gpat.pl_out.rename({"emi_pl_mass": "pl_mass"})
-        
-        self.gpat.pl_out = self.gpat.pl_out.drop_vars(["age", "age_s", "species_emi_num",
-                                                       "latitude", "longitude",
-                                                       "level", "altitude",
-                                                       "width", "depth",
-                                                       "heading", "sigma_yy", "sigma_yz", "sigma_zz"])
+        species_out = np.array(chem_params.species_out, dtype="U10")
+        time_out = pd.to_datetime(self.gpat.times_out.values).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        # Zero out delta mass (initially, no chemistry has occurred)
-        self.gpat.pl_out["pl_mass"].values[:] = 0.0
-        
-        # If output species differ from input species, create new variable
-        if set(chem_params.species_emi) != set(chem_params.species_out):
-            self.gpat.pl_out = self.gpat.pl_out.drop_vars("species_emi")
-            
-            species_out = np.array(chem_params.species_out, dtype="U10")
-            
-            # Create delta_species_mass for output species using actual dataset dimensions
-            # The dataset has dimensions (seg_id, time), add species_out dimension
-            self.gpat.pl_out = self.gpat.pl_out.assign_coords(species_out=species_out)
-            
-            pl_mass = xr.DataArray(
-                np.zeros((
-                    len(self.gpat.pl_out.seg_id),
-                    len(species_out),
-                    len(self.gpat.pl_out.time),
-                ), dtype=float),
-                coords={
-                    "seg_id": self.gpat.pl_out.seg_id,
-                    "species_out": species_out,
-                    "species_out_num": ("species_out", chem_params.species_out_num),
-                    "time": self.gpat.pl_out.time,
-                },
-                dims=("seg_id", "species_out", "time"),
-                attrs={
-                    "units": "kg",
-                    "long_name": "Change in species mass due to chemistry",
-                    "note": "Add to initial emission mass (from fl_ds.nc) to get total mass"
-                }
+        # Build a fresh output dataset on the output time grid
+        self.gpat.pl_out = xr.Dataset(
+            coords={
+                "seg_id": pl_ds.seg_id,
+                "time": time_out,
+                "species_out": species_out,
+            }
+        )
+
+        # Carry segment-level identifiers
+        if "flight_id" in pl_ds.coords:
+            self.gpat.pl_out = self.gpat.pl_out.assign_coords(
+                flight_id=("seg_id", pl_ds["flight_id"].values)
             )
-            self.gpat.pl_out["pl_mass"] = pl_mass
-        else:
-            # Just update metadata
-            self.gpat.pl_out["pl_mass"].attrs = {
+        if "waypoint" in pl_ds.coords:
+            self.gpat.pl_out = self.gpat.pl_out.assign_coords(
+                waypoint=("seg_id", pl_ds["waypoint"].values)
+            )
+
+        # Time-related coordinates for output cadence
+        self.gpat.pl_out = self.gpat.pl_out.assign_coords(
+            species_out_num=("species_out", chem_params.species_out_num),
+            time_rel_s=("time", (self.gpat.times_out.values - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int)),
+            time_idx=("time", ((self.gpat.times_out.values - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int) // int(self.gpat.sim_params.t_sim[1].total_seconds())) + 1),
+        )
+
+        pl_mass = xr.DataArray(
+            np.zeros((
+                len(self.gpat.pl_out.seg_id),
+                len(species_out),
+                len(time_out),
+            ), dtype=float),
+            coords={
+                "seg_id": self.gpat.pl_out.seg_id,
+                "species_out": species_out,
+                "species_out_num": ("species_out", chem_params.species_out_num),
+                "time": time_out,
+                "time_rel_s": ("time", self.gpat.pl_out["time_rel_s"].values),
+                "time_idx": ("time", self.gpat.pl_out["time_idx"].values),
+            },
+            dims=("seg_id", "species_out", "time"),
+            attrs={
                 "units": "kg",
                 "long_name": "Change in species mass due to chemistry",
                 "note": "Add to initial emission mass (from fl_ds.nc) to get total mass"
             }
+        )
+        self.gpat.pl_out["pl_mass"] = pl_mass
         
         # Add metadata
         self.gpat.pl_out = self.gpat.pl_out.assign_attrs(
@@ -1134,8 +1137,8 @@ class GPATSetup:
             },
             coords={
                 "time": pd.to_datetime(self.gpat.times_out.values).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "time_rel_s": ("time", (self.gpat.times_out.values - np.datetime64(self.gpat.sim_params.t_out[0])).astype("timedelta64[s]").astype(int)),
-                "time_idx": ("time", ((self.gpat.times_out.values - np.datetime64(self.gpat.sim_params.t_out[0])).astype("timedelta64[s]").astype(int) // int(self.gpat.sim_params.t_out[1].total_seconds()))),
+                "time_rel_s": ("time", (self.gpat.times_out.values - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int)),
+                "time_idx": ("time", ((self.gpat.times_out.values - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int) // int(self.gpat.sim_params.t_sim[1].total_seconds())) + 1),
                 "level_c": self.gpat.levels,
                 "altitude_c": ("level_c", units.pl_to_m(self.gpat.levels)),
                 "longitude_c": self.gpat.lons,
