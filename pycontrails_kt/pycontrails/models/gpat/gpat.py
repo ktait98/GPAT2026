@@ -768,11 +768,21 @@ class GPATSetup:
         df = self.gpat.fl.copy()
 
         # change flight id to int
-        df["flight_id"] = df["flight_id"].astype(int)
+        df["flight_id"] = df["flight_id"].astype(int) + 1  # start flight_id from 1 (FORTRAN)
+        if "waypoint" in df.columns:
+            df["waypoint"] = df["waypoint"].astype(int) + 1  # start waypoint from 1 (FORTRAN)
+        else:
+            df["waypoint"] = df.index + 1  # start waypoint from 1 (FORTRAN)
+
+        if hasattr(self.gpat, "pl") and self.gpat.pl is not None:
+            pl_keys = self.gpat.pl[["flight_id", "waypoint"]].drop_duplicates()
+            pl_keys["flight_id"] = pl_keys["flight_id"].astype(int) + 1
+            pl_keys["waypoint"] = pl_keys["waypoint"].astype(int) + 1
+            df = df.merge(pl_keys, on=["flight_id", "waypoint"], how="inner")
 
         # Sort by flight_id, waypoint to establish the seg_id ordering
         df = df.sort_values(by=["flight_id", "waypoint"]).reset_index(drop=True)
-        df["seg_id"] = df.groupby(["flight_id", "waypoint"]).ngroup()
+        df["seg_id"] = df.groupby(["flight_id", "waypoint"]).ngroup() + 1
 
         # Set multi-index (flight_id, waypoint) and convert to xarray
         self.gpat.fl_ds = df.set_index(["seg_id"]).to_xarray()
@@ -815,14 +825,14 @@ class GPATSetup:
         pl_params = self.gpat.pl_params
         chem_params = self.gpat.chem_params
 
-        # change flight id to int
-        df["flight_id"] = df["flight_id"].astype(int)
-
         # Sort by flight_id, waypoint to establish the seg_id ordering
         df = df.sort_values(by=["flight_id", "waypoint"]).reset_index(drop=True)
+
+        df["flight_id"] = df["flight_id"].astype(int) + 1  # start flight_id from 1 (FORTRAN)
+        df["waypoint"] = df["waypoint"].astype(int) + 1
         
         # Create segment index: assign same seg_id to all rows with same (flight_id, waypoint)
-        df["seg_id"] = df.groupby(["flight_id", "waypoint"]).ngroup() # start seg_id from 1 (FORTRAN)
+        df["seg_id"] = df.groupby(["flight_id", "waypoint"]).ngroup() + 1  # start seg_id from 1 (FORTRAN)
 
         # Calculate total number of unique segments
         nseg = df["seg_id"].max()
@@ -841,18 +851,34 @@ class GPATSetup:
         )
 
         species_cols = list(self.gpat.chem_params.species_emi)
-        
+
         # Extract species emission mass directly from plume dataframe (once per waypoint)
         # Use the dataframe before conversion to xarray to ensure species columns are available
         species_data = [df[col] for col in species_cols if col in df.columns]
-        
+
         # Stack species into single variable: (seg_id, species_emi)
         # Concatenate along species dimension
         if species_data:
-            emi_pl_mass = xr.concat(
+            emi_pl_mass_seg = xr.concat(
                 [xr.DataArray(data, dims="seg_id") for data in species_data],
                 dim=pd.Index([col for col in species_cols if col in df.columns], name="species_emi")
             ).transpose("seg_id", "species_emi")
+
+            # Expand to time dimension and only populate first timestep per segment
+            emi_pl_mass = xr.DataArray(
+                np.zeros((len(self.gpat.pl_ds.seg_id), len(emi_pl_mass_seg.species_emi)), dtype=float),
+                coords={
+                    "seg_id": self.gpat.pl_ds.seg_id,
+                    "species_emi": emi_pl_mass_seg.species_emi,
+                },
+                dims=("seg_id", "species_emi"),
+            )
+
+            # Determine first time for each segment
+            first_time = df.groupby("seg_id")["time"].min()
+            for seg_id, t0 in first_time.items():
+                if t0 in self.gpat.pl_ds.time.values:
+                    emi_pl_mass.loc[dict(seg_id=seg_id)] = emi_pl_mass_seg.sel(seg_id=seg_id)
 
             # Add to plume dataset
             self.gpat.pl_ds["emi_pl_mass"] = emi_pl_mass
@@ -1022,15 +1048,15 @@ class GPATSetup:
         pl_ds = xr.open_dataset(f"{self.gpat.inputs_job}/pl_ds.nc")
         chem_params = self.gpat.chem_params
         
-        species_out = np.array(chem_params.species_out, dtype="U10")
-        time_out = pd.to_datetime(self.gpat.times_out.values).strftime("%Y-%m-%dT%H:%M:%SZ")
+        species_pl = np.array(chem_params.species_pl, dtype="U10")
+        times_out = pd.to_datetime(self.gpat.times_out.values).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         # Build a fresh output dataset on the output time grid
         self.gpat.pl_out = xr.Dataset(
             coords={
                 "seg_id": pl_ds.seg_id,
-                "time": time_out,
-                "species_out": species_out,
+                "time": times_out,
+                "species_pl": species_pl,
             }
         )
 
@@ -1046,7 +1072,7 @@ class GPATSetup:
 
         # Time-related coordinates for output cadence
         self.gpat.pl_out = self.gpat.pl_out.assign_coords(
-            species_out_num=("species_out", chem_params.species_out_num),
+            species_pl_num=("species_pl", chem_params.species_pl_num),
             time_rel_s=("time", (self.gpat.times_out.values - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int)),
             time_idx=("time", ((self.gpat.times_out.values - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int) // int(self.gpat.sim_params.t_sim[1].total_seconds())) + 1),
         )
@@ -1054,18 +1080,18 @@ class GPATSetup:
         pl_mass = xr.DataArray(
             np.zeros((
                 len(self.gpat.pl_out.seg_id),
-                len(species_out),
-                len(time_out),
+                len(species_pl),
+                len(times_out),
             ), dtype=float),
             coords={
                 "seg_id": self.gpat.pl_out.seg_id,
-                "species_out": species_out,
-                "species_out_num": ("species_out", chem_params.species_out_num),
-                "time": time_out,
+                "species_pl": species_pl,
+                "species_pl_num": ("species_pl", chem_params.species_pl_num),
+                "time": times_out,
                 "time_rel_s": ("time", self.gpat.pl_out["time_rel_s"].values),
                 "time_idx": ("time", self.gpat.pl_out["time_idx"].values),
             },
-            dims=("seg_id", "species_out", "time"),
+            dims=("seg_id", "species_pl", "time"),
             attrs={
                 "units": "kg",
                 "long_name": "Change in species mass due to chemistry",
