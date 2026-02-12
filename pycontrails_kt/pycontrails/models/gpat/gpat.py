@@ -8,15 +8,19 @@ Aggregate plumes to an Eulerian grid for photochemical and microphysical process
 
 import argparse
 import os
+import random
 import pathlib
 import pickle
-import random
 import shutil
 import subprocess
 import time
 from dataclasses import asdict, dataclass, field, fields
 from typing import Literal, Optional
 
+import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+import ipywidgets as widgets
+from IPython.display import display
 import dask.array as da
 import numpy as np
 import pandas as pd
@@ -30,7 +34,6 @@ from pycontrails.models.dry_advection import DryAdvection
 from pycontrails.models.emissions import Emissions
 from pycontrails.models.ps_model import PSFlight
 from pycontrails.physics import constants, geo, thermo, units
-
 
 ### GPAT Model Parameters ###
 @dataclass
@@ -114,19 +117,20 @@ class PlParams:
 @dataclass
 class MetParams:
     """Default meteorological parameters."""
-    eastward_wind: Optional[float] = 0.0  # m/s
-    northward_wind: Optional[float] = 0.0  # m/s
-    lagrangian_tendency_of_air_pressure: Optional[float] = 0.0  # Pa/s
+    eastward_wind: float | None = 0.0  # m/s
+    northward_wind: float | None = 0.0  # m/s
+    lagrangian_tendency_of_air_pressure: float | None = 0.0  # Pa/s
 
 @dataclass
 class ChemParams:
     """Default chemistry parameters."""
+
     run_chem: bool = True  # whether to run chemistry model
 
     species_emi: tuple = ("NO",)
     
     species_pl: tuple = (
-    # Core NOx–O3 photochemistry memory
+    # Core NOx-O3 photochemistry memory
     "NO", "NO2", "O3", "NO3", "N2O5",
     "HNO3", "HONO", "HO2NO2",  # HO2NO2 = pernitric acid
 
@@ -159,7 +163,7 @@ class ChemParams:
 class GPAT(Model):
     """Gridded Plume Analysis Tool (GPAT).
 
-    Simulate aircraft trajectories, estimate aircraft performance, fuel burn and emissions. Then
+    Simulate aircraft trajectories, estimate aircraft performance, fuel burn and emissions. Then 
     aggregates emissions, bg chemistry and meteorology to an Eulerian grid for photochemical and
     microphysical processing.
 
@@ -366,8 +370,7 @@ class GPATSetup:
                 & (fl["altitude"] < sim_params.alt_bounds[1])
             )
             fl = fl.filter(mask)
-            fl = [fl]
-            return fl
+            return [fl]
 
         # generate synthetic formation flight
         if fl_params.mode == "synthetic":
@@ -599,6 +602,7 @@ class GPATSetup:
             fl[i] = ps_model.eval(fl[i])
 
         return fl
+        return []
 
     def emissions(self) -> list[Flight]:
         """Estimate emissions using Pycontrails Emissions Model."""
@@ -751,7 +755,7 @@ class GPATSetup:
         self.init_fl_ds_nc()
         #Initialise plume dataset
         self.init_pl_ds_nc()
-        
+
     def gen_outputs(self):
         """Generate BOXM output templates."""
         # Initialise boxm coarse output dataset
@@ -761,8 +765,7 @@ class GPATSetup:
         # Initialise plume output dataset
         self.init_pl_out_nc()  
 
-    # Initialize input datasets
-
+    # --- Input dataset initialization methods ---
     def init_fl_ds_nc(self):
         """Initialize the flight dataset for BOXM."""
         df = self.gpat.fl.copy()
@@ -817,7 +820,7 @@ class GPATSetup:
             nc_path.unlink()
         self.gpat.fl_ds.to_netcdf(nc_path, mode="w")
         print(f"Saved {nc_path}")
-    
+
     def init_pl_ds_nc(self):
         """Initialize the plume dataset for the box model (PL_DS.NC)."""
         df = self.gpat.pl.copy()
@@ -888,10 +891,7 @@ class GPATSetup:
                             'NO2', 'CO', 'HCHO', 'CH3CHO', 
                             'C2H4', 'C3H6', 'C2H2', 'BENZENE', 'nvPM']
 
-        self.gpat.pl_ds = self.gpat.pl_ds.drop_vars(all_species_cols + 
-                                                    ["fuel_flow", "fuel_burn", 
-                                                     "true_airspeed", "sin_a", 
-                                                     "cos_a"])
+        self.gpat.pl_ds = self.gpat.pl_ds.drop_vars((*all_species_cols, "fuel_flow", "fuel_burn", "true_airspeed", "sin_a", "cos_a"))
 
         # Convert timedelta to total seconds, handling NaT values
         age_values = self.gpat.pl_ds["age"].values
@@ -1041,7 +1041,6 @@ class GPATSetup:
         self.gpat.boxm_ds_stacked.to_netcdf(nc_path, mode="w")
         print(f"Saved {nc_path}")
 
-    # Initialize output datasets
     def init_pl_out_nc(self):
         """Initialize the plume output dataset (PL_OUT.NC)."""
         # Load the input plume dataset
@@ -1242,8 +1241,7 @@ class GPATSetup:
         # Save to NetCDF file
         self.gpat.patch_table.to_netcdf(nc_path, mode="w")
         print(f"Saved {nc_path}")
-        
-        
+             
     # Helper functions used in GPAT Setup
     def calc_heading(self, pl_df: pd.DataFrame) -> pd.DataFrame:
         """Calculate heading for each plume.
@@ -1379,8 +1377,226 @@ class GPATAnalysis:
         print("Compute the result")
         # # Compute the result to trigger the lazy evaluation
         # self.boxm_ds_unstacked = self.boxm_ds_unstacked.compute()
+    
+    def plot_plumes_3d(
+        self,
+        ht="tail",
+    ):
+        import pyvista as pv
+        import numpy as np
 
-    # Plotting methods
+        pl_ds = self.gpat.pl_ds.sel(ht=ht)[["longitude", "latitude", "altitude", "width", "depth", "heading", "flight_id", "seg_id"]].to_dataframe().reset_index().dropna()
+
+        times = np.sort(pl_ds["time"].unique())
+        flight_ids = np.sort(pl_ds["flight_id"].unique())
+        import matplotlib.pyplot as plt
+        cmap = plt.get_cmap("tab10")
+        flight_colors = {fid: cmap(i % 10) for i, fid in enumerate(flight_ids)}
+        plotter = pv.Plotter()
+
+        import time
+        # Only show the first frame interactively
+        for t in times[:1]:
+            print(f"Frame 1/{len(times)}: {t}")
+            frame_start = time.time()
+            actors = []
+            df = pl_ds[pl_ds["time"] == t]
+            for fid in flight_ids:
+                print(f"  Flight {fid}")
+                df_f = df[df["flight_id"] == fid].sort_values("seg_id")
+                ellipses = []
+                ell_start = time.time()
+                for seg_idx, (_, row) in enumerate(df_f.iterrows()):
+                    center = (row["longitude"], row["latitude"], row["altitude"])
+                    ellipses.append(ellipse_points(center, row["width"], row["depth"], row["heading"]))
+                print(f"    Ellipse construction: {time.time() - ell_start:.3f}s for {len(ellipses)} segments")
+                mesh_start = time.time()
+                for i in range(len(ellipses) - 1):
+                    mesh = frustum_mesh(ellipses[i], ellipses[i+1])
+                    actor = plotter.add_mesh(mesh, color=flight_colors[fid], opacity=0.5)
+                    if actor is not None:
+                        actors.append(actor)
+                print(f"    Mesh creation: {time.time() - mesh_start:.3f}s for {max(len(ellipses)-1,0)} frustums")
+        render_start = time.time()
+        print(f"  Rendering: {time.time() - render_start:.3f}s")
+        print(f"  Total frame time: {time.time() - frame_start:.3f}s\n")
+        plotter.show_grid()
+        plotter.show(auto_close=False)
+        # Window remains open for interactive exploration
+
+    def plot_plumes_3d_ani(self, ht="tail"):
+        import pyvista as pv
+        import numpy as np
+
+        import numpy as np
+        import matplotlib.pyplot as plt
+        from mpl_toolkits.mplot3d.art3d import Poly3DCollection  # <-- Added import
+
+
+        pl_ds = self.gpat.pl_ds.sel(ht=ht)[["longitude", "latitude", "altitude", "width", "depth", "heading", "flight_id", "seg_id"]].to_dataframe().reset_index().dropna()
+        times = np.sort(pl_ds["time"].unique())
+        seg_ids = np.sort(pl_ds["seg_id"].unique())
+        flight_ids = np.sort(pl_ds["flight_id"].unique())
+
+        cmap = plt.get_cmap("tab10")
+        flight_colors = {fid: cmap(i % 10) for i, fid in enumerate(flight_ids)}
+
+        for t in times:
+
+            # create numpy array of plume segments for this time step
+            centres = np.zeros((len(seg_ids), 3))  # longitude, latitude, altitude
+            widths = np.zeros(len(seg_ids))
+            depths = np.zeros(len(seg_ids))
+            headings = np.zeros(len(seg_ids))
+            flight_ids_seg = np.zeros(len(seg_ids), dtype=int)
+
+            for seg_id in pl_ds["seg_id"].unique():
+                df_s = pl_ds[(pl_ds["time"] == t) & (pl_ds["seg_id"] == seg_id)]
+                if len(df_s) == 0:
+                    continue
+                row = df_s.iloc[0]
+                centre = (row["longitude"], row["latitude"], row["altitude"])
+                width = row["width"]
+                depth = row["depth"]
+                heading = row["heading"]
+                flight_id = row["flight_id"]
+
+
+        # # # Example waypoints (3D centres along plume centreline) -- replace with your track
+        # # centres = np.array([
+        # #     [0.0, 0.0, 0.0],
+        # #     [400.0, 20.0, 0.5],
+        # #     [800.0, 60.0, 1.2],
+        # #     [1200.0, 130.0, 2.5],
+        # # ])  # shape (n_sections, 3)
+
+        # # per-waypoint Gaussian widths (could be constant or vary along track)
+        # sigma_yy = 200.0   # lateral
+        # sigma_zz = 40.0   # vertical (use as second semi-axis in cross-section plane)
+        # # sigma_z = 20.0    # not used here (vertical sigma if you want full 3D thickness model)
+
+        # # ring parameters (example: single ellipse per waypoint; you can make multiple concentric)
+        # r_scale = 3.0           # reference normalized radius (3 sigma)
+        # a_ref = r_scale * sigma_yy
+        # b_ref = r_scale * sigma_zz
+
+        # polygon resolution
+        N = 32
+        theta = np.linspace(0.0, 2*np.pi, N, endpoint=False)
+
+        # --- build waypoints ---------------------------------------------------------
+        sections = []
+        a_per_section = np.full(len(centres), width)   # can vary per-section
+        b_per_section = np.full(len(centres), depth) # can vary per-section
+        for c, t, a, b in zip(centres, tangents, a_per_section, b_per_section):
+            e1, e2 = cross_section_frame(t)
+            sec_pts = make_section_ellipse(c, a, b, e1, e2)   # (N,3)
+            sections.append(sec_pts)
+
+        # stack vertices
+        verts = np.vstack(sections)   # shape (n_sections * N, 3)
+
+        # --- build triangular faces connecting consecutive sections (loft) ----------
+        faces = []
+        n_sec = len(sections)
+        for i in range(n_sec - 1):
+            base = i * N
+            nxt = (i+1) * N
+            for j in range(N):
+                j2 = (j + 1) % N
+                # quad: (base+j) -> (base+j2) -> (nxt+j2) -> (nxt+j)
+                v0 = verts[base + j]
+                v1 = verts[base + j2]
+                v2 = verts[nxt + j2]
+                v3 = verts[nxt + j]
+                # triangulate quad into two triangles
+                faces.append([v0, v1, v2])
+                faces.append([v0, v2, v3])
+
+        # --- utilities ---------------------------------------------------------------
+        def normalize(v):
+            v = np.asarray(v, dtype=float)
+            n = np.linalg.norm(v)
+            return v / (n if n > 0 else 1.0)
+
+        def cross_section_frame(t):
+            """
+            Given unit tangent t (cross-section normal), return orthonormal basis (e1,e2)
+            spanning the plane perpendicular to t.
+            - e2 is chosen as projection of global up onto the plane (so it is 'vertical-ish')
+            - e1 = cross(e2, t) (so e1 is lateral / right-ish)
+            Handles near-vertical t robustly.
+            """
+            up = np.array([0.0, 0.0, 1.0])
+            t = normalize(t)
+            # project up into plane perpendicular to t
+            e2 = up - np.dot(up, t) * t
+            if np.linalg.norm(e2) < 1e-6:
+                # tangent nearly vertical: pick arbitrary perpendicular
+                v = np.array([1.0, 0.0, 0.0])
+                e2 = v - np.dot(v, t) * t
+            e2 = normalize(e2)
+            e1 = normalize(np.cross(e2, t))
+            return e1, e2
+
+        def make_section_ellipse(center, a, b, e1, e2):
+            """Return (N,3) array of points for ellipse in plane spanned by e1,e2 centered at center."""
+            x = np.cos(theta)[:,None] * (a * e1[None,:])
+            y = np.sin(theta)[:,None] * (b * e2[None,:])
+            pts = center[None,:] + x + y
+            return pts  # shape (N,3)
+
+        
+
+        # optionally add end caps (triangulate each end polygon to center)
+        def polygon_triangles_from_section(section_pts, center_point):
+            # fan triangulation around center_point
+            tris = []
+            for j in range(len(section_pts)):
+                j2 = (j + 1) % len(section_pts)
+                tris.append([center_point, section_pts[j], section_pts[j2]])
+            return tris
+
+        # add caps if desired
+        add_caps = True
+        if add_caps:
+            # front cap (first section)
+            front_center = np.mean(sections[0], axis=0)
+            faces += polygon_triangles_from_section(sections[0], front_center)
+            # back cap (last section)
+            back_center = np.mean(sections[-1], axis=0)
+            faces += polygon_triangles_from_section(sections[-1][::-1], back_center)  # reverse for outward normal
+
+        # --- estimate volume via trapezoidal rule of cross-sectional areas -------------
+        areas = np.pi * (a_per_section * b_per_section)   # area of ellipse per section
+        seg_lengths = np.linalg.norm(np.diff(centers, axis=0), axis=1)
+        vol_est = 0.0
+        for i, L in enumerate(seg_lengths):
+            vol_est += 0.5 * (areas[i] + areas[i+1]) * L
+
+        # --- plot mesh with matplotlib -----------------------------------------------
+        fig = plt.figure(figsize=(10,7))
+        ax = fig.add_subplot(111, projection='3d')
+
+        pc = Poly3DCollection(faces, facecolors=(0.2,0.6,0.9,0.45), edgecolors='b', linewidths=0.2)
+        ax.add_collection3d(pc)
+
+        # autoscale from verts
+        xmin, ymin, zmin = verts.min(axis=0)
+        xmax, ymax, zmax = verts.max(axis=0)
+        pad = 0.2 * max(xmax-xmin, ymax-ymin, zmax-zmin)
+        ax.set_xlim(xmin-pad, xmax+pad); ax.set_ylim(ymin-pad, ymax+pad); ax.set_zlim(zmin-pad, zmax+pad)
+        try:
+            ax.set_box_aspect((xmax-xmin, ymax-ymin, max(zmax-zmin, 1e-6)))
+        except Exception:
+            pass
+
+        ax.set_xlabel('X (m)'); ax.set_ylabel('Y (m)'); ax.set_zlabel('Z (m)')
+        plt.title('Lofted plume mesh (cross-sections perpendicular to trajectory)')
+        print("sections:", len(sections), "vertices:", verts.shape[0], "triangles:", len(faces))
+        print("estimated volume (m^3):", vol_est)
+        plt.show()
+
 
     # Validation methods
     def mc_test(params, fl_df, pl_df, chem_ds):
@@ -1618,3 +1834,35 @@ def filter_inherited_params(instance, base_class):
     base_fields = {f.name for f in fields(base_class)}
     instance_dict = asdict(instance)
     return {k: v for k, v in instance_dict.items() if k not in base_fields}
+
+# Helper function for 3D plume visualization
+def ellipse_points(center, width, depth, heading_deg, n_points=12):
+    import numpy as np
+    # center: (lon, lat, alt)
+    # width: major axis (across-flight)
+    # depth: minor axis (vertical)
+    # heading_deg: direction of flight (degrees from north)
+    theta = np.linspace(0, 2 * np.pi, n_points)
+    # Ellipse in local coordinates (major axis along x, minor along z)
+    x = (width / 2) * np.cos(theta)
+    z = (depth / 2) * np.sin(theta)
+    y = np.zeros_like(x)
+    # Rotate ellipse so x is perpendicular to heading
+    angle = np.deg2rad(heading_deg + 90)  # +90 to get perpendicular
+    x_rot = x * np.cos(angle) - y * np.sin(angle)
+    y_rot = x * np.sin(angle) + y * np.cos(angle)
+    # Translate to center
+    points = np.stack([center[0] + x_rot, center[1] + y_rot, center[2] + z], axis=1)
+    return points
+
+def frustum_mesh(ellipse1, ellipse2):
+    import pyvista as pv
+    # ellipse1, ellipse2: (n_points, 3) arrays
+    n = ellipse1.shape[0]
+    faces = []
+    for i in range(n):
+        i_next = (i + 1) % n
+        # Each quad face between ellipse1[i], ellipse1[i_next], ellipse2[i_next], ellipse2[i]
+        faces.append([4, i, i_next, n + i_next, n + i])
+    points = np.vstack([ellipse1, ellipse2])
+    return pv.PolyData(points, faces=np.hstack(faces))

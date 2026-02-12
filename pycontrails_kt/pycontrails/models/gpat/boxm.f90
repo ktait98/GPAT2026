@@ -581,6 +581,7 @@ CONTAINS
     SUBROUTINE PL_READ_STATIC(PL_DS)
         CLASS(PL_DS_TYPE), INTENT(INOUT) :: PL_DS
         INTEGER :: STATUS
+        REAL(DP), ALLOCATABLE :: EMI_PL_MASS_TMP(:,:)
 
         IF (.NOT. PL_DS%IS_OPEN) STOP "PL_READ_STATIC: FILE NOT OPEN (CALL INIT FIRST)"
         IF (PL_DS%NSEG <= 0) STOP "PL_READ_STATIC: NSEG NOT SET"
@@ -672,9 +673,12 @@ CONTAINS
                               START=[1, 1, 1], COUNT=[PL_DS%NTPL, PL_DS%HT, PL_DS%NSEG])
         CALL NC_CHECK(STATUS, "NF90_GET_VAR(sigma_zz)")
 
-        STATUS = NF90_GET_VAR(PL_DS%PL_NCID, PL_DS%VARID_EMI_PL_MASS, PL_DS%EMI_PL_MASS, &
-                      START=[1, 1], COUNT=[PL_DS%NSEMI, PL_DS%NSEG])
+        IF (.NOT. ALLOCATED(EMI_PL_MASS_TMP)) ALLOCATE(EMI_PL_MASS_TMP(PL_DS%NSEMI, PL_DS%NSEG))
+        STATUS = NF90_GET_VAR(PL_DS%PL_NCID, PL_DS%VARID_EMI_PL_MASS, EMI_PL_MASS_TMP, &
+              START=[1, 1], COUNT=[PL_DS%NSEMI, PL_DS%NSEG])
         CALL NC_CHECK(STATUS, "NF90_GET_VAR(emi_pl_mass)")
+        PL_DS%EMI_PL_MASS = TRANSPOSE(EMI_PL_MASS_TMP)
+        DEALLOCATE(EMI_PL_MASS_TMP)
 
         ! PL ATTRIBUTES
         STATUS = NF90_GET_ATT(PL_DS%PL_NCID, NF90_GLOBAL, "n_slices", PL_DS%NSLICES)
@@ -2277,42 +2281,18 @@ CONTAINS
 
         IF (OUT_I > 0) THEN
             STATE_SUM = SUM(PL_STATE%PL_MASS)
-            ! PRINT *, "PL_OUT_WRITE: TIME_IDX/PL_I/OUT_I =", &
-            ! TIME_IDX, PL_I, OUT_I
-            ! PRINT *, "PL_OUT_WRITE: PL_MASS(:,1) =", PL_STATE%PL_MASS(:,1)
+            PL_OUT%PL_MASS(:,:,OUT_I) = 0.0_DP
             DO SPECIES_ID = 1, PL_STATE%NSPL
-                PRINT *, "PL_OUT_WRITE: SPECIES_ID/PL_NUM =", SPECIES_ID, PL_STATE%SPECIES_PL_NUM(SPECIES_ID), &
-                         " sum/min/max =", SUM(PL_STATE%PL_MASS(:, SPECIES_ID)), &
-                         MINVAL(PL_STATE%PL_MASS(:, SPECIES_ID)), &
-                         MAXVAL(PL_STATE%PL_MASS(:, SPECIES_ID))
-                PL_OUT%PL_MASS(:,SPECIES_ID,OUT_I) = PL_STATE%PL_MASS(:,SPECIES_ID)
+                IF (ANY(PL_DS%SPECIES_EMI_NUM(:) == PL_STATE%SPECIES_PL_NUM(SPECIES_ID))) THEN
+                    PL_OUT%PL_MASS(:,SPECIES_ID,OUT_I) = PL_STATE%PL_MASS(:,SPECIES_ID)
+                END IF
             END DO
-            
-
-            IF (TIME_IDX == PL_DS%TIME_IDX(1)) THEN
-                PRINT *, "PL_OUT_WRITE: TIME_IDX/OUT_I=", TIME_IDX, OUT_I
-                DO SPECIES_ID = 1, PL_STATE%NSPL
-                    PRINT *, "PL_OUT_WRITE: SPECIES_NUM/MAX=", PL_STATE%SPECIES_PL_NUM(SPECIES_ID), &
-                             MAXVAL(PL_STATE%PL_MASS(:, SPECIES_ID))
-                END DO
-            END IF
-
-            ! PRINT *, "PL_OUT_WRITE: PL_MASS(:,1,OUT_I) =", PL_OUT%PL_MASS(:,1,OUT_I)
-            ! PRINT *, "PL_OUT_WRITE: NSEG/NSPL/NTOUT =", PL_OUT%NSEG, PL_OUT%NSPL, PL_OUT%NTOUT
-            ! PRINT *, "PL_OUT_WRITE: OUT_I/TIME_IDX =", OUT_I, TIME_IDX
-            ! Write one species slice at a time to match file layout (time, species, seg_id).
+        
             ALLOCATE(PL_MASS_READBACK(PL_OUT%NSEG, PL_OUT%NSPL, 1))
             DO SPECIES_ID = 1, PL_OUT%NSPL
                 STATUS = NF90_PUT_VAR(PL_OUT%PL_OUT_NCID, PL_OUT%VARID_PL_MASS, PL_OUT%PL_MASS(:, SPECIES_ID, OUT_I), &
                                   START=[OUT_I, SPECIES_ID, 1], COUNT=[1, 1, PL_OUT%NSEG])
                 CALL NC_CHECK(STATUS, "NF90_PUT_VAR(pl_mass)")
-
-                STATUS = NF90_GET_VAR(PL_OUT%PL_OUT_NCID, PL_OUT%VARID_PL_MASS, PL_MASS_READBACK, &
-                                  START=[OUT_I, SPECIES_ID, 1], COUNT=[1, 1, PL_OUT%NSEG])
-                CALL NC_CHECK(STATUS, "NF90_GET_VAR(pl_mass) readback")
-                RB_SUM = SUM(PL_MASS_READBACK)
-                RB_MIN = MINVAL(PL_MASS_READBACK)
-                RB_MAX = MAXVAL(PL_MASS_READBACK)
 
             END DO
             DEALLOCATE(PL_MASS_READBACK)
@@ -2323,25 +2303,6 @@ CONTAINS
     SUBROUTINE PL_OUT_CLOSE(PL_OUT)
         CLASS(PL_OUT_TYPE), INTENT(INOUT) :: PL_OUT
         INTEGER :: STATUS, I
-
-        ! BEFORE CLOSING, DIAGNOSE WHOLE ARRAY. INDEX INTO PL_OUT%PL_MASS TO CHECK FOR NAN OR HUGE VALUES. PRINT MIN/MAX/SUM TO DIAGNOSE ANY CORRUPTION.
-        INTEGER :: SPECIES_ID
-        INTEGER :: T_START, T_END, T0, T1
-
-        IF (.NOT. PL_OUT%IS_OPEN) THEN
-            RETURN
-        END IF
-
-        T_START = 61
-        T_END = 81
-        T0 = MAX(1, T_START)
-        T1 = MIN(PL_OUT%NTOUT, T_END)
-
-        DO SPECIES_ID = 1, PL_OUT%NSPL
-            PRINT *, "PL_OUT_CLOSE: PL_MASS slice SPECIES_ID=", SPECIES_ID, " time=", T0, "-", T1
-            PRINT *, PL_OUT%PL_MASS(:, SPECIES_ID, T0:T1)
-        END DO
-
 
         IF (PL_OUT%IS_OPEN) THEN
             STATUS = NF90_CLOSE(PL_OUT%PL_OUT_NCID)
