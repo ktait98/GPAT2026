@@ -15,12 +15,14 @@ import shutil
 import subprocess
 import time
 from dataclasses import asdict, dataclass, field, fields
+from turtle import ht
 from typing import Literal, Optional
 
 import matplotlib.pyplot as plt
+import pyvista as pv
 from matplotlib.lines import Line2D
 import ipywidgets as widgets
-from IPython.display import display
+from IPython.display import display, clear_output
 import dask.array as da
 import numpy as np
 import pandas as pd
@@ -110,9 +112,10 @@ class PlParams:
     depth: float = 50.0  # initial plume depth, [m]
     width: float = 50.0  # initial plume width, [m]
     verbose_outputs: bool = False  # print verbose outputs
+    shear: float = 0.01  # shear [m/s]
     n_slices: int = 3  # number of slices in the plume
     f_max: float = 0.99  # maximum fraction of total emissions in any slice
-    shear: float = 0.01  # shear [m/s]
+    output_pl_slices: bool = True  # output plume slices to netCDF
 
 @dataclass
 class MetParams:
@@ -188,7 +191,8 @@ class GPAT(Model):
     # default_params = (FlParams, PlParams, SimParams)
 
     
-    def __init__(self, sim_params: SimParams, 
+    def __init__(self, 
+                 sim_params: SimParams, 
                  fl_params: FlParams,
                  pl_params: PlParams, 
                  met_params: MetParams, 
@@ -215,6 +219,7 @@ class GPAT(Model):
         self.levels = units.m_to_pl(self.alts)
 
         # Generate time vectors
+        
         self.times_fl = pd.date_range(
             start=sim_params.t_fl[0],
             end=sim_params.t_fl[0] + sim_params.t_fl[2],
@@ -309,7 +314,7 @@ class GPAT(Model):
         """Preprocess inputs for GPAT FORTRAN implementation (BOXM and CONTRAIL in future)."""
         # Generate flight trajectory points
         self.fl = self.setup.traj_gen()
-
+        
         # Generate meteorological data
         self.met = self.setup.gen_met()
 
@@ -898,6 +903,9 @@ class GPATSetup:
         age_seconds = np.where(np.isnat(age_values), 0, (age_values / np.timedelta64(1, 's')).astype(int))
         self.gpat.pl_ds["age_s"] = (("seg_id", "time"), age_seconds)
 
+        active_mask = (self.gpat.pl_ds["age_s"] > 0) & (self.gpat.pl_ds["age_s"] <= sim_params.t_pl[2].total_seconds())
+        self.gpat.pl_ds = self.gpat.pl_ds.assign_coords(active_seg_flag=(("seg_id", "time"), active_mask.values))
+
         self.gpat.pl_ds = self.gpat.pl_ds.assign_coords(
             time_rel_s = ("time", (self.gpat.pl_ds["time"].values - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int)),
             time_idx = ("time", ((self.gpat.pl_ds["time"].values - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int) // int(self.gpat.sim_params.t_sim[1].total_seconds())) + 1),
@@ -935,7 +943,6 @@ class GPATSetup:
         self.gpat.pl_ds["time"] = self.gpat.pl_ds["time"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
         self.gpat.pl_ds["age"].values = self.gpat.pl_ds["age"].values.astype(str)
 
-        # Assign useful metadata
         self.gpat.pl_ds = self.gpat.pl_ds.assign_attrs(
             nseg=nseg,
             ts_fl=sim_params.t_fl[1].total_seconds(),
@@ -951,6 +958,7 @@ class GPATSetup:
             # boxm attrs
             n_slices=pl_params.n_slices,
             f_max=pl_params.f_max,
+            output_pl_slices=int(pl_params.output_pl_slices),
 
             description="Emission species mass in plume segments",
         )
@@ -1041,6 +1049,7 @@ class GPATSetup:
         self.gpat.boxm_ds_stacked.to_netcdf(nc_path, mode="w")
         print(f"Saved {nc_path}")
 
+    # --- Output dataset initialization methods ---
     def init_pl_out_nc(self):
         """Initialize the plume output dataset (PL_OUT.NC)."""
         # Load the input plume dataset
@@ -1058,6 +1067,29 @@ class GPATSetup:
                 "species_pl": species_pl,
             }
         )
+
+        # build and attach empty pl_slices type
+        if self.gpat.pl_params.output_pl_slices:
+            pl_slices = xr.Dataset(
+                {
+                "y_half": (("seg_id", "ht", "slice_id", "time"), np.zeros((len(pl_ds.seg_id), 2, self.gpat.pl_params.n_slices, len(times_out)))),
+                "z_half": (("seg_id", "ht", "slice_id", "time"), np.zeros((len(pl_ds.seg_id), 2, self.gpat.pl_params.n_slices, len(times_out)))),
+                "m_frac": ("slice_id", np.zeros(self.gpat.pl_params.n_slices)),
+                "w_slice": ("slice_id", np.zeros(self.gpat.pl_params.n_slices)),
+                "poly_slices": (("seg_id", "ht", "slice_id", "corner_id", "coord", "time"), np.zeros((len(pl_ds.seg_id), 2, self.gpat.pl_params.n_slices, 4, 3, len(times_out)))),
+                },
+                coords={
+                    "seg_id": self.gpat.pl_out.seg_id,
+                    "species_pl": self.gpat.pl_out.species_pl,
+                    "time": self.gpat.pl_out.time,
+                    "ht": xr.DataArray(np.array(["tail", "head"], dtype="U4"), dims=("ht",)),
+                    "slice_id": np.arange(1, self.gpat.pl_params.n_slices + 1),
+                    "corner_id": xr.DataArray(np.array(["BL", "TL", "TR", "BR"], dtype="U2"), dims=("corner_id",)),
+                    "coord": xr.DataArray(np.array(["lat_m", "lon_m", "alt_m"], dtype="U1"), dims=("coord",)),
+                }
+            )
+            for var in pl_slices.data_vars:
+                self.gpat.pl_out[var] = pl_slices[var]
 
         # Carry segment-level identifiers
         if "flight_id" in pl_ds.coords:
@@ -1097,6 +1129,7 @@ class GPATSetup:
                 "note": "Add to initial emission mass (from fl_ds.nc) to get total mass"
             }
         )
+        
         self.gpat.pl_out["pl_mass"] = pl_mass
         
         # Add metadata
@@ -1350,9 +1383,9 @@ class GPATAnalysis:
 
     # Loading data methods
     def load_output_datasets(self):
-        self.boxm_out = xr.open_dataset(f"{self.gpat.inputs_job}/boxm_out.nc")
-        self.patch_table = xr.open_dataset(f"{self.gpat.outputs_job}/patch_table.nc")
-        self.pl_out = xr.open_dataset(f"{self.gpat.outputs_job}/pl_out.nc")
+        self.gpat.boxm_out = xr.open_dataset(f"{self.gpat.outputs_job}/boxm_out.nc")
+        self.gpat.patch_table = xr.open_dataset(f"{self.gpat.outputs_job}/patch_table.nc")
+        self.gpat.pl_out = xr.open_dataset(f"{self.gpat.outputs_job}/pl_out.nc")
 
     def unstack_boxm_out(self):
         """Unstack the box model coarse output dataset."""
@@ -1377,226 +1410,264 @@ class GPATAnalysis:
         print("Compute the result")
         # # Compute the result to trigger the lazy evaluation
         # self.boxm_ds_unstacked = self.boxm_ds_unstacked.compute()
-    
-    def plot_plumes_3d(
-        self,
-        ht="tail",
-    ):
-        import pyvista as pv
+
+    def plot_plumes_3d_ani_plotly(self, ht="tail", N=32):
+        import plotly.graph_objects as go
         import numpy as np
+        from pyproj import Transformer
 
-        pl_ds = self.gpat.pl_ds.sel(ht=ht)[["longitude", "latitude", "altitude", "width", "depth", "heading", "flight_id", "seg_id"]].to_dataframe().reset_index().dropna()
-
-        times = np.sort(pl_ds["time"].unique())
-        flight_ids = np.sort(pl_ds["flight_id"].unique())
-        import matplotlib.pyplot as plt
-        cmap = plt.get_cmap("tab10")
-        flight_colors = {fid: cmap(i % 10) for i, fid in enumerate(flight_ids)}
-        plotter = pv.Plotter()
-
-        import time
-        # Only show the first frame interactively
-        for t in times[:1]:
-            print(f"Frame 1/{len(times)}: {t}")
-            frame_start = time.time()
-            actors = []
-            df = pl_ds[pl_ds["time"] == t]
-            for fid in flight_ids:
-                print(f"  Flight {fid}")
-                df_f = df[df["flight_id"] == fid].sort_values("seg_id")
-                ellipses = []
-                ell_start = time.time()
-                for seg_idx, (_, row) in enumerate(df_f.iterrows()):
-                    center = (row["longitude"], row["latitude"], row["altitude"])
-                    ellipses.append(ellipse_points(center, row["width"], row["depth"], row["heading"]))
-                print(f"    Ellipse construction: {time.time() - ell_start:.3f}s for {len(ellipses)} segments")
-                mesh_start = time.time()
-                for i in range(len(ellipses) - 1):
-                    mesh = frustum_mesh(ellipses[i], ellipses[i+1])
-                    actor = plotter.add_mesh(mesh, color=flight_colors[fid], opacity=0.5)
-                    if actor is not None:
-                        actors.append(actor)
-                print(f"    Mesh creation: {time.time() - mesh_start:.3f}s for {max(len(ellipses)-1,0)} frustums")
-        render_start = time.time()
-        print(f"  Rendering: {time.time() - render_start:.3f}s")
-        print(f"  Total frame time: {time.time() - frame_start:.3f}s\n")
-        plotter.show_grid()
-        plotter.show(auto_close=False)
-        # Window remains open for interactive exploration
-
-    def plot_plumes_3d_ani(self, ht="tail"):
-        import pyvista as pv
-        import numpy as np
-
-        import numpy as np
-        import matplotlib.pyplot as plt
-        from mpl_toolkits.mplot3d.art3d import Poly3DCollection  # <-- Added import
-
-
-        pl_ds = self.gpat.pl_ds.sel(ht=ht)[["longitude", "latitude", "altitude", "width", "depth", "heading", "flight_id", "seg_id"]].to_dataframe().reset_index().dropna()
-        times = np.sort(pl_ds["time"].unique())
-        seg_ids = np.sort(pl_ds["seg_id"].unique())
-        flight_ids = np.sort(pl_ds["flight_id"].unique())
-
-        cmap = plt.get_cmap("tab10")
-        flight_colors = {fid: cmap(i % 10) for i, fid in enumerate(flight_ids)}
-
-        for t in times:
-
-            # create numpy array of plume segments for this time step
-            centres = np.zeros((len(seg_ids), 3))  # longitude, latitude, altitude
-            widths = np.zeros(len(seg_ids))
-            depths = np.zeros(len(seg_ids))
-            headings = np.zeros(len(seg_ids))
-            flight_ids_seg = np.zeros(len(seg_ids), dtype=int)
-
-            for seg_id in pl_ds["seg_id"].unique():
-                df_s = pl_ds[(pl_ds["time"] == t) & (pl_ds["seg_id"] == seg_id)]
-                if len(df_s) == 0:
-                    continue
-                row = df_s.iloc[0]
-                centre = (row["longitude"], row["latitude"], row["altitude"])
-                width = row["width"]
-                depth = row["depth"]
-                heading = row["heading"]
-                flight_id = row["flight_id"]
-
-
-        # # # Example waypoints (3D centres along plume centreline) -- replace with your track
-        # # centres = np.array([
-        # #     [0.0, 0.0, 0.0],
-        # #     [400.0, 20.0, 0.5],
-        # #     [800.0, 60.0, 1.2],
-        # #     [1200.0, 130.0, 2.5],
-        # # ])  # shape (n_sections, 3)
-
-        # # per-waypoint Gaussian widths (could be constant or vary along track)
-        # sigma_yy = 200.0   # lateral
-        # sigma_zz = 40.0   # vertical (use as second semi-axis in cross-section plane)
-        # # sigma_z = 20.0    # not used here (vertical sigma if you want full 3D thickness model)
-
-        # # ring parameters (example: single ellipse per waypoint; you can make multiple concentric)
-        # r_scale = 3.0           # reference normalized radius (3 sigma)
-        # a_ref = r_scale * sigma_yy
-        # b_ref = r_scale * sigma_zz
-
-        # polygon resolution
-        N = 32
-        theta = np.linspace(0.0, 2*np.pi, N, endpoint=False)
-
-        # --- build waypoints ---------------------------------------------------------
-        sections = []
-        a_per_section = np.full(len(centres), width)   # can vary per-section
-        b_per_section = np.full(len(centres), depth) # can vary per-section
-        for c, t, a, b in zip(centres, tangents, a_per_section, b_per_section):
-            e1, e2 = cross_section_frame(t)
-            sec_pts = make_section_ellipse(c, a, b, e1, e2)   # (N,3)
-            sections.append(sec_pts)
-
-        # stack vertices
-        verts = np.vstack(sections)   # shape (n_sections * N, 3)
-
-        # --- build triangular faces connecting consecutive sections (loft) ----------
-        faces = []
-        n_sec = len(sections)
-        for i in range(n_sec - 1):
-            base = i * N
-            nxt = (i+1) * N
-            for j in range(N):
-                j2 = (j + 1) % N
-                # quad: (base+j) -> (base+j2) -> (nxt+j2) -> (nxt+j)
-                v0 = verts[base + j]
-                v1 = verts[base + j2]
-                v2 = verts[nxt + j2]
-                v3 = verts[nxt + j]
-                # triangulate quad into two triangles
-                faces.append([v0, v1, v2])
-                faces.append([v0, v2, v3])
-
-        # --- utilities ---------------------------------------------------------------
         def normalize(v):
             v = np.asarray(v, dtype=float)
             n = np.linalg.norm(v)
             return v / (n if n > 0 else 1.0)
 
-        def cross_section_frame(t):
+        def heading_to_normal_deg(heading_deg):
+            # Convert heading (degrees from north, clockwise) to a unit tangent vector in the horizontal plane
+            theta2 = np.deg2rad(heading_deg)
+            # x: east, y: north
+            t = np.array([
+                np.sin(theta2),  # x (east)
+                np.cos(theta2),  # y (north)
+                0.0
+            ])
+            return t
+
+        def cross_section_frame(headings):
             """
-            Given unit tangent t (cross-section normal), return orthonormal basis (e1,e2)
+            Given cross-section normals, return orthonormal basis (e1,e2)
             spanning the plane perpendicular to t.
             - e2 is chosen as projection of global up onto the plane (so it is 'vertical-ish')
             - e1 = cross(e2, t) (so e1 is lateral / right-ish)
             Handles near-vertical t robustly.
             """
-            up = np.array([0.0, 0.0, 1.0])
+            # Tangent vector (direction of flight)
+            t = heading_to_normal_deg(headings)
             t = normalize(t)
-            # project up into plane perpendicular to t
-            e2 = up - np.dot(up, t) * t
-            if np.linalg.norm(e2) < 1e-6:
-                # tangent nearly vertical: pick arbitrary perpendicular
-                v = np.array([1.0, 0.0, 0.0])
-                e2 = v - np.dot(v, t) * t
-            e2 = normalize(e2)
-            e1 = normalize(np.cross(e2, t))
+            # Global up vector
+            up = np.array([0.0, 0.0, 1.0])
+            # e1: width direction (perpendicular to t, in the local horizontal plane)
+            e1 = np.cross(up, t)
+            e1 = normalize(e1)
+            # e2: depth direction (vertical)
+            e2 = up
             return e1, e2
 
-        def make_section_ellipse(center, a, b, e1, e2):
+        def make_slice_polygon(center, y_half, z_half, e1, e2):
+            """Return a list of 4 coordinate tuples for rectangle centered at center with width a along e1 and depth b along e2."""
+            corners = np.array([
+                [-y_half, -z_half],
+                [-y_half, z_half],
+                [y_half, z_half],
+                [y_half, -z_half]
+            ])  # shape (4,2)
+            pts = center[None,:] + corners[:,0,None] * e1[None,:] + corners[:,1,None] * e2[None,:]
+            return [tuple(float(x) for x in pt) for pt in pts]
+        
+        def make_section_ellipse(center, a, b, e1, e2, N=32):
             """Return (N,3) array of points for ellipse in plane spanned by e1,e2 centered at center."""
-            x = np.cos(theta)[:,None] * (a * e1[None,:])
-            y = np.sin(theta)[:,None] * (b * e2[None,:])
+            # a: width (horizontal, across-flight), b: depth (vertical)
+            # e1: width direction, e2: vertical
+            theta = np.linspace(0.0, 2*np.pi, N, endpoint=False)
+
+            x = np.cos(theta)[:,None] * (a/2 * e1[None,:])
+            y = np.sin(theta)[:,None] * (b/2 * e2[None,:])
             pts = center[None,:] + x + y
             return pts  # shape (N,3)
 
-        
+        pl_ds = self.gpat.pl_ds.sel(ht=ht)[["longitude", "latitude", "altitude", "width", "depth", "heading", "flight_id", "seg_id"]].to_dataframe().reset_index().dropna()
+        pl_out = self.gpat.pl_out.sel(ht=ht).to_dataframe().reset_index()
+        times = np.sort(pl_ds["time"].unique())
 
-        # optionally add end caps (triangulate each end polygon to center)
-        def polygon_triangles_from_section(section_pts, center_point):
-            # fan triangulation around center_point
-            tris = []
-            for j in range(len(section_pts)):
-                j2 = (j + 1) % len(section_pts)
-                tris.append([center_point, section_pts[j], section_pts[j2]])
-            return tris
+        for t in times[30:31]:
+            fig = go.Figure()
+            # Get unique flight_ids for this timestep
+            flight_ids_t = pl_ds[pl_ds["time"] == t]["flight_id"].unique()
+            color_map = [f'rgba({int(30+180*i/len(flight_ids_t))},{int(120+80*i/len(flight_ids_t))},{int(220-120*i/len(flight_ids_t))},0.5)' for i in range(len(flight_ids_t))]
+            
+            plotter = pv.Plotter()
+            for idx, fid in enumerate(flight_ids_t):
+                segs = []
+                centres = []
+                widths = []
+                depths = []
+                headings = []
+                flight_ids_seg = []
+                
+                seg_ids_f = pl_ds[(pl_ds["time"] == t) & (pl_ds["flight_id"] == fid)]["seg_id"].unique()
+                
+                for seg_id_py, seg_id in enumerate(seg_ids_f):
+                    df_s = pl_ds[(pl_ds["time"] == t) & (pl_ds["seg_id"] == seg_id) & (pl_ds["flight_id"] == fid)]
+                    if len(df_s) == 0:
+                        continue
+                    row = df_s.iloc[0]
+                    centres.append([row["longitude"], row["latitude"], row["altitude"]])
+                    widths.append(row["width"])
+                    depths.append(row["depth"])
+                    headings.append(row["heading"])
+                    flight_ids_seg.append(row["flight_id"])
 
-        # add caps if desired
-        add_caps = True
-        if add_caps:
-            # front cap (first section)
-            front_center = np.mean(sections[0], axis=0)
-            faces += polygon_triangles_from_section(sections[0], front_center)
-            # back cap (last section)
-            back_center = np.mean(sections[-1], axis=0)
-            faces += polygon_triangles_from_section(sections[-1][::-1], back_center)  # reverse for outward normal
+                centres = np.array(centres)
+                widths = np.array(widths)
+                depths = np.array(depths)
+                headings = np.array(headings)
 
-        # --- estimate volume via trapezoidal rule of cross-sectional areas -------------
-        areas = np.pi * (a_per_section * b_per_section)   # area of ellipse per section
-        seg_lengths = np.linalg.norm(np.diff(centers, axis=0), axis=1)
-        vol_est = 0.0
-        for i, L in enumerate(seg_lengths):
-            vol_est += 0.5 * (areas[i] + areas[i+1]) * L
+                # --- Convert longitude/latitude to meters ---
+                if len(centres) == 0:
+                    continue
+                global_ref_lon = pl_ds["longitude"].min()
+                global_ref_lat = pl_ds["latitude"].min()
+                transformer = Transformer.from_crs("epsg:4326", f"+proj=tmerc +lat_0={global_ref_lat} +lon_0={global_ref_lon} +k=1 +x_0=0 +y_0=0", always_xy=True)
+                def lonlat_to_xy(lon, lat):
+                    x, y = transformer.transform(lon, lat)
+                    return x, y
+                centres_m = np.array([(*lonlat_to_xy(lon, lat), alt) for lon, lat, alt in centres])
+                print("Axis orientation diagnostic:")
+                print(f"global_ref_lon={global_ref_lon}, global_ref_lat={global_ref_lat}")
+                print("Waypoint coordinates (meters):")
+                for idx, c_m in enumerate(centres_m):
+                    print(f"Waypoint {idx}: {c_m}")
+               
+                # Build slices for each segment (in meters)
+                
+                slices = [[] for _ in range(len(centres_m))]  # list of lists of slice vertices for each waypoint
+                e1_prev = None
+                for wp_id, (c_m, h) in enumerate(zip(centres_m, headings)): # loop over waypoints
+                    wp_id += 1  # waypoints are 1-indexed in the dataset
+                    y_halfs = pl_out.loc[(pl_out['time'] == t) & (pl_out['flight_id'] == fid), 'y_half'].values
+                    z_halfs = pl_out.loc[(pl_out['time'] == t) & (pl_out['flight_id'] == fid), 'z_half'].values
+                    e1, e2 = cross_section_frame(h)
+                    # Enforce consistent e1 direction
+                    if e1_prev is not None and np.dot(e1_prev, e1) < 0:
+                        e1 = -e1
+                    e1_prev = e1
+                    
+                    for slice_id in np.arange(1, self.gpat.pl_ds.attrs['n_slices'] + 1): # loop over slices at this waypoint
+                        print(f"Processing slice {slice_id} at waypoint {wp_id} for flight {fid} at time {t}")
+                        slice_verts = []
+                        y_half = y_halfs[(slice_id-1)]  # y_half for this slice
+                        z_half = z_halfs[(slice_id-1)]  # z_half for this slice
 
-        # --- plot mesh with matplotlib -----------------------------------------------
-        fig = plt.figure(figsize=(10,7))
-        ax = fig.add_subplot(111, projection='3d')
+                        vert_pts = make_slice_polygon(c_m, y_half, z_half, e1, e2)
+                        # Debug: print the coordinates and order of corners
+                        print(f"Slice corners for waypoint {wp_id}, slice {slice_id}: {vert_pts}")
+                        #slice_verts.append(vert_pts) # list of verts for all slices at this waypoint
+                        slices[wp_id-1].append(vert_pts) # list of lists of slice verts for all waypoints
+                    print(slices[wp_id-1][0])
 
-        pc = Poly3DCollection(faces, facecolors=(0.2,0.6,0.9,0.45), edgecolors='b', linewidths=0.2)
-        ax.add_collection3d(pc)
+                for i in range(len(slices) - 1):
+                    sp1 = slices[i][0]
+                    sp2 = slices[i+1][0]
+                    print(f"Mesh between waypoint {i} and {i+1}: sp1={sp1}, sp2={sp2}")
+                    poly1 = np.array(sp1)
+                    poly2 = np.array(sp2)
+                    n = poly1.shape[0]
+                    points = np.vstack([poly1, poly2])
+                    faces = []
+                    for j in range(n):
+                        j2 = (j + 1) % n
+                        faces.extend([4, j, j2, n + j2, n + j])
+                    faces = np.array(faces)
+                    mesh = pv.PolyData(points, faces)
+                    plotter.add_mesh(mesh, color="blue", opacity=0.4)
+                
+                # Build ellipses for each waypoint (in meters)
+                ellipses = []
+                for c_m, h, a, b in zip(centres_m, headings, widths, depths):
+                    e1, e2 = cross_section_frame(h)
+                    sec_pts = make_section_ellipse(c_m, a, b, e1, e2)
+                    ellipses.append(sec_pts)
 
-        # autoscale from verts
-        xmin, ymin, zmin = verts.min(axis=0)
-        xmax, ymax, zmax = verts.max(axis=0)
-        pad = 0.2 * max(xmax-xmin, ymax-ymin, zmax-zmin)
-        ax.set_xlim(xmin-pad, xmax+pad); ax.set_ylim(ymin-pad, ymax+pad); ax.set_zlim(zmin-pad, zmax+pad)
-        try:
-            ax.set_box_aspect((xmax-xmin, ymax-ymin, max(zmax-zmin, 1e-6)))
-        except Exception:
-            pass
+                for i in range(len(ellipses) - 1):
+                    e1 = ellipses[i]
+                    e2 = ellipses[i+1]
+                    n = e1.shape[0]
+                    points = np.vstack([e1, e2])
+                    faces = []
+                    for j in range(n):
+                        j2 = (j + 1) % n
+                        faces.extend([4, j, j2, n + j2, n + j])
+                    faces = np.array(faces)
+                    mesh = pv.PolyData(points, faces)
+                    plotter.add_mesh(mesh, color="red", opacity=0.5)
 
-        ax.set_xlabel('X (m)'); ax.set_ylabel('Y (m)'); ax.set_zlabel('Z (m)')
-        plt.title('Lofted plume mesh (cross-sections perpendicular to trajectory)')
-        print("sections:", len(sections), "vertices:", verts.shape[0], "triangles:", len(faces))
-        print("estimated volume (m^3):", vol_est)
-        plt.show()
+                trajectory = np.array([c_m for c_m in centres_m])
+                plotter.add_lines(trajectory, color="blue", width=3, connected=True)
 
+            plotter.show()
+
+                # Add frustum mesh for each segment (between consecutive ellipses)
+                # for i in range(len(ellipses) - 1):
+                #     e1 = ellipses[i]
+                #     e2 = ellipses[i+1]
+                #     x, y, z, I, J, K = [], [], [], [], [], []
+                #     n = e1.shape[0]
+                #     pts = np.vstack([e1, e2])
+                #     x, y, z = pts[:,0], pts[:,1], pts[:,2]
+                    
+                    
+                    
+                # for j in range(n):
+                #     j2 = (j + 1) % n
+                #     # First triangle
+                #     I.append(j)
+                #     J.append(j2)
+                #     K.append(n + j2)
+                #     # Second triangle
+                #     I.append(j)
+                #     J.append(n + j2)
+                #     K.append(n + j)
+                # fig.add_trace(go.Mesh3d(
+                #     x=x, y=y, z=z,
+                #     i=I, j=J, k=K,
+                #     color=color_map[idx],
+                #     opacity=0.5,
+                #     name=f'Flight {fid} Segment {i+1}',
+                #     showscale=False
+                # ))
+
+                # Add trajectory as a line (in meters)
+                # fig.add_trace(go.Scatter3d(
+                #     x=centres_m[:,0], y=centres_m[:,1], z=centres_m[:,2],
+                #     mode='lines',
+                #     #marker=dict(size=5, color=color_map[idx]),
+                #     line=dict(color=color_map[idx], width=3),
+                #     name=f'Flight {fid} Trajectory'
+                # ))
+
+                
+            lons_m = np.array([lonlat_to_xy(lon, 0)[0] for lon in self.gpat.lons])
+            lats_m = np.array([lonlat_to_xy(0, lat)[1] for lat in self.gpat.lats])
+            
+
+            xmin, ymin = lons_m.min(), lats_m.min()
+            xmax, ymax = lons_m.max(), lats_m.max()
+            zmin, zmax = 0, 100000
+
+            # Calculate the physical ranges
+            x_range = xmax - xmin
+            y_range = ymax - ymin
+            z_range = zmax - zmin
+
+            # Set equal aspect ratio for axes
+            fig.update_layout(
+                title=f'Lofted plume mesh (interactive) at t={t}',
+                scene=dict(
+                    xaxis_title='X (m)',
+                    yaxis_title='Y (m)',
+                    zaxis_title='Altitude (m)',
+                    xaxis=dict(range=[xmin, xmax]),
+                    yaxis=dict(range=[ymin, ymax]),
+                    zaxis=dict(range=[zmin, zmax]),
+                    aspectmode='cube',
+                    aspectratio=dict(
+            x=x_range / z_range,
+            y=y_range / z_range,
+            z=1
+        )
+                    ),
+                legend=dict(x=0.8, y=0.9)
+            )
+            fig.show()
 
     # Validation methods
     def mc_test(params, fl_df, pl_df, chem_ds):
@@ -1834,35 +1905,3 @@ def filter_inherited_params(instance, base_class):
     base_fields = {f.name for f in fields(base_class)}
     instance_dict = asdict(instance)
     return {k: v for k, v in instance_dict.items() if k not in base_fields}
-
-# Helper function for 3D plume visualization
-def ellipse_points(center, width, depth, heading_deg, n_points=12):
-    import numpy as np
-    # center: (lon, lat, alt)
-    # width: major axis (across-flight)
-    # depth: minor axis (vertical)
-    # heading_deg: direction of flight (degrees from north)
-    theta = np.linspace(0, 2 * np.pi, n_points)
-    # Ellipse in local coordinates (major axis along x, minor along z)
-    x = (width / 2) * np.cos(theta)
-    z = (depth / 2) * np.sin(theta)
-    y = np.zeros_like(x)
-    # Rotate ellipse so x is perpendicular to heading
-    angle = np.deg2rad(heading_deg + 90)  # +90 to get perpendicular
-    x_rot = x * np.cos(angle) - y * np.sin(angle)
-    y_rot = x * np.sin(angle) + y * np.cos(angle)
-    # Translate to center
-    points = np.stack([center[0] + x_rot, center[1] + y_rot, center[2] + z], axis=1)
-    return points
-
-def frustum_mesh(ellipse1, ellipse2):
-    import pyvista as pv
-    # ellipse1, ellipse2: (n_points, 3) arrays
-    n = ellipse1.shape[0]
-    faces = []
-    for i in range(n):
-        i_next = (i + 1) % n
-        # Each quad face between ellipse1[i], ellipse1[i_next], ellipse2[i_next], ellipse2[i]
-        faces.append([4, i, i_next, n + i_next, n + i])
-    points = np.vstack([ellipse1, ellipse2])
-    return pv.PolyData(points, faces=np.hstack(faces))
