@@ -904,7 +904,10 @@ class GPATSetup:
         self.gpat.pl_ds["age_s"] = (("seg_id", "time"), age_seconds)
 
         active_mask = (self.gpat.pl_ds["age_s"] > 0) & (self.gpat.pl_ds["age_s"] <= sim_params.t_pl[2].total_seconds())
+        active_mask = active_mask.astype(int)
         self.gpat.pl_ds = self.gpat.pl_ds.assign_coords(active_seg_flag=(("seg_id", "time"), active_mask.values))
+
+        print(f"active seg flags for seg 1 and all ts: {self.gpat.pl_ds.active_seg_flag.isel(seg_id=0).values}")
 
         self.gpat.pl_ds = self.gpat.pl_ds.assign_coords(
             time_rel_s = ("time", (self.gpat.pl_ds["time"].values - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int)),
@@ -1076,7 +1079,7 @@ class GPATSetup:
                 "z_half": (("seg_id", "ht", "slice_id", "time"), np.zeros((len(pl_ds.seg_id), 2, self.gpat.pl_params.n_slices, len(times_out)))),
                 "m_frac": ("slice_id", np.zeros(self.gpat.pl_params.n_slices)),
                 "w_slice": ("slice_id", np.zeros(self.gpat.pl_params.n_slices)),
-                "poly_slices": (("seg_id", "ht", "slice_id", "corner_id", "coord", "time"), np.zeros((len(pl_ds.seg_id), 2, self.gpat.pl_params.n_slices, 4, 3, len(times_out)))),
+                "slice_poly": (("seg_id", "ht", "slice_id", "corner_id", "coord", "time"), np.zeros((len(pl_ds.seg_id), 2, self.gpat.pl_params.n_slices, 4, 3, len(times_out)))),
                 },
                 coords={
                     "seg_id": self.gpat.pl_out.seg_id,
@@ -1085,7 +1088,7 @@ class GPATSetup:
                     "ht": xr.DataArray(np.array(["tail", "head"], dtype="U4"), dims=("ht",)),
                     "slice_id": np.arange(1, self.gpat.pl_params.n_slices + 1),
                     "corner_id": xr.DataArray(np.array(["BL", "TL", "TR", "BR"], dtype="U2"), dims=("corner_id",)),
-                    "coord": xr.DataArray(np.array(["lat_m", "lon_m", "alt_m"], dtype="U1"), dims=("coord",)),
+                    "coord": xr.DataArray(np.array(["lon_m", "lat_m", "alt_m"], dtype="U5"), dims=("coord",)),
                 }
             )
             for var in pl_slices.data_vars:
