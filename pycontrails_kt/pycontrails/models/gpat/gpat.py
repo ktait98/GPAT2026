@@ -916,32 +916,32 @@ class GPATSetup:
         )
 
         # Add head/tail dimension (1=tail, 2=head) for geometry fields
-        ht = xr.DataArray(np.array(["tail", "head"], dtype="U4"), dims=("ht",))
-        self.gpat.pl_ds = self.gpat.pl_ds.assign_coords(ht=ht)
-        geom_vars = [
-            "longitude",
-            "latitude",
-            "level",
-            "altitude",
-            "heading",
-            "width",
-            "depth",
-            "sigma_yy",
-            "sigma_yz",
-            "sigma_zz",
-        ]
-        # Only link head -> next seg within same flight_id
-        seg_flight_id = self.gpat.pl_ds["flight_id"].broadcast_like(self.gpat.pl_ds["longitude"])
-        for var in geom_vars:
-            tail = self.gpat.pl_ds[var]
-            head = tail.shift(seg_id=-1)
-            same_flight = seg_flight_id.shift(seg_id=-1) == seg_flight_id
-            head = head.where(same_flight, other=tail)
-            self.gpat.pl_ds[var] = (
-                xr.concat([tail, head], dim="ht")
-                .assign_coords(ht=ht)
-                .transpose("seg_id", "ht", "time")
-            )
+        # ht = xr.DataArray(np.array(["tail", "head"], dtype="U4"), dims=("ht",))
+        # self.gpat.pl_ds = self.gpat.pl_ds.assign_coords(ht=ht)
+        # geom_vars = [
+        #     "longitude",
+        #     "latitude",
+        #     "level",
+        #     "altitude",
+        #     "heading",
+        #     "width",
+        #     "depth",
+        #     "sigma_yy",
+        #     "sigma_yz",
+        #     "sigma_zz",
+        # ]
+        # # Only link head -> next seg within same flight_id
+        # seg_flight_id = self.gpat.pl_ds["flight_id"].broadcast_like(self.gpat.pl_ds["longitude"])
+        # for var in geom_vars:
+        #     tail = self.gpat.pl_ds[var]
+        #     head = tail.shift(seg_id=-1)
+        #     same_flight = seg_flight_id.shift(seg_id=-1) == seg_flight_id
+        #     head = head.where(same_flight, other=tail)
+        #     self.gpat.pl_ds[var] = (
+        #         xr.concat([tail, head], dim="ht")
+        #         .assign_coords(ht=ht)
+        #         .transpose("seg_id", "ht", "time")
+        #     )
 
         self.gpat.pl_ds["time"] = self.gpat.pl_ds["time"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
         self.gpat.pl_ds["age"].values = self.gpat.pl_ds["age"].values.astype(str)
@@ -1075,17 +1075,17 @@ class GPATSetup:
         if self.gpat.pl_params.output_pl_slices:
             pl_slices = xr.Dataset(
                 {
-                "y_half": (("seg_id", "ht", "slice_id", "time"), np.zeros((len(pl_ds.seg_id), 2, self.gpat.pl_params.n_slices, len(times_out)))),
-                "z_half": (("seg_id", "ht", "slice_id", "time"), np.zeros((len(pl_ds.seg_id), 2, self.gpat.pl_params.n_slices, len(times_out)))),
+                "y_half": (("seg_id", "slice_id", "time"), np.zeros((len(pl_ds.seg_id), self.gpat.pl_params.n_slices, len(times_out)))),
+                "z_half": (("seg_id", "slice_id", "time"), np.zeros((len(pl_ds.seg_id), self.gpat.pl_params.n_slices, len(times_out)))),
                 "m_frac": ("slice_id", np.zeros(self.gpat.pl_params.n_slices)),
                 "w_slice": ("slice_id", np.zeros(self.gpat.pl_params.n_slices)),
-                "slice_poly": (("seg_id", "ht", "slice_id", "corner_id", "coord", "time"), np.zeros((len(pl_ds.seg_id), 2, self.gpat.pl_params.n_slices, 4, 3, len(times_out)))),
+                "slice_poly": (("seg_id", "slice_id", "corner_id", "coord", "time"), np.zeros((len(pl_ds.seg_id), self.gpat.pl_params.n_slices, 4, 3, len(times_out)))),
                 },
                 coords={
                     "seg_id": self.gpat.pl_out.seg_id,
                     "species_pl": self.gpat.pl_out.species_pl,
                     "time": self.gpat.pl_out.time,
-                    "ht": xr.DataArray(np.array(["tail", "head"], dtype="U4"), dims=("ht",)),
+                    # "ht": xr.DataArray(np.array(["tail", "head"], dtype="U4"), dims=("ht",)),
                     "slice_id": np.arange(1, self.gpat.pl_params.n_slices + 1),
                     "corner_id": xr.DataArray(np.array(["BL", "TL", "TR", "BR"], dtype="U2"), dims=("corner_id",)),
                     "coord": xr.DataArray(np.array(["lon_m", "lat_m", "alt_m"], dtype="U5"), dims=("coord",)),
@@ -1414,188 +1414,89 @@ class GPATAnalysis:
         # # Compute the result to trigger the lazy evaluation
         # self.boxm_ds_unstacked = self.boxm_ds_unstacked.compute()
 
-    def plot_plumes_3d_ani_plotly(self, ht="tail", N=32):
+    def plot_plumes_3d(self, time_idx=61):
         import plotly.graph_objects as go
         import numpy as np
         from pyproj import Transformer
 
-        def normalize(v):
-            v = np.asarray(v, dtype=float)
-            n = np.linalg.norm(v)
-            return v / (n if n > 0 else 1.0)
 
-        def heading_to_normal_deg(heading_deg):
-            # Convert heading (degrees from north, clockwise) to a unit tangent vector in the horizontal plane
-            theta2 = np.deg2rad(heading_deg)
-            # x: east, y: north
-            t = np.array([
-                np.sin(theta2),  # x (east)
-                np.cos(theta2),  # y (north)
-                0.0
-            ])
-            return t
 
-        def cross_section_frame(headings):
-            """
-            Given cross-section normals, return orthonormal basis (e1,e2)
-            spanning the plane perpendicular to t.
-            - e2 is chosen as projection of global up onto the plane (so it is 'vertical-ish')
-            - e1 = cross(e2, t) (so e1 is lateral / right-ish)
-            Handles near-vertical t robustly.
-            """
-            # Tangent vector (direction of flight)
-            t = heading_to_normal_deg(headings)
-            t = normalize(t)
-            # Global up vector
-            up = np.array([0.0, 0.0, 1.0])
-            # e1: width direction (perpendicular to t, in the local horizontal plane)
-            e1 = np.cross(up, t)
-            e1 = normalize(e1)
-            # e2: depth direction (vertical)
-            e2 = up
-            return e1, e2
-
-        def make_slice_polygon(center, y_half, z_half, e1, e2):
-            """Return a list of 4 coordinate tuples for rectangle centered at center with width a along e1 and depth b along e2."""
-            corners = np.array([
-                [-y_half, -z_half],
-                [-y_half, z_half],
-                [y_half, z_half],
-                [y_half, -z_half]
-            ])  # shape (4,2)
-            pts = center[None,:] + corners[:,0,None] * e1[None,:] + corners[:,1,None] * e2[None,:]
-            return [tuple(float(x) for x in pt) for pt in pts]
-        
-        def make_section_ellipse(center, a, b, e1, e2, N=32):
-            """Return (N,3) array of points for ellipse in plane spanned by e1,e2 centered at center."""
-            # a: width (horizontal, across-flight), b: depth (vertical)
-            # e1: width direction, e2: vertical
-            theta = np.linspace(0.0, 2*np.pi, N, endpoint=False)
-
-            x = np.cos(theta)[:,None] * (a/2 * e1[None,:])
-            y = np.sin(theta)[:,None] * (b/2 * e2[None,:])
-            pts = center[None,:] + x + y
-            return pts  # shape (N,3)
-
-        pl_ds = self.gpat.pl_ds.sel(ht=ht)[["longitude", "latitude", "altitude", "width", "depth", "heading", "flight_id", "seg_id"]].to_dataframe().reset_index().dropna()
-        pl_out = self.gpat.pl_out.sel(ht=ht).to_dataframe().reset_index()
-        times = np.sort(pl_ds["time"].unique())
 
         for t in times[30:31]:
             fig = go.Figure()
-            # Get unique flight_ids for this timestep
             flight_ids_t = pl_ds[pl_ds["time"] == t]["flight_id"].unique()
             color_map = [f'rgba({int(30+180*i/len(flight_ids_t))},{int(120+80*i/len(flight_ids_t))},{int(220-120*i/len(flight_ids_t))},0.5)' for i in range(len(flight_ids_t))]
-            
             plotter = pv.Plotter()
             for idx, fid in enumerate(flight_ids_t):
-                segs = []
-                centres = []
-                widths = []
-                depths = []
-                headings = []
-                flight_ids_seg = []
-                
-                seg_ids_f = pl_ds[(pl_ds["time"] == t) & (pl_ds["flight_id"] == fid)]["seg_id"].unique()
-                
-                for seg_id_py, seg_id in enumerate(seg_ids_f):
-                    df_s = pl_ds[(pl_ds["time"] == t) & (pl_ds["seg_id"] == seg_id) & (pl_ds["flight_id"] == fid)]
-                    if len(df_s) == 0:
-                        continue
-                    row = df_s.iloc[0]
-                    centres.append([row["longitude"], row["latitude"], row["altitude"]])
-                    widths.append(row["width"])
-                    depths.append(row["depth"])
-                    headings.append(row["heading"])
-                    flight_ids_seg.append(row["flight_id"])
-
-                centres = np.array(centres)
-                widths = np.array(widths)
-                depths = np.array(depths)
-                headings = np.array(headings)
-
-                # --- Convert longitude/latitude to meters ---
-                if len(centres) == 0:
-                    continue
-                global_ref_lon = pl_ds["longitude"].min()
-                global_ref_lat = pl_ds["latitude"].min()
-                transformer = Transformer.from_crs("epsg:4326", f"+proj=tmerc +lat_0={global_ref_lat} +lon_0={global_ref_lon} +k=1 +x_0=0 +y_0=0", always_xy=True)
-                def lonlat_to_xy(lon, lat):
-                    x, y = transformer.transform(lon, lat)
-                    return x, y
-                centres_m = np.array([(*lonlat_to_xy(lon, lat), alt) for lon, lat, alt in centres])
-                print("Axis orientation diagnostic:")
-                print(f"global_ref_lon={global_ref_lon}, global_ref_lat={global_ref_lat}")
-                print("Waypoint coordinates (meters):")
-                for idx, c_m in enumerate(centres_m):
-                    print(f"Waypoint {idx}: {c_m}")
-               
-                # Build slices for each segment (in meters)
-                
-                slices = [[] for _ in range(len(centres_m))]  # list of lists of slice vertices for each waypoint
-                e1_prev = None
-                for wp_id, (c_m, h) in enumerate(zip(centres_m, headings)): # loop over waypoints
-                    wp_id += 1  # waypoints are 1-indexed in the dataset
-                    y_halfs = pl_out.loc[(pl_out['time'] == t) & (pl_out['flight_id'] == fid), 'y_half'].values
-                    z_halfs = pl_out.loc[(pl_out['time'] == t) & (pl_out['flight_id'] == fid), 'z_half'].values
-                    e1, e2 = cross_section_frame(h)
-                    # Enforce consistent e1 direction
-                    if e1_prev is not None and np.dot(e1_prev, e1) < 0:
-                        e1 = -e1
-                    e1_prev = e1
-                    
-                    for slice_id in np.arange(1, self.gpat.pl_ds.attrs['n_slices'] + 1): # loop over slices at this waypoint
-                        print(f"Processing slice {slice_id} at waypoint {wp_id} for flight {fid} at time {t}")
-                        slice_verts = []
-                        y_half = y_halfs[(slice_id-1)]  # y_half for this slice
-                        z_half = z_halfs[(slice_id-1)]  # z_half for this slice
-
-                        vert_pts = make_slice_polygon(c_m, y_half, z_half, e1, e2)
-                        # Debug: print the coordinates and order of corners
-                        print(f"Slice corners for waypoint {wp_id}, slice {slice_id}: {vert_pts}")
-                        #slice_verts.append(vert_pts) # list of verts for all slices at this waypoint
-                        slices[wp_id-1].append(vert_pts) # list of lists of slice verts for all waypoints
-                    print(slices[wp_id-1][0])
-
-                for i in range(len(slices) - 1):
-                    sp1 = slices[i][0]
-                    sp2 = slices[i+1][0]
-                    print(f"Mesh between waypoint {i} and {i+1}: sp1={sp1}, sp2={sp2}")
-                    poly1 = np.array(sp1)
-                    poly2 = np.array(sp2)
-                    n = poly1.shape[0]
-                    points = np.vstack([poly1, poly2])
-                    faces = []
-                    for j in range(n):
-                        j2 = (j + 1) % n
-                        faces.extend([4, j, j2, n + j2, n + j])
-                    faces = np.array(faces)
-                    mesh = pv.PolyData(points, faces)
-                    plotter.add_mesh(mesh, color="blue", opacity=0.4)
-                
-                # Build ellipses for each waypoint (in meters)
-                ellipses = []
-                for c_m, h, a, b in zip(centres_m, headings, widths, depths):
-                    e1, e2 = cross_section_frame(h)
-                    sec_pts = make_section_ellipse(c_m, a, b, e1, e2)
-                    ellipses.append(sec_pts)
-
-                for i in range(len(ellipses) - 1):
-                    e1 = ellipses[i]
-                    e2 = ellipses[i+1]
-                    n = e1.shape[0]
-                    points = np.vstack([e1, e2])
-                    faces = []
-                    for j in range(n):
-                        j2 = (j + 1) % n
-                        faces.extend([4, j, j2, n + j2, n + j])
-                    faces = np.array(faces)
-                    mesh = pv.PolyData(points, faces)
-                    plotter.add_mesh(mesh, color="red", opacity=0.5)
-
-                trajectory = np.array([c_m for c_m in centres_m])
+            #     segs = []
+            #     centres = []
+            #     widths = []
+            #     depths = []
+            #     headings = []
+            #     flight_ids_seg = []
+            #     seg_ids_f = pl_ds[(pl_ds["time"] == t) & (pl_ds["flight_id"] == fid)]["seg_id"].unique()
+            #     for seg_id_py, seg_id in enumerate(seg_ids_f):
+            #         df_s = pl_ds[(pl_ds["time"] == t) & (pl_ds["seg_id"] == seg_id) & (pl_ds["flight_id"] == fid)]
+            #         if len(df_s) == 0:
+            #             continue
+            #         row = df_s.iloc[0]
+            #         centres.append([row["longitude"], row["latitude"], row["altitude"]])
+            #         widths.append(row["width"])
+            #         depths.append(row["depth"])
+            #         headings.append(row["heading"])
+            #         flight_ids_seg.append(row["flight_id"])
+            #     centres = np.array(centres)
+            #     widths = np.array(widths)
+            #     depths = np.array(depths)
+            #     headings = np.array(headings)
+            #     # --- Convert longitude/latitude to meters for ellipse centers ---
+            #     if len(centres) == 0:
+            #         continue
+            #     centres_m = np.array([(*lonlat_to_xy(lon, lat), alt) for lon, lat, alt in centres])
+            #     # Build ellipses for each waypoint (in meters)
+            #     ellipses = []
+            #     for c_m, h, a, b in zip(centres_m, headings, widths, depths):
+            #         e1, e2 = cross_section_frame(h)
+            #         sec_pts = make_section_ellipse(c_m, a, b, e1, e2)
+            #         ellipses.append(sec_pts)
+            #     for i in range(len(ellipses) - 1):
+            #         e1 = ellipses[i]
+            #         e2 = ellipses[i+1]
+            #         n = e1.shape[0]
+            #         points = np.vstack([e1, e2])
+            #         faces = []
+            #         for j in range(n):
+            #             j2 = (j + 1) % n
+            #             faces.extend([4, j, j2, n + j2, n + j])
+            #         faces = np.array(faces)
+            #         mesh = pv.PolyData(points, faces)
+            #         plotter.add_mesh(mesh, color="red", opacity=0.5)
+                trajectory = np.array([c_m for c_m in centres])
                 plotter.add_lines(trajectory, color="blue", width=3, connected=True)
-
+            # Overlay slice_poly polygons from pl_out, converting lat/lon to meters
+            if hasattr(self.gpat, "pl_out"):
+                pl_out = self.gpat.pl_out
+                for seg_id in pl_out["seg_id"].values:
+                    for slice_id in pl_out["slice_id"].values:
+                        try:
+                            # shape: (4, 3) for 4 corners, 3 coords (lon_deg, lat_deg, alt_m)
+                            poly = pl_out["slice_poly"].sel(
+                                seg_id=seg_id, ht=ht, slice_id=slice_id, time=t
+                            ).values  # shape: (4, 3)
+                        except Exception:
+                            continue
+                        # Convert each corner from (lon_deg, lat_deg, alt_m) to (x_m, y_m, z_m)
+                        poly_m = np.zeros_like(poly)
+                        for i, (lon, lat, alt) in enumerate(poly):
+                            x, y = lonlat_to_xy(lon, lat)
+                            poly_m[i, 0] = x
+                            poly_m[i, 1] = y
+                            poly_m[i, 2] = alt
+                        poly_closed = np.vstack([poly_m, poly_m[0]])
+                        face = np.arange(len(poly_closed))
+                        faces = np.hstack([[len(face)], face])
+                        mesh = pv.PolyData(poly_closed, faces)
+                        plotter.add_mesh(mesh, color="green", opacity=0.3)
             plotter.show()
 
                 # Add frustum mesh for each segment (between consecutive ellipses)

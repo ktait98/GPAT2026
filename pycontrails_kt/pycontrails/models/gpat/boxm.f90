@@ -4,7 +4,7 @@ MODULE HELPERS
     PRIVATE
 
     INTEGER, PARAMETER, PUBLIC :: DP = KIND(1.0D0)
-    PUBLIC :: NC_CHECK, ERFINV, LONLAT_TO_M
+    PUBLIC :: NC_CHECK, ERFINV, LONLAT_TO_M, M_TO_LONLAT
 
     ! ---------- GENERIC NETCDF ERROR CHECKING ----------
 CONTAINS
@@ -33,44 +33,131 @@ CONTAINS
     END FUNCTION ERFINV
 
     ! CONVERT (LON, LAT) TO METERS USING LOCAL TRANSVERSE MERCATOR
-    SUBROUTINE LONLAT_TO_M(LON, LAT, LON0, LAT0, LON_M, LAT_M, NSEG)
+    SUBROUTINE LONLAT_TO_M(LON, LAT, LON0, LAT0, LON_M, LAT_M, N)
         IMPLICIT NONE
-        INTEGER, INTENT(IN) :: NSEG
-        INTEGER, PARAMETER :: HT = 2
-        INTEGER :: SEG_ID, HT_ID
+
+        INTEGER, INTENT(IN) :: I, N
             
-        REAL(8), INTENT(IN) :: LON(NSEG, HT), LAT(NSEG, HT)      ! INPUT LONGITUDE, LATITUDE (DEGREES)
+        REAL(8), INTENT(IN) :: LON(N), LAT(N)      ! INPUT LONGITUDE, LATITUDE (DEGREES)
         REAL(8) :: LON0, LAT0                                    ! REFERENCE LONGITUDE, LATITUDE (DEGREES)
         REAL(8), INTENT(OUT):: LON_M(NSEG, HT), LAT_M(NSEG, HT)  ! OUTPUT LON, LAT (METERS)
-        REAL(8), PARAMETER :: A = 6378137.0D0         ! WGS84 SEMI-MAJOR AXIS
-        REAL(8), PARAMETER :: F = 1.0D0/298.257223563 ! WGS84 FLATTENING
-        REAL(8), PARAMETER :: K0 = 1.0D0              ! SCALE FACTOR
+        REAL(8), PARAMETER :: A = 6378137.0D0                    ! WGS84 SEMI-MAJOR AXIS
+        REAL(8), PARAMETER :: F = 1.0D0/298.257223563            ! WGS84 FLATTENING
+        REAL(8), PARAMETER :: K0 = 1.0D0                         ! SCALE FACTOR
         REAL(8) :: E2, PHI, LAMBDA, LAMBDA0, N, T, C, A_, M, M0
-        INTEGER :: I
 
         E2 = F * (2.0D0 - F)
         LAMBDA0 = LON0 * (ACOS(-1.0D0) / 180.0D0)
         M0 = 0.0D0 ! IF LAT0 = 0
 
-        DO SEG_ID = 1, NSEG
-            DO HT_ID = 1, 2
-                PHI = LAT(SEG_ID, HT_ID) * (ACOS(-1.0D0) / 180.0D0)
-                LAMBDA = LON(SEG_ID, HT_ID) * (ACOS(-1.0D0) / 180.0D0)
-                N = A / SQRT(1.0D0 - E2 * SIN(PHI)**2)
-                T = TAN(PHI)**2
-                C = E2 / (1.0D0 - E2) * COS(PHI)**2
-                A_ = (LAMBDA - LAMBDA0) * COS(PHI)
-                M = A*((1.0D0 - E2/4.0D0 - 3.0D0*E2**2/64.0D0 - 5.0D0*E2**3/256.0D0)*PHI &
-                    - (3.0D0*E2/8.0D0 + 3.0D0*E2**2/32.0D0 + 45.0D0*E2**3/1024.0D0)*SIN(2.0D0*PHI) &
-                    + (15.0D0*E2**2/256.0D0 + 45.0D0*E2**3/1024.0D0)*SIN(4.0D0*PHI) &
-                    - (35.0D0*E2**3/3072.0D0)*SIN(6.0D0*PHI))
-                LON_M(SEG_ID, HT_ID) = K0 * N * (A_ + (1.0D0 - T + C)*A_**3/6.0D0 &
-                                        + (5.0D0 - 18.0D0*T + T**2 + 72.0D0*C - 58.0D0*E2)*A_**5/120.0D0)
-                LAT_M(SEG_ID, HT_ID) = K0 * (M - M0 + N * TAN(PHI) * (A_**2/2.0D0 &
-                                        + (5.0D0 - T + 9.0D0*C + 4.0D0*C**2)*A_**4/24.0D0))
-            END DO
+        DO I = 1, N
+            PHI = LAT(I) * (ACOS(-1.0D0) / 180.0D0)
+            LAMBDA = LON(I) * (ACOS(-1.0D0) / 180.0D0)
+            N = A / SQRT(1.0D0 - E2 * SIN(PHI)**2)
+            T = TAN(PHI)**2
+            C = E2 / (1.0D0 - E2) * COS(PHI)**2
+            A_ = (LAMBDA - LAMBDA0) * COS(PHI)
+            M = A*((1.0D0 - E2/4.0D0 - 3.0D0*E2**2/64.0D0 - 5.0D0*E2**3/256.0D0)*PHI &
+                - (3.0D0*E2/8.0D0 + 3.0D0*E2**2/32.0D0 + 45.0D0*E2**3/1024.0D0)*SIN(2.0D0*PHI) &
+                + (15.0D0*E2**2/256.0D0 + 45.0D0*E2**3/1024.0D0)*SIN(4.0D0*PHI) &
+                - (35.0D0*E2**3/3072.0D0)*SIN(6.0D0*PHI))
+            LON_M(I) = K0 * N * (A_ + (1.0D0 - T + C)*A_**3/6.0D0 &
+                                    + (5.0D0 - 18.0D0*T + T**2 + 72.0D0*C - 58.0D0*E2)*A_**5/120.0D0)
+            LAT_M(I) = K0 * (M - M0 + N * TAN(PHI) * (A_**2/2.0D0 &
+                                    + (5.0D0 - T + 9.0D0*C + 4.0D0*C**2)*A_**4/24.0D0))
         END DO
+
     END SUBROUTINE LONLAT_TO_M
+
+    SUBROUTINE M_TO_LONLAT(LON_M, LAT_M, LON0, LAT0, LON, LAT, N)
+        IMPLICIT NONE
+
+        INTEGER, INTENT(IN) :: I, N
+
+        ! INPUTS (meters)
+        REAL(8), INTENT(IN)  :: LON_M(N), LAT_M(N)
+        ! REFERENCE (degrees)
+        REAL(8), INTENT(IN)  :: LON0, LAT0
+        ! OUTPUTS (degrees)
+        REAL(8), INTENT(OUT) :: LON(N), LAT(N)
+
+        ! WGS84 + projection params (match your forward routine)
+        REAL(8), PARAMETER :: A  = 6378137.0D0
+        REAL(8), PARAMETER :: F  = 1.0D0/298.257223563D0
+        REAL(8), PARAMETER :: K0 = 1.0D0
+
+        REAL(8), PARAMETER :: PI = 3.1415926535897932384626433832795D0
+
+        ! Ellipsoid / series vars
+        REAL(8) :: E2, EP2, E1, E4, E6
+        REAL(8) :: LAMBDA0, PHI0, M0
+
+        ! Per-point vars
+        REAL(8) :: X, Y, M, MU, PHI1
+        REAL(8) :: N1, T1, C1, R1, D
+        REAL(8) :: PHI, LAMBDA
+        REAL(8) :: SQRT1ME2
+        REAL(8) :: A0
+
+        ! ---- Precompute constants ----
+        E2  = F * (2.0D0 - F)
+        EP2 = E2 / (1.0D0 - E2)              ! e'^2
+        E4  = E2*E2
+        E6  = E4*E2
+
+        SQRT1ME2 = SQRT(1.0D0 - E2)
+        E1 = (1.0D0 - SQRT1ME2) / (1.0D0 + SQRT1ME2)
+
+        LAMBDA0 = LON0 * (PI/180.0D0)
+        PHI0    = LAT0 * (PI/180.0D0)
+
+        ! Meridional arc at the reference latitude (so you can use any LAT0, not just 0)
+        M0 = A * ( (1.0D0 - E2/4.0D0 - 3.0D0*E4/64.0D0 - 5.0D0*E6/256.0D0) * PHI0  &
+                - (3.0D0*E2/8.0D0 + 3.0D0*E4/32.0D0 + 45.0D0*E6/1024.0D0) * SIN(2.0D0*PHI0) &
+                + (15.0D0*E4/256.0D0 + 45.0D0*E6/1024.0D0) * SIN(4.0D0*PHI0) &
+                - (35.0D0*E6/3072.0D0) * SIN(6.0D0*PHI0) )
+
+        ! Same A0 you implicitly used in your forward M-series
+        A0 = 1.0D0 - E2/4.0D0 - 3.0D0*E4/64.0D0 - 5.0D0*E6/256.0D0
+
+        ! ---- Inverse transform ----
+        DO I = 1, N
+            X = LON_M(I)
+            Y = LAT_M(I)
+
+            ! Undo false origin / scale (you used none besides K0)
+            M  = M0 + Y / K0
+            MU = M / (A * A0)
+
+            ! Footpoint latitude (phi1) via series in e1
+            PHI1 = MU + ( (3.0D0*E1/2.0D0) - (27.0D0*E1**3/32.0D0) ) * SIN(2.0D0*MU) &
+                    + ( (21.0D0*E1**2/16.0D0) - (55.0D0*E1**4/32.0D0) ) * SIN(4.0D0*MU) &
+                    + ( (151.0D0*E1**3/96.0D0) ) * SIN(6.0D0*MU) &
+                    + ( (1097.0D0*E1**4/512.0D0) ) * SIN(8.0D0*MU)
+
+            N1 = A / SQRT(1.0D0 - E2 * SIN(PHI1)**2)
+            T1 = TAN(PHI1)**2
+            C1 = EP2 * COS(PHI1)**2
+            R1 = A * (1.0D0 - E2) / (1.0D0 - E2 * SIN(PHI1)**2)**1.5D0
+
+            D = X / (N1 * K0)
+
+            ! Latitude (rad)
+            PHI = PHI1 - (N1 * TAN(PHI1) / R1) * ( D**2/2.0D0 &
+                - (5.0D0 + 3.0D0*T1 + 10.0D0*C1 - 4.0D0*C1**2 - 9.0D0*EP2) * D**4/24.0D0 &
+                + (61.0D0 + 90.0D0*T1 + 298.0D0*C1 + 45.0D0*T1**2 - 252.0D0*EP2 - 3.0D0*C1**2) * D**6/720.0D0 )
+
+            ! Longitude (rad)
+            LAMBDA = LAMBDA0 + ( D &
+                - (1.0D0 + 2.0D0*T1 + C1) * D**3/6.0D0 &
+                + (5.0D0 - 2.0D0*C1 + 28.0D0*T1 - 3.0D0*C1**2 + 8.0D0*EP2 + 24.0D0*T1**2) * D**5/120.0D0 ) / COS(PHI1)
+
+            ! Back to degrees
+            LAT(I) = PHI    * (180.0D0/PI)
+            LON(I) = LAMBDA * (180.0D0/PI)
+        END DO
+
+    END SUBROUTINE M_TO_LONLAT
 
 END MODULE HELPERS
 
@@ -1150,6 +1237,7 @@ MODULE DEFINE_STATE_TYPES
         REAL(DP), ALLOCATABLE :: M_FRAC(:)      ! (NSLICES)
         REAL(DP), ALLOCATABLE :: W_SLICE(:) ! (NSLICES)
 
+        REAL(DP), ALLOCATABLE :: SLICE_POLY_M(:,:,:,:,:) ! (NSEG, 2, NSLICES, 4, 3) projected PL slice corners for grid mapping
         REAL(DP), ALLOCATABLE :: SLICE_POLY(:,:,:,:,:) ! (NSEG, 2, NSLICES, 4, 3) PL_SLICES_POLY(SEG_ID, HT, SLICE_ID, CORNER_ID, COORD)
 
     CONTAINS
@@ -1274,6 +1362,7 @@ CONTAINS
         IF (.NOT. ALLOCATED(PL_STATE%W_SLICE)) ALLOCATE(PL_STATE%W_SLICE(PL_STATE%NSLICES))
         IF (.NOT. ALLOCATED(PL_STATE%M_FRAC)) ALLOCATE(PL_STATE%M_FRAC(PL_STATE%NSLICES))
 
+        IF (.NOT. ALLOCATED(PL_STATE%SLICE_POLY_M)) ALLOCATE(PL_STATE%SLICE_POLY_M(PL_STATE%NSEG, 2, PL_STATE%NSLICES, 4, 3))
         IF (.NOT. ALLOCATED(PL_STATE%SLICE_POLY)) ALLOCATE(PL_STATE%SLICE_POLY(PL_STATE%NSEG, 2, PL_STATE%NSLICES, 4, 3))
 
         ! DEFINE CUMULATIVE MASS LADDER
@@ -1294,10 +1383,9 @@ CONTAINS
 
         PL_STATE%SLICE_POLY(:,:,:,:,:) = 0.0_DP
 
-
     END SUBROUTINE PL_SLICES_INIT
 
-    SUBROUTINE CALC_SLICE_POLY(PL_STATE, SEG_ID, SLICE_ID)
+    SUBROUTINE CALC_SLICE_POLYS_M(PL_STATE, SEG_ID, SLICE_ID)
         CLASS(PL_STATE_TYPE), INTENT(INOUT) :: PL_STATE
         INTEGER, INTENT(IN) :: SEG_ID, SLICE_ID
         INTEGER :: HT_ID
@@ -1333,13 +1421,13 @@ CONTAINS
             COORD_BR(2) = LAT_C_M + (-Y_HALF * SIN(HEAD_RAD))
             COORD_BR(3) = ALT_C + (-Z_HALF)
 
-            PL_STATE%SLICE_POLY(SEG_ID, HT_ID, SLICE_ID, 1, :) = COORD_BL(:)
-            PL_STATE%SLICE_POLY(SEG_ID, HT_ID, SLICE_ID, 2, :) = COORD_TL(:)
-            PL_STATE%SLICE_POLY(SEG_ID, HT_ID, SLICE_ID, 3, :) = COORD_TR(:)
-            PL_STATE%SLICE_POLY(SEG_ID, HT_ID, SLICE_ID, 4, :) = COORD_BR(:)
+            PL_STATE%SLICE_POLY_M(SEG_ID, HT_ID, SLICE_ID, 1, :) = COORD_BL(:)
+            PL_STATE%SLICE_POLY_M(SEG_ID, HT_ID, SLICE_ID, 2, :) = COORD_TL(:)
+            PL_STATE%SLICE_POLY_M(SEG_ID, HT_ID, SLICE_ID, 3, :) = COORD_TR(:)
+            PL_STATE%SLICE_POLY_M(SEG_ID, HT_ID, SLICE_ID, 4, :) = COORD_BR(:)
         END DO
         
-    END SUBROUTINE CALC_SLICE_POLY
+    END SUBROUTINE CALC_SLICE_POLYS_M
         
     SUBROUTINE PL_STATE_ADVANCE_GEOM(PL_STATE, PL_DS, BOXM_DS, TIME_IDX)
         CLASS(PL_STATE_TYPE),    INTENT(INOUT) :: PL_STATE
@@ -1347,7 +1435,7 @@ CONTAINS
         CLASS(BOXM_DS_TYPE),      INTENT(IN)   :: BOXM_DS
 
         INTEGER, INTENT(IN) :: TIME_IDX
-        INTEGER :: SEG_ID, HT_ID, SLICE_ID, PL_I, I
+        INTEGER :: SEG_ID, HT_ID, SLICE_ID, PL_I, I, CORNER_ID
         REAL(DP) :: SIGMA_Y, SIGMA_Z, LAT0, LON0
         REAL(DP) :: F, U
         REAL(DP), PARAMETER :: F_EPS = 1.0E-12_DP
@@ -1364,7 +1452,6 @@ CONTAINS
             RETURN
         END IF
 
-        
         ! GRAB PLUME GEOMETRY FROM PL DS
         PL_STATE%LONGITUDE(:,:) = PL_DS%LONGITUDE(:,:,PL_I) ! TAIL (HT=1)
         PL_STATE%LATITUDE(:,:)  = PL_DS%LATITUDE(:,:,PL_I)  ! (NSEG, HT)
@@ -1374,9 +1461,10 @@ CONTAINS
         LAT0 = MINVAL(BOXM_DS%LATITUDE_C)
         LON0 = MINVAL(BOXM_DS%LONGITUDE_C)
 
-
-        CALL LONLAT_TO_M(PL_STATE%LONGITUDE, PL_STATE%LATITUDE, LON0, LAT0, &
-                         PL_STATE%LONGITUDE_M, PL_STATE%LATITUDE_M, PL_DS%NSEG)
+        DO HT_ID = 1, 2
+            CALL LONLAT_TO_M(PL_STATE%LONGITUDE(:,HT_ID), PL_STATE%LATITUDE(:,HT_ID), LON0, LAT0, &
+                            PL_STATE%LONGITUDE_M(:,HT_ID), PL_STATE%LATITUDE_M(:,HT_ID), PL_DS%NSEG)
+        END DO
 
         PRINT *, "TIME_IDX=", TIME_IDX
         PRINT *, "PLUME TIME (S): ", PL_I, PL_DS%TIME_REL_S(PL_I)
@@ -1420,10 +1508,25 @@ CONTAINS
                     END DO
 
                     ! CALC SLICE POLYS FOR EACH SEGMENT AND SLICE
-                    CALL CALC_SLICE_POLY(PL_STATE, SEG_ID, SLICE_ID)
+                    ! CALL CALC_SLICE_POLYS_M(PL_STATE, SEG_ID, SLICE_ID)
                 END DO
             END IF
         END DO
+
+        ! CONVERT BACK TO LON/LAT/ALT FOR GRID MAPPING
+        DO HT_ID = 1, 2
+            DO SLICE_ID = 1, PL_STATE%NSLICES
+                DO CORNER_ID = 1, 4
+                    CALL M_TO_LONLAT(PL_STATE%SLICE_POLY_M(:,HT_ID,SLICE_ID,CORNER_ID,1), &
+                                    PL_STATE%SLICE_POLY_M(:,HT_ID,SLICE_ID,CORNER_ID,2), &
+                                    LON0, LAT0, PL_STATE%SLICE_POLY(:,HT_ID,SLICE_ID,CORNER_ID,1), &
+                                    PL_STATE%SLICE_POLY(:,HT_ID,SLICE_ID,CORNER_ID,2), PL_DS%NSEG)
+                END DO
+            END DO
+        END DO
+
+        ! SET ALTS FOR POLYS
+        PL_STATE%SLICE_POLY(:,:,:,:,3) = PL_STATE%SLICE_POLY_M(:,:,:,:,3)
 
     END SUBROUTINE PL_STATE_ADVANCE_GEOM
 
@@ -2553,6 +2656,7 @@ CONTAINS
                         STATUS = NF90_PUT_VAR(PL_OUT%PL_OUT_NCID, PL_OUT%VARID_Z_HALF, PL_OUT%Z_HALF(:,HT_ID,SLICE_ID,OUT_I), &
                                         START=[OUT_I, SLICE_ID, HT_ID, 1], COUNT=[1, 1, 1, PL_OUT%NSEG])
                         CALL NC_CHECK(STATUS, "NF90_PUT_VAR(z_half)")
+                        
                         DO CORNER_ID = 1, 4
                             DO COORD_ID = 1, 3
                                 STATUS = NF90_PUT_VAR(PL_OUT%PL_OUT_NCID, PL_OUT%VARID_SLICE_POLY, &
