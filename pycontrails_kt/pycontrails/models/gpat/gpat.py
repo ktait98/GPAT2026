@@ -27,7 +27,7 @@ import dask.array as da
 import numpy as np
 import pandas as pd
 import xarray as xr
-from pyproj import Geod
+from pyproj import Geod, Transformer
 import json
 
 from pycontrails.core import Flight, GeoVectorDataset, MetDataset, models
@@ -116,6 +116,7 @@ class PlParams:
     n_slices: int = 3  # number of slices in the plume
     f_max: float = 0.99  # maximum fraction of total emissions in any slice
     output_pl_slices: bool = True  # output plume slices to netCDF
+    n_points: int = 32
 
 @dataclass
 class MetParams:
@@ -130,9 +131,9 @@ class ChemParams:
 
     run_chem: bool = True  # whether to run chemistry model
 
-    species_emi: tuple = ("NO",)
+    species_emi: tuple[str, ...] = ("NO",)
     
-    species_pl: tuple = (
+    species_pl: tuple[str, ...] = (
     # Core NOx-O3 photochemistry memory
     "NO", "NO2", "O3", "NO3", "N2O5",
     "HNO3", "HONO", "HO2NO2",  # HO2NO2 = pernitric acid
@@ -150,7 +151,7 @@ class ChemParams:
     "SO2", "SA"                # SA = sulfuric acid proxy in your mechanism list
     )
     
-    species_out: tuple = (
+    species_out: tuple[str, ...] = (
     "O3", "NO2", "NO", "NO3", "N2O5", "HNO3",
     "HONO", "HO2", "OH", "H2O2",
     "CO", "CH4", "CH3O2",
@@ -745,6 +746,11 @@ class GPATSetup:
             on=["flight_id", "waypoint"],
         ).sort_values(by=["time", "flight_id", "waypoint"])
 
+        pl["longitude_m"], pl["latitude_m"] = lonlat_to_m(pl["longitude"].values, 
+                                                        pl["latitude"].values, 
+                                                        self.gpat.lons.min(), 
+                                                        self.gpat.lats.min())
+ 
         pl["sin_a"] = np.sin(np.radians(pl["heading"]))
         pl["cos_a"] = np.cos(np.radians(pl["heading"]))
         pl["altitude"] = units.pl_to_m(pl["level"])
@@ -915,34 +921,6 @@ class GPATSetup:
             species_emi_num = ("species_emi", chem_params.species_emi_num)
         )
 
-        # Add head/tail dimension (1=tail, 2=head) for geometry fields
-        # ht = xr.DataArray(np.array(["tail", "head"], dtype="U4"), dims=("ht",))
-        # self.gpat.pl_ds = self.gpat.pl_ds.assign_coords(ht=ht)
-        # geom_vars = [
-        #     "longitude",
-        #     "latitude",
-        #     "level",
-        #     "altitude",
-        #     "heading",
-        #     "width",
-        #     "depth",
-        #     "sigma_yy",
-        #     "sigma_yz",
-        #     "sigma_zz",
-        # ]
-        # # Only link head -> next seg within same flight_id
-        # seg_flight_id = self.gpat.pl_ds["flight_id"].broadcast_like(self.gpat.pl_ds["longitude"])
-        # for var in geom_vars:
-        #     tail = self.gpat.pl_ds[var]
-        #     head = tail.shift(seg_id=-1)
-        #     same_flight = seg_flight_id.shift(seg_id=-1) == seg_flight_id
-        #     head = head.where(same_flight, other=tail)
-        #     self.gpat.pl_ds[var] = (
-        #         xr.concat([tail, head], dim="ht")
-        #         .assign_coords(ht=ht)
-        #         .transpose("seg_id", "ht", "time")
-        #     )
-
         self.gpat.pl_ds["time"] = self.gpat.pl_ds["time"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
         self.gpat.pl_ds["age"].values = self.gpat.pl_ds["age"].values.astype(str)
 
@@ -962,6 +940,7 @@ class GPATSetup:
             n_slices=pl_params.n_slices,
             f_max=pl_params.f_max,
             output_pl_slices=int(pl_params.output_pl_slices),
+            n_points=pl_params.n_points,
 
             description="Emission species mass in plume segments",
         )
@@ -1079,13 +1058,14 @@ class GPATSetup:
                 "z_half": (("seg_id", "slice_id", "time"), np.zeros((len(pl_ds.seg_id), self.gpat.pl_params.n_slices, len(times_out)))),
                 "m_frac": ("slice_id", np.zeros(self.gpat.pl_params.n_slices)),
                 "w_slice": ("slice_id", np.zeros(self.gpat.pl_params.n_slices)),
-                "slice_poly": (("seg_id", "slice_id", "corner_id", "coord", "time"), np.zeros((len(pl_ds.seg_id), self.gpat.pl_params.n_slices, 4, 3, len(times_out)))),
+                "ellipses_m": (("seg_id", "pt_id", "coord", "time"), np.zeros((len(pl_ds.seg_id), self.gpat.pl_params.n_points, 3, len(times_out)))),
+                "slice_poly_m": (("seg_id", "slice_id", "corner_id", "coord", "time"), np.zeros((len(pl_ds.seg_id), self.gpat.pl_params.n_slices, 4, 3, len(times_out)))),
                 },
                 coords={
                     "seg_id": self.gpat.pl_out.seg_id,
                     "species_pl": self.gpat.pl_out.species_pl,
                     "time": self.gpat.pl_out.time,
-                    # "ht": xr.DataArray(np.array(["tail", "head"], dtype="U4"), dims=("ht",)),
+                    "pt_id": np.arange(1, self.gpat.pl_params.n_points + 1),
                     "slice_id": np.arange(1, self.gpat.pl_params.n_slices + 1),
                     "corner_id": xr.DataArray(np.array(["BL", "TL", "TR", "BR"], dtype="U2"), dims=("corner_id",)),
                     "coord": xr.DataArray(np.array(["lon_m", "lat_m", "alt_m"], dtype="U5"), dims=("coord",)),
@@ -1415,163 +1395,117 @@ class GPATAnalysis:
         # self.boxm_ds_unstacked = self.boxm_ds_unstacked.compute()
 
     def plot_plumes_3d(self, time_idx=61):
-        import plotly.graph_objects as go
         import numpy as np
-        from pyproj import Transformer
+        import pyvista as pv
+        
+        pl_ds = self.gpat.pl_ds[["longitude", "longitude_m", "latitude", "latitude_m", "altitude", "width", "depth", "heading", "flight_id", "seg_id"]].to_dataframe().reset_index().dropna()
+        boxm_ds = self.gpat.boxm_ds[["longitude", "latitude"]].to_dataframe().reset_index().dropna()
+        pl_out = self.gpat.pl_out[["ellipses_m", "slice_poly_m"]].to_dataframe().reset_index().dropna()
 
-
-
-
-        for t in times[30:31]:
-            fig = go.Figure()
-            flight_ids_t = pl_ds[pl_ds["time"] == t]["flight_id"].unique()
-            color_map = [f'rgba({int(30+180*i/len(flight_ids_t))},{int(120+80*i/len(flight_ids_t))},{int(220-120*i/len(flight_ids_t))},0.5)' for i in range(len(flight_ids_t))]
-            plotter = pv.Plotter()
-            for idx, fid in enumerate(flight_ids_t):
-            #     segs = []
-            #     centres = []
-            #     widths = []
-            #     depths = []
-            #     headings = []
-            #     flight_ids_seg = []
-            #     seg_ids_f = pl_ds[(pl_ds["time"] == t) & (pl_ds["flight_id"] == fid)]["seg_id"].unique()
-            #     for seg_id_py, seg_id in enumerate(seg_ids_f):
-            #         df_s = pl_ds[(pl_ds["time"] == t) & (pl_ds["seg_id"] == seg_id) & (pl_ds["flight_id"] == fid)]
-            #         if len(df_s) == 0:
-            #             continue
-            #         row = df_s.iloc[0]
-            #         centres.append([row["longitude"], row["latitude"], row["altitude"]])
-            #         widths.append(row["width"])
-            #         depths.append(row["depth"])
-            #         headings.append(row["heading"])
-            #         flight_ids_seg.append(row["flight_id"])
-            #     centres = np.array(centres)
-            #     widths = np.array(widths)
-            #     depths = np.array(depths)
-            #     headings = np.array(headings)
-            #     # --- Convert longitude/latitude to meters for ellipse centers ---
-            #     if len(centres) == 0:
-            #         continue
-            #     centres_m = np.array([(*lonlat_to_xy(lon, lat), alt) for lon, lat, alt in centres])
-            #     # Build ellipses for each waypoint (in meters)
-            #     ellipses = []
-            #     for c_m, h, a, b in zip(centres_m, headings, widths, depths):
-            #         e1, e2 = cross_section_frame(h)
-            #         sec_pts = make_section_ellipse(c_m, a, b, e1, e2)
-            #         ellipses.append(sec_pts)
-            #     for i in range(len(ellipses) - 1):
-            #         e1 = ellipses[i]
-            #         e2 = ellipses[i+1]
-            #         n = e1.shape[0]
-            #         points = np.vstack([e1, e2])
-            #         faces = []
-            #         for j in range(n):
-            #             j2 = (j + 1) % n
-            #             faces.extend([4, j, j2, n + j2, n + j])
-            #         faces = np.array(faces)
-            #         mesh = pv.PolyData(points, faces)
-            #         plotter.add_mesh(mesh, color="red", opacity=0.5)
-                trajectory = np.array([c_m for c_m in centres])
-                plotter.add_lines(trajectory, color="blue", width=3, connected=True)
-            # Overlay slice_poly polygons from pl_out, converting lat/lon to meters
-            if hasattr(self.gpat, "pl_out"):
-                pl_out = self.gpat.pl_out
-                for seg_id in pl_out["seg_id"].values:
-                    for slice_id in pl_out["slice_id"].values:
-                        try:
-                            # shape: (4, 3) for 4 corners, 3 coords (lon_deg, lat_deg, alt_m)
-                            poly = pl_out["slice_poly"].sel(
-                                seg_id=seg_id, ht=ht, slice_id=slice_id, time=t
-                            ).values  # shape: (4, 3)
-                        except Exception:
-                            continue
-                        # Convert each corner from (lon_deg, lat_deg, alt_m) to (x_m, y_m, z_m)
-                        poly_m = np.zeros_like(poly)
-                        for i, (lon, lat, alt) in enumerate(poly):
-                            x, y = lonlat_to_xy(lon, lat)
-                            poly_m[i, 0] = x
-                            poly_m[i, 1] = y
-                            poly_m[i, 2] = alt
-                        poly_closed = np.vstack([poly_m, poly_m[0]])
-                        face = np.arange(len(poly_closed))
-                        faces = np.hstack([[len(face)], face])
-                        mesh = pv.PolyData(poly_closed, faces)
-                        plotter.add_mesh(mesh, color="green", opacity=0.3)
-            plotter.show()
-
-                # Add frustum mesh for each segment (between consecutive ellipses)
-                # for i in range(len(ellipses) - 1):
-                #     e1 = ellipses[i]
-                #     e2 = ellipses[i+1]
-                #     x, y, z, I, J, K = [], [], [], [], [], []
-                #     n = e1.shape[0]
-                #     pts = np.vstack([e1, e2])
-                #     x, y, z = pts[:,0], pts[:,1], pts[:,2]
-                    
-                    
-                    
-                # for j in range(n):
-                #     j2 = (j + 1) % n
-                #     # First triangle
-                #     I.append(j)
-                #     J.append(j2)
-                #     K.append(n + j2)
-                #     # Second triangle
-                #     I.append(j)
-                #     J.append(n + j2)
-                #     K.append(n + j)
-                # fig.add_trace(go.Mesh3d(
-                #     x=x, y=y, z=z,
-                #     i=I, j=J, k=K,
-                #     color=color_map[idx],
-                #     opacity=0.5,
-                #     name=f'Flight {fid} Segment {i+1}',
-                #     showscale=False
-                # ))
-
-                # Add trajectory as a line (in meters)
-                # fig.add_trace(go.Scatter3d(
-                #     x=centres_m[:,0], y=centres_m[:,1], z=centres_m[:,2],
-                #     mode='lines',
-                #     #marker=dict(size=5, color=color_map[idx]),
-                #     line=dict(color=color_map[idx], width=3),
-                #     name=f'Flight {fid} Trajectory'
-                # ))
-
+        flight_ids_t = pl_ds[pl_ds["time"] == time_idx]["flight_id"].unique()
+        plotter = pv.Plotter()
+        for idx, fid in enumerate(flight_ids_t):
+            centres = []
+            centres_m = []
+            widths = []
+            depths = []
+            headings = []
+            flight_ids_seg = []
+            ellipses_m = []
+            slice_poly_m = []
+            seg_ids_f = pl_ds[(pl_ds["time"] == time_idx) & (pl_ds["flight_id"] == fid)]["seg_id"].unique()
+            
+            # For each segment in this flight and timestep, get the plume parameters and corresponding output shapes for plotting
+            for seg_id_py, seg_id in enumerate(seg_ids_f):
+                df_seg = pl_ds[(pl_ds["time"] == time_idx) & (pl_ds["seg_id"] == seg_id) & (pl_ds["flight_id"] == fid)]
+                df_out_seg = pl_out[(pl_out["time"] == time_idx) & (pl_out["seg_id"] == seg_id) & (pl_out["flight_id"] == fid)]
                 
-            lons_m = np.array([lonlat_to_xy(lon, 0)[0] for lon in self.gpat.lons])
-            lats_m = np.array([lonlat_to_xy(0, lat)[1] for lat in self.gpat.lats])
+                if len(df_seg) == 0:
+                    continue
+                row = df_seg.iloc[0]
+                row_out = df_out_seg.iloc[0]
+                
+                centres = [row["longitude"], row["latitude"], row["altitude"]]
+                centres_m.append([row["longitude_m"], row["latitude_m"], row["altitude"]])
+                widths.append(row["width"])
+                depths.append(row["depth"])
+                headings.append(row["heading"])
+                flight_ids_seg.append(row["flight_id"])
+
+                ellipses_m.append(row_out["ellipses_m"])  # shape: (n_points, 3)
+                slice_poly_m.append(row_out["slice_poly_m"])  # shape: (n_slices, 4, 3)
+
+            centres = np.array(centres)
+            centres_m = np.array(centres_m)
+            widths = np.array(widths)
+            depths = np.array(depths)
+            headings = np.array(headings)
+
+            ellipses_m = np.array(ellipses_m)
+            slice_poly_m = np.array(slice_poly_m)
+
+            print(ellipses_m)
+            print(slice_poly_m)
+
+            # --- Convert longitude/latitude to meters ---
+            if len(centres_m) == 0:
+                continue
+
+            global_ref_lon = boxm_ds["longitude"].min()
+            global_ref_lat = boxm_ds["latitude"].min()
+
+            ellipses = ellipses_m.copy()
+            ellipses.longitude
+            slice_polys = slice_poly_m.copy()
+
+            ellipse
             
 
-            xmin, ymin = lons_m.min(), lats_m.min()
-            xmax, ymax = lons_m.max(), lats_m.max()
-            zmin, zmax = 0, 100000
+            for i in range(len(ellipses) - 1):
+                e1 = ellipses[i]
+                e2 = ellipses[i+1]
+                n = e1.shape[0]
+                points = np.vstack([e1, e2])
+                faces = []
+                for j in range(n):
+                    j2 = (j + 1) % n
+                    faces.extend([4, j, j2, n + j2, n + j])
+                faces = np.array(faces)
+                mesh = pv.PolyData(points, faces)
+                plotter.add_mesh(mesh, color="red", opacity=0.5)
 
-            # Calculate the physical ranges
-            x_range = xmax - xmin
-            y_range = ymax - ymin
-            z_range = zmax - zmin
+            trajectory = np.array([c_m for c_m in centres_m])
+            plotter.add_lines(trajectory, color="blue", width=3, connected=True)
+            
+            # Overlay slice_poly polygons from pl_out, converting lat/lon to meters
+            pl_out = self.gpat.pl_out
+            for seg_id in pl_out["seg_id"].values:
+                for slice_id in pl_out["slice_id"].values:
+                    try:
+                        # shape: (4, 3) for 4 corners, 3 coords (lon_deg, lat_deg, alt_m)
+                        slice_poly_m = pl_out["slice_poly_m"].sel(
+                            seg_id=seg_id, slice_id=slice_id, time=time_idx
+                        ).values  # shape: (4, 3)
+                    except Exception:
+                        continue
 
-            # Set equal aspect ratio for axes
-            fig.update_layout(
-                title=f'Lofted plume mesh (interactive) at t={t}',
-                scene=dict(
-                    xaxis_title='X (m)',
-                    yaxis_title='Y (m)',
-                    zaxis_title='Altitude (m)',
-                    xaxis=dict(range=[xmin, xmax]),
-                    yaxis=dict(range=[ymin, ymax]),
-                    zaxis=dict(range=[zmin, zmax]),
-                    aspectmode='cube',
-                    aspectratio=dict(
-            x=x_range / z_range,
-            y=y_range / z_range,
-            z=1
-        )
-                    ),
-                legend=dict(x=0.8, y=0.9)
-            )
-            fig.show()
+                    slice_poly_closed = np.vstack([slice_poly_m, slice_poly_m[0]])
+                    face = np.arange(len(slice_poly_closed))
+                    faces = np.hstack([[len(face)], face])
+                    mesh = pv.PolyData(slice_poly_closed, faces)
+                    plotter.add_mesh(mesh, color="green", opacity=0.3)
+            
+            # xmin, ymin = self.gpat.lons.min(), self.gpat.lats.min()
+            # xmax, ymax = self.gpat.lons.max(), self.gpat.lats.max()
+            # zmin, zmax = 0, 100000
+
+            # # Calculate the physical ranges
+            # x_range = xmax - xmin
+            # y_range = ymax - ymin
+            # z_range = zmax - zmin
+
+            plotter.show()
+
 
     # Validation methods
     def mc_test(params, fl_df, pl_df, chem_ds):
@@ -1710,6 +1644,16 @@ class GPATAnalysis:
 
 
 # Helper functions for GPAT
+def lonlat_to_m(lon, lat, global_ref_lon, global_ref_lat):
+    transformer = Transformer.from_crs("epsg:4326", f"+proj=tmerc +lat_0={global_ref_lat} +lon_0={global_ref_lon} +k=1 +x_0=0 +y_0=0", always_xy=True)
+    lon_m, lat_m = transformer.transform(lon, lat)
+    return lon_m, lat_m
+
+def m_to_lonlat(lon_m, lat_m, global_ref_lon, global_ref_lat):
+    transformer = Transformer.from_crs("epsg:4326", f"+proj=tmerc +lat_0={global_ref_lat} +lon_0={global_ref_lon} +k=1 +x_0=0 +y_0=0", always_xy=True)
+    lon, lat = transformer.transform(lon_m, lat_m, direction="INVERSE")
+    return lon, lat
+
 def validate_species_hierarchy(chem_params):
     """Validate that species_emi, species_plume, species_out all belong to species_boxm."""
     species_boxm = set(chem_params.species_boxm_num)
