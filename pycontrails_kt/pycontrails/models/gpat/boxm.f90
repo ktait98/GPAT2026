@@ -1133,13 +1133,13 @@ MODULE DEFINE_STATE_TYPES
         REAL(DP), ALLOCATABLE :: W_SLICE(:) ! (NSLICES)
 
         REAL(DP), ALLOCATABLE :: ELLIPSES_M(:,:,:) ! (NSEG, NPOINTS, 3) projected PL ellipse points for grid mapping
-        REAL(DP), ALLOCATABLE :: SLICE_POLY_M(:,:,:,:) ! (NSEG, NSLICES, 4, 3) projected PL slice corners for grid mapping
+        REAL(DP), ALLOCATABLE :: SLICE_POLYS_M(:,:,:,:) ! (NSEG, NSLICES, 4, 3) projected PL slice corners for grid mapping
         
     CONTAINS
         PROCEDURE, PASS :: INIT_FROM_PL_DS => PL_STATE_INIT_FROM_PL_DS
         PROCEDURE, PASS :: INIT_FROM_PL_OUT => PL_STATE_INIT_FROM_PL_OUT
         PROCEDURE, PASS :: BUILD_ELLIPSES_M => PL_STATE_BUILD_ELLIPSES_M
-        PROCEDURE, PASS :: BUILD_SLICE_POLY_M => PL_STATE_BUILD_SLICE_POLY_M
+        PROCEDURE, PASS :: BUILD_SLICE_POLYS_M => PL_STATE_BUILD_SLICE_POLYS_M
         PROCEDURE, PASS :: ADVANCE_GEOM    => PL_STATE_ADVANCE_GEOM
         PROCEDURE, PASS :: ADVANCE_MASS    => PL_STATE_ADVANCE_MASS
         PROCEDURE, PASS :: BUILD_ACTIVE     => PL_STATE_BUILD_ACTIVE
@@ -1261,7 +1261,7 @@ CONTAINS
         IF (.NOT. ALLOCATED(PL_STATE%M_FRAC)) ALLOCATE(PL_STATE%M_FRAC(PL_STATE%NSLICES))
 
         IF (.NOT. ALLOCATED(PL_STATE%ELLIPSES_M)) ALLOCATE(PL_STATE%ELLIPSES_M(PL_STATE%NSEG, PL_STATE%NPOINTS, 3))
-        IF (.NOT. ALLOCATED(PL_STATE%SLICE_POLY_M)) ALLOCATE(PL_STATE%SLICE_POLY_M(PL_STATE%NSEG, PL_STATE%NSLICES, 4, 3))
+        IF (.NOT. ALLOCATED(PL_STATE%SLICE_POLYS_M)) ALLOCATE(PL_STATE%SLICE_POLYS_M(PL_STATE%NSEG, PL_STATE%NSLICES, 4, 3))
 
         ! DEFINE CUMULATIVE MASS LADDER
         DO SLICE_ID = 1, PL_STATE%NSLICES
@@ -1273,13 +1273,14 @@ CONTAINS
         PL_STATE%W_SLICE(1) = PL_STATE%M_FRAC(1)
         DO SLICE_ID = 2, PL_STATE%NSLICES
             PL_STATE%W_SLICE(SLICE_ID) = PL_STATE%M_FRAC(SLICE_ID) - PL_STATE%M_FRAC(SLICE_ID-1)
+            PRINT *, "SLICE_ID=", SLICE_ID, " W_SLICE=", PL_STATE%W_SLICE(SLICE_ID)
         END DO
 
         ! OPTIONAL STRICT CONSERVATION ADJUSTMENT
         PL_STATE%W_SLICE(PL_STATE%NSLICES) = PL_STATE%W_SLICE(PL_STATE%NSLICES) + &
             (1.0_DP - PL_STATE%FMAX)
 
-        PL_STATE%SLICE_POLY_M(:,:,:,:) = 0.0_DP
+        PL_STATE%SLICE_POLYS_M(:,:,:,:) = 0.0_DP
 
     END SUBROUTINE PL_STATE_INIT_FROM_PL_OUT
 
@@ -1288,7 +1289,8 @@ CONTAINS
         INTEGER, INTENT(IN) :: SEG_ID, NPOINTS
         INTEGER :: PT_ID
         REAL(DP), PARAMETER :: PI = 3.14159265358979323846_DP
-        REAL(DP) :: ANGLE_STEP, ANGLE, HEAD_RAD
+        REAL(DP) :: ANGLE_STEP, ANGLE, HEAD_RAD, X, Y, Z, X_LON, X_LAT
+        REAL(DP) :: LON_C_M, LAT_C_M, ALT_C, WIDTH, DEPTH
         REAL(DP) :: COORD(3)
 
         ANGLE_STEP = 360.0_DP / REAL(NPOINTS, DP)
@@ -1297,18 +1299,32 @@ CONTAINS
         DO PT_ID = 1, NPOINTS
             ANGLE = (REAL(PT_ID-1, DP) * ANGLE_STEP) * (PI / 180.0_DP) ! CONVERT TO RADIANS
 
-            COORD(1) = PL_STATE%LONGITUDE_M(SEG_ID) + &
-                (PL_STATE%Y_HALF(SEG_ID, 1) * COS(HEAD_RAD + ANGLE))
-            COORD(2) = PL_STATE%LATITUDE_M(SEG_ID) + &
-                (PL_STATE%Y_HALF(SEG_ID, 1) * SIN(HEAD_RAD + ANGLE))
-            COORD(3) = PL_STATE%ALTITUDE(SEG_ID)
+            LON_C_M = PL_STATE%LONGITUDE_M(SEG_ID)
+            LAT_C_M = PL_STATE%LATITUDE_M(SEG_ID)
+            ALT_C = PL_STATE%ALTITUDE(SEG_ID)
+
+            WIDTH = PL_STATE%WIDTH(SEG_ID)
+            DEPTH = PL_STATE%DEPTH(SEG_ID)
+
+            ! IN PLANE OFFSETS
+            X = (WIDTH / 2.0_DP) * COS(ANGLE)
+            Z = (DEPTH / 2.0_DP) * SIN(ANGLE)
+            Y = 0.0_DP ! ALONG HEADING DIRECTION
+
+            ! ROTATE OFFSETS BY HEADING
+            X_LON = -X * SIN(HEAD_RAD)
+            X_LAT =  X * COS(HEAD_RAD)
+
+            COORD(1) = LON_C_M + X_LON
+            COORD(2) = LAT_C_M + X_LAT
+            COORD(3) = ALT_C   + Z
 
             PL_STATE%ELLIPSES_M(SEG_ID, PT_ID, :) = COORD(:)
         END DO
 
     END SUBROUTINE PL_STATE_BUILD_ELLIPSES_M
 
-    SUBROUTINE PL_STATE_BUILD_SLICE_POLY_M(PL_STATE, SEG_ID, SLICE_ID)
+    SUBROUTINE PL_STATE_BUILD_SLICE_POLYS_M(PL_STATE, SEG_ID, SLICE_ID)
         CLASS(PL_STATE_TYPE), INTENT(INOUT) :: PL_STATE
         INTEGER, INTENT(IN) :: SEG_ID, SLICE_ID
         REAL(DP), PARAMETER :: PI = 3.14159265358979323846_DP
@@ -1342,12 +1358,12 @@ CONTAINS
         COORD_BR(2) = LAT_C_M + (-Y_HALF * SIN(HEAD_RAD))
         COORD_BR(3) = ALT_C + (-Z_HALF)
 
-        PL_STATE%SLICE_POLY_M(SEG_ID,  SLICE_ID, 1, :) = COORD_BL(:)
-        PL_STATE%SLICE_POLY_M(SEG_ID, SLICE_ID, 2, :) = COORD_TL(:)
-        PL_STATE%SLICE_POLY_M(SEG_ID, SLICE_ID, 3, :) = COORD_TR(:)
-        PL_STATE%SLICE_POLY_M(SEG_ID, SLICE_ID, 4, :) = COORD_BR(:)
+        PL_STATE%SLICE_POLYS_M(SEG_ID,  SLICE_ID, 1, :) = COORD_BL(:)
+        PL_STATE%SLICE_POLYS_M(SEG_ID, SLICE_ID, 2, :) = COORD_TL(:)
+        PL_STATE%SLICE_POLYS_M(SEG_ID, SLICE_ID, 3, :) = COORD_TR(:)
+        PL_STATE%SLICE_POLYS_M(SEG_ID, SLICE_ID, 4, :) = COORD_BR(:)
 
-    END SUBROUTINE PL_STATE_BUILD_SLICE_POLY_M
+    END SUBROUTINE PL_STATE_BUILD_SLICE_POLYS_M
         
     SUBROUTINE PL_STATE_ADVANCE_GEOM(PL_STATE, PL_DS, BOXM_DS, TIME_IDX)
         CLASS(PL_STATE_TYPE),    INTENT(INOUT) :: PL_STATE
@@ -1356,7 +1372,7 @@ CONTAINS
 
         INTEGER, INTENT(IN) :: TIME_IDX
         INTEGER :: SEG_ID, SLICE_ID, PL_I, I, CORNER_ID
-        REAL(DP) :: SIGMA_Y, SIGMA_Z
+        REAL(DP) :: SIGMA_Y, SIGMA_Z, WIDTH_EXPECTED_FROM_SIGMA_Y, WIDTH_ACTUAL
         REAL(DP) :: F, U
         REAL(DP), PARAMETER :: F_EPS = 1.0E-12_DP
 
@@ -1408,21 +1424,23 @@ CONTAINS
                     SIGMA_Y = SQRT( MAX( PL_STATE%SIGMA_YY(SEG_ID), 1.0E-30_DP ) )
                     SIGMA_Z = SQRT( MAX( PL_STATE%SIGMA_ZZ(SEG_ID), 1.0E-30_DP ) )
 
+                    ! Y in original order
                     F  = PL_STATE%M_FRAC(SLICE_ID)
-
-                    ! AVOID ERFINV(±1) / ERFINV(OUT OF RANGE)
                     F  = MIN( MAX(F, -1.0_DP + F_EPS), 1.0_DP - F_EPS )
-
-                    ! ERFINV() EXPECTS INPUT IN [-1, 1]
                     U  = F
-
-                    ! CALC HALF-HEIGHTS FROM INVERSE ERF
                     PL_STATE%Y_HALF(SEG_ID, SLICE_ID) = SQRT(2.0_DP) * SIGMA_Y * ERFINV(U)
+
+                    ! Z in reverse order
+                    F  = PL_STATE%M_FRAC(PL_STATE%NSLICES - SLICE_ID + 1)
+                    ! Z in reverse order
+                    F  = PL_STATE%M_FRAC(PL_STATE%NSLICES - SLICE_ID + 1)
+                    F  = MIN( MAX(F, -1.0_DP + F_EPS), 1.0_DP - F_EPS )
+                    U  = F
                     PL_STATE%Z_HALF(SEG_ID, SLICE_ID) = SQRT(2.0_DP) * SIGMA_Z * ERFINV(U)
 
                     ! CALC SLICE POLYS FOR EACH SEGMENT AND SLICE
                     CALL PL_STATE%BUILD_ELLIPSES_M(SEG_ID, PL_DS%NPOINTS)
-                    CALL PL_STATE%BUILD_SLICE_POLY_M(SEG_ID, SLICE_ID)
+                    CALL PL_STATE%BUILD_SLICE_POLYS_M(SEG_ID, SLICE_ID)
                 END DO
             END IF
         END DO
@@ -1607,7 +1625,7 @@ MODULE DEFINE_OUTPUT_TYPES
         INTEGER, PRIVATE :: VARID_Z_HALF = -1
         INTEGER, PRIVATE :: VARID_M_FRAC = -1
         INTEGER, PRIVATE :: VARID_ELLIPSES_M = -1
-        INTEGER, PRIVATE :: VARID_SLICE_POLY_M = -1
+        INTEGER, PRIVATE :: VARID_SLICE_POLYS_M = -1
 
         ! PL_SLICES DIMLENS
         INTEGER :: NSLICES = 0
@@ -1619,7 +1637,7 @@ MODULE DEFINE_OUTPUT_TYPES
         REAL(DP), ALLOCATABLE :: W_SLICE(:)     ! [NSPL]
 
         REAL(DP), ALLOCATABLE :: ELLIPSES_M(:,:,:,:) ! [NSEG, NPOINTS, 3, NTOUT]
-        REAL(DP), ALLOCATABLE :: SLICE_POLY_M(:,:,:,:,:) ! [NSEG, NSLICES, 4, 3, NTOUT]
+        REAL(DP), ALLOCATABLE :: SLICE_POLYS_M(:,:,:,:,:) ! [NSEG, NSLICES, 4, 3, NTOUT]
 
         ! NETCDF STATUS
         LOGICAL, PRIVATE :: IS_OPEN = .FALSE.
@@ -1796,8 +1814,8 @@ CONTAINS
             STATUS = NF90_INQ_VARID(PL_OUT%PL_OUT_NCID, "ellipses_m", PL_OUT%VARID_ELLIPSES_M)
             CALL NC_CHECK(STATUS, "NF90_INQ_VARID(ellipses_m)")
 
-            STATUS = NF90_INQ_VARID(PL_OUT%PL_OUT_NCID, "slice_poly_m", PL_OUT%VARID_SLICE_POLY_M)
-            CALL NC_CHECK(STATUS, "NF90_INQ_VARID(slice_poly_m)")
+            STATUS = NF90_INQ_VARID(PL_OUT%PL_OUT_NCID, "slice_polys_m", PL_OUT%VARID_SLICE_POLYS_M)
+            CALL NC_CHECK(STATUS, "NF90_INQ_VARID(slice_polys_m)")
 
             PL_OUT%NSLICES = PL_DS%NSLICES
         END IF
@@ -1827,7 +1845,8 @@ CONTAINS
             IF (.NOT. ALLOCATED(PL_OUT%M_FRAC)) ALLOCATE(PL_OUT%M_FRAC(PL_OUT%NSLICES))
             IF (.NOT. ALLOCATED(PL_OUT%W_SLICE)) ALLOCATE(PL_OUT%W_SLICE(PL_OUT%NSLICES))
             IF (.NOT. ALLOCATED(PL_OUT%ELLIPSES_M)) ALLOCATE(PL_OUT%ELLIPSES_M(PL_OUT%NSEG, PL_DS%NPOINTS, 3, PL_OUT%NTOUT))
-            IF (.NOT. ALLOCATED(PL_OUT%SLICE_POLY_M)) ALLOCATE(PL_OUT%SLICE_POLY_M(PL_OUT%NSEG, PL_OUT%NSLICES, 4, 3, PL_OUT%NTOUT))
+            IF (.NOT. ALLOCATED(PL_OUT%SLICE_POLYS_M)) ALLOCATE(PL_OUT%SLICE_POLYS_M(PL_OUT%NSEG, &
+                                                                PL_OUT%NSLICES, 4, 3, PL_OUT%NTOUT))
         END IF
 
         STATUS = NF90_GET_VAR(PL_OUT%PL_OUT_NCID, PL_OUT%VARID_TIME_REL_S, PL_OUT%TIME_REL_S)
@@ -1850,7 +1869,7 @@ CONTAINS
         INTEGER :: STATUS, PL_I, OUT_I, I, NDIMS, DLEN, SPECIES_ID, SLICE_ID, CORNER_ID, COORD_ID, PT_ID
         INTEGER :: DIMID_TIME, DIMID_SPECIES_PL, DIMID_SEG_ID
         REAL(DP), ALLOCATABLE :: Y_HALF_TMP(:,:,:), Z_HALF_TMP(:,:,:)
-        REAL(DP), ALLOCATABLE :: SLICE_POLY_M_TMP(:,:,:,:)
+        REAL(DP), ALLOCATABLE :: SLICE_POLYS_M_TMP(:,:,:,:)
         CHARACTER(LEN=NF90_MAX_NAME) :: DNAME
 
         IF (.NOT. PL_OUT%IS_OPEN) STOP "PL_OUT_WRITE: FILE NOT OPEN (CALL INIT FIRST)"
@@ -1877,7 +1896,7 @@ CONTAINS
             IF (.NOT. ALLOCATED(PL_OUT%M_FRAC)) STOP "PL_OUT_WRITE: PL_OUT%M_FRAC NOT ALLOCATED"
             IF (.NOT. ALLOCATED(PL_OUT%W_SLICE)) STOP "PL_OUT_WRITE: PL_OUT%W_SLICE NOT ALLOCATED"
             IF (.NOT. ALLOCATED(PL_OUT%ELLIPSES_M)) STOP "PL_OUT_WRITE: PL_OUT%ELLIPSES_M NOT ALLOCATED"
-            IF (.NOT. ALLOCATED(PL_OUT%SLICE_POLY_M)) STOP "PL_OUT_WRITE: PL_OUT%SLICE_POLY_M NOT ALLOCATED"
+            IF (.NOT. ALLOCATED(PL_OUT%SLICE_POLYS_M)) STOP "PL_OUT_WRITE: PL_OUT%SLICE_POLYS_M NOT ALLOCATED"
         END IF
 
         IF (TIME_IDX < PL_DS%TIME_IDX(1) .OR. TIME_IDX > PL_DS%TIME_IDX(PL_DS%NTPL)) THEN
@@ -1920,11 +1939,11 @@ CONTAINS
                 DO SLICE_ID = 1, PL_OUT%NSLICES
                     PL_OUT%Y_HALF(:,SLICE_ID,OUT_I) = 0.0_DP
                     PL_OUT%Z_HALF(:,SLICE_ID,OUT_I) = 0.0_DP
-                    PL_OUT%SLICE_POLY_M(:,SLICE_ID,:,:,OUT_I) = 0.0_DP
+                    PL_OUT%SLICE_POLYS_M(:,SLICE_ID,:,:,OUT_I) = 0.0_DP
 
                     PL_OUT%Y_HALF(:,SLICE_ID,OUT_I) = PL_STATE%Y_HALF(:,SLICE_ID)
                     PL_OUT%Z_HALF(:,SLICE_ID,OUT_I) = PL_STATE%Z_HALF(:,SLICE_ID)
-                    PL_OUT%SLICE_POLY_M(:,SLICE_ID,:,:,OUT_I) = PL_STATE%SLICE_POLY_M(:,SLICE_ID,:,:)
+                    PL_OUT%SLICE_POLYS_M(:,SLICE_ID,:,:,OUT_I) = PL_STATE%SLICE_POLYS_M(:,SLICE_ID,:,:)
                 END DO
 
             END IF
@@ -1953,23 +1972,34 @@ CONTAINS
                     STATUS = NF90_PUT_VAR(PL_OUT%PL_OUT_NCID, PL_OUT%VARID_W_SLICE, PL_OUT%W_SLICE(:), START=[SLICE_ID], COUNT=[1])
                     CALL NC_CHECK(STATUS, "NF90_PUT_VAR(w_slice)")
 
-                        STATUS = NF90_PUT_VAR(PL_OUT%PL_OUT_NCID, PL_OUT%VARID_Y_HALF, PL_OUT%Y_HALF(:,SLICE_ID,OUT_I), &
-                                        START=[OUT_I, SLICE_ID, 1], COUNT=[1, 1, PL_OUT%NSEG])
-                        CALL NC_CHECK(STATUS, "NF90_PUT_VAR(y_half)")
+                    STATUS = NF90_PUT_VAR(PL_OUT%PL_OUT_NCID, PL_OUT%VARID_Y_HALF, PL_OUT%Y_HALF(:,SLICE_ID,OUT_I), &
+                                    START=[OUT_I, SLICE_ID, 1], COUNT=[1, 1, PL_OUT%NSEG])
+                    CALL NC_CHECK(STATUS, "NF90_PUT_VAR(y_half)")
 
-                        STATUS = NF90_PUT_VAR(PL_OUT%PL_OUT_NCID, PL_OUT%VARID_Z_HALF, PL_OUT%Z_HALF(:,SLICE_ID,OUT_I), &
-                                        START=[OUT_I, SLICE_ID, 1], COUNT=[1, 1, PL_OUT%NSEG])
-                        CALL NC_CHECK(STATUS, "NF90_PUT_VAR(z_half)")
-                        
-                        DO CORNER_ID = 1, 4
-                            DO COORD_ID = 1, 3
-                                STATUS = NF90_PUT_VAR(PL_OUT%PL_OUT_NCID, PL_OUT%VARID_SLICE_POLY_M, &
-                                        PL_OUT%SLICE_POLY_M(:,SLICE_ID,CORNER_ID,COORD_ID,OUT_I), & 
-                                        START=[OUT_I, COORD_ID, CORNER_ID, SLICE_ID, 1], COUNT=[1, 1, 1, 1, PL_OUT%NSEG])
-                                CALL NC_CHECK(STATUS, "NF90_PUT_VAR(slice_poly_m)")
-                            END DO
+                    STATUS = NF90_PUT_VAR(PL_OUT%PL_OUT_NCID, PL_OUT%VARID_Z_HALF, PL_OUT%Z_HALF(:,SLICE_ID,OUT_I), &
+                                    START=[OUT_I, SLICE_ID, 1], COUNT=[1, 1, PL_OUT%NSEG])
+                    CALL NC_CHECK(STATUS, "NF90_PUT_VAR(z_half)")
+
+                    ! WRITE SLICE POLYGONS
+                    DO CORNER_ID = 1, 4
+                        DO COORD_ID = 1, 3
+                            STATUS = NF90_PUT_VAR(PL_OUT%PL_OUT_NCID, PL_OUT%VARID_SLICE_POLYS_M, &
+                                    PL_OUT%SLICE_POLYS_M(:,SLICE_ID,CORNER_ID,COORD_ID,OUT_I), & 
+                                    START=[OUT_I, COORD_ID, CORNER_ID, SLICE_ID, 1], COUNT=[1, 1, 1, 1, PL_OUT%NSEG])
+                            CALL NC_CHECK(STATUS, "NF90_PUT_VAR(slice_polys_m)")
                         END DO
+                    END DO
                 END DO
+                
+                ! WRITE ELLIPSE POINTS
+                DO PT_ID = 1, PL_DS%NPOINTS
+                    DO COORD_ID = 1, 3
+                        STATUS = NF90_PUT_VAR(PL_OUT%PL_OUT_NCID, PL_OUT%VARID_ELLIPSES_M, &
+                                PL_OUT%ELLIPSES_M(:,PT_ID,COORD_ID,OUT_I), & 
+                                START=[OUT_I, COORD_ID, PT_ID, 1], COUNT=[1, 1, 1, PL_OUT%NSEG])
+                        CALL NC_CHECK(STATUS, "NF90_PUT_VAR(ellipses_m)")
+                    END DO
+                END DO  
             END IF
         END IF
 
@@ -2391,7 +2421,7 @@ CONTAINS
 
         IF (ALLOCATED(PL_STATE%Y_HALF)) PL_STATE%Y_HALF(:,:) = 0.0_DP
         IF (ALLOCATED(PL_STATE%Z_HALF)) PL_STATE%Z_HALF(:,:) = 0.0_DP
-        IF (ALLOCATED(PL_STATE%SLICE_POLY_M)) PL_STATE%SLICE_POLY_M(:,:,:,:) = 0.0_DP
+        IF (ALLOCATED(PL_STATE%SLICE_POLYS_M)) PL_STATE%SLICE_POLYS_M(:,:,:,:) = 0.0_DP
 
         IF (ALLOCATED(BOXM_STATE%TEMP)) BOXM_STATE%TEMP(:) = 0.0_DP
         IF (ALLOCATED(BOXM_STATE%H2O)) BOXM_STATE%H2O(:) = 0.0_DP

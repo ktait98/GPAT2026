@@ -10,19 +10,16 @@ import argparse
 import os
 import random
 import pathlib
-import pickle
 import shutil
 import subprocess
-import time
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from turtle import ht
 from typing import Literal, Optional
 
 import matplotlib.pyplot as plt
-import pyvista as pv
+
 from matplotlib.lines import Line2D
 import ipywidgets as widgets
-from IPython.display import display, clear_output
 import dask.array as da
 import numpy as np
 import pandas as pd
@@ -309,7 +306,6 @@ class GPAT(Model):
 
         self.setup = GPATSetup(self)
         self.run = GPATRun(self)
-        self.analysis = GPATAnalysis(self)
 
     def preprocess_gpat(self):
         """Preprocess inputs for GPAT FORTRAN implementation (BOXM and CONTRAIL in future)."""
@@ -746,10 +742,10 @@ class GPATSetup:
             on=["flight_id", "waypoint"],
         ).sort_values(by=["time", "flight_id", "waypoint"])
 
-        pl["longitude_m"], pl["latitude_m"] = lonlat_to_m(pl["longitude"].values, 
-                                                        pl["latitude"].values, 
-                                                        self.gpat.lons.min(), 
-                                                        self.gpat.lats.min())
+        pl["longitude_m"], pl["latitude_m"] = lonlat_to_m(pl["latitude"].values, 
+                                                        pl["longitude"].values, 
+                                                        self.gpat.lats.min(), 
+                                                        self.gpat.lons.min())
  
         pl["sin_a"] = np.sin(np.radians(pl["heading"]))
         pl["cos_a"] = np.cos(np.radians(pl["heading"]))
@@ -760,12 +756,14 @@ class GPATSetup:
 
     def gen_inputs(self):
         """Generate BOXM inputs."""
-        # Initialize the box model dataset
-        self.init_boxm_ds_nc()
+        # Initialise parameters dataset
+        self.init_params()
         # Initialise flight dataset
         self.init_fl_ds_nc()
         #Initialise plume dataset
         self.init_pl_ds_nc()
+        # Initialize the box model dataset
+        self.init_boxm_ds_nc()
 
     def gen_outputs(self):
         """Generate BOXM output templates."""
@@ -777,6 +775,13 @@ class GPATSetup:
         self.init_pl_out_nc()  
 
     # --- Input dataset initialization methods ---
+    def init_params(self):
+        """Save the simulation parameters to a JSON file for record-keeping."""
+        params_path = pathlib.Path(f"{self.gpat.inputs_job}/params.json")
+        with open(params_path, "w") as f:
+            json.dump(self.gpat.all_params, f, default=str, indent=4)
+        print(f"Saved simulation parameters to {params_path}")
+
     def init_fl_ds_nc(self):
         """Initialize the flight dataset for BOXM."""
         df = self.gpat.fl.copy()
@@ -912,8 +917,6 @@ class GPATSetup:
         active_mask = (self.gpat.pl_ds["age_s"] > 0) & (self.gpat.pl_ds["age_s"] <= sim_params.t_pl[2].total_seconds())
         active_mask = active_mask.astype(int)
         self.gpat.pl_ds = self.gpat.pl_ds.assign_coords(active_seg_flag=(("seg_id", "time"), active_mask.values))
-
-        print(f"active seg flags for seg 1 and all ts: {self.gpat.pl_ds.active_seg_flag.isel(seg_id=0).values}")
 
         self.gpat.pl_ds = self.gpat.pl_ds.assign_coords(
             time_rel_s = ("time", (self.gpat.pl_ds["time"].values - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int)),
@@ -1059,7 +1062,7 @@ class GPATSetup:
                 "m_frac": ("slice_id", np.zeros(self.gpat.pl_params.n_slices)),
                 "w_slice": ("slice_id", np.zeros(self.gpat.pl_params.n_slices)),
                 "ellipses_m": (("seg_id", "pt_id", "coord", "time"), np.zeros((len(pl_ds.seg_id), self.gpat.pl_params.n_points, 3, len(times_out)))),
-                "slice_poly_m": (("seg_id", "slice_id", "corner_id", "coord", "time"), np.zeros((len(pl_ds.seg_id), self.gpat.pl_params.n_slices, 4, 3, len(times_out)))),
+                "slice_polys_m": (("seg_id", "slice_id", "corner_id", "coord", "time"), np.zeros((len(pl_ds.seg_id), self.gpat.pl_params.n_slices, 4, 3, len(times_out)))),
                 },
                 coords={
                     "seg_id": self.gpat.pl_out.seg_id,
@@ -1358,292 +1361,7 @@ class GPATRun:
     #     # )
     #     pass
 
-class GPATAnalysis:
-    """Analyze GPAT model outputs."""
-
-    def __init__(self, gpat):
-        self.gpat = gpat
-
-    # Loading data methods
-    def load_output_datasets(self):
-        self.gpat.boxm_out = xr.open_dataset(f"{self.gpat.outputs_job}/boxm_out.nc")
-        self.gpat.patch_table = xr.open_dataset(f"{self.gpat.outputs_job}/patch_table.nc")
-        self.gpat.pl_out = xr.open_dataset(f"{self.gpat.outputs_job}/pl_out.nc")
-
-    def unstack_boxm_out(self):
-        """Unstack the box model coarse output dataset."""
-        print("Chunking the dataset")
-        # Convert the dataset to a Dask dataset
-        self.boxm_ds = self.boxm_ds.chunk({"cell": 100})  # Adjust chunk size based on your mem
-
-        print("Set coords")
-        # Convert 'level', 'lat', and 'lon' to coordinates
-        self.boxm_ds_unstacked = self.boxm_ds.set_coords(["level", "longitude", "latitude"])
-
-        print("Set index")
-        # Create a multi-index for the 'cell' dimension
-        self.boxm_ds_unstacked = self.boxm_ds_unstacked.set_index(
-            cell=["level", "longitude", "latitude"]
-        )
-
-        print("Unstack the dataset")
-        # Unstack the dataset
-        self.boxm_ds_unstacked = self.boxm_ds_unstacked.unstack("cell")
-
-        print("Compute the result")
-        # # Compute the result to trigger the lazy evaluation
-        # self.boxm_ds_unstacked = self.boxm_ds_unstacked.compute()
-
-    def plot_plumes_3d(self, time_idx=61):
-        import numpy as np
-        import pyvista as pv
-        
-        pl_ds = self.gpat.pl_ds[["longitude", "longitude_m", "latitude", "latitude_m", "altitude", "width", "depth", "heading", "flight_id", "seg_id"]].to_dataframe().reset_index().dropna()
-        boxm_ds = self.gpat.boxm_ds[["longitude", "latitude"]].to_dataframe().reset_index().dropna()
-        pl_out = self.gpat.pl_out[["ellipses_m", "slice_poly_m"]].to_dataframe().reset_index().dropna()
-
-        flight_ids_t = pl_ds[pl_ds["time"] == time_idx]["flight_id"].unique()
-        plotter = pv.Plotter()
-        for idx, fid in enumerate(flight_ids_t):
-            centres = []
-            centres_m = []
-            widths = []
-            depths = []
-            headings = []
-            flight_ids_seg = []
-            ellipses_m = []
-            slice_poly_m = []
-            seg_ids_f = pl_ds[(pl_ds["time"] == time_idx) & (pl_ds["flight_id"] == fid)]["seg_id"].unique()
-            
-            # For each segment in this flight and timestep, get the plume parameters and corresponding output shapes for plotting
-            for seg_id_py, seg_id in enumerate(seg_ids_f):
-                df_seg = pl_ds[(pl_ds["time"] == time_idx) & (pl_ds["seg_id"] == seg_id) & (pl_ds["flight_id"] == fid)]
-                df_out_seg = pl_out[(pl_out["time"] == time_idx) & (pl_out["seg_id"] == seg_id) & (pl_out["flight_id"] == fid)]
-                
-                if len(df_seg) == 0:
-                    continue
-                row = df_seg.iloc[0]
-                row_out = df_out_seg.iloc[0]
-                
-                centres = [row["longitude"], row["latitude"], row["altitude"]]
-                centres_m.append([row["longitude_m"], row["latitude_m"], row["altitude"]])
-                widths.append(row["width"])
-                depths.append(row["depth"])
-                headings.append(row["heading"])
-                flight_ids_seg.append(row["flight_id"])
-
-                ellipses_m.append(row_out["ellipses_m"])  # shape: (n_points, 3)
-                slice_poly_m.append(row_out["slice_poly_m"])  # shape: (n_slices, 4, 3)
-
-            centres = np.array(centres)
-            centres_m = np.array(centres_m)
-            widths = np.array(widths)
-            depths = np.array(depths)
-            headings = np.array(headings)
-
-            ellipses_m = np.array(ellipses_m)
-            slice_poly_m = np.array(slice_poly_m)
-
-            print(ellipses_m)
-            print(slice_poly_m)
-
-            # --- Convert longitude/latitude to meters ---
-            if len(centres_m) == 0:
-                continue
-
-            global_ref_lon = boxm_ds["longitude"].min()
-            global_ref_lat = boxm_ds["latitude"].min()
-
-            ellipses = ellipses_m.copy()
-            ellipses.longitude
-            slice_polys = slice_poly_m.copy()
-
-            ellipse
-            
-
-            for i in range(len(ellipses) - 1):
-                e1 = ellipses[i]
-                e2 = ellipses[i+1]
-                n = e1.shape[0]
-                points = np.vstack([e1, e2])
-                faces = []
-                for j in range(n):
-                    j2 = (j + 1) % n
-                    faces.extend([4, j, j2, n + j2, n + j])
-                faces = np.array(faces)
-                mesh = pv.PolyData(points, faces)
-                plotter.add_mesh(mesh, color="red", opacity=0.5)
-
-            trajectory = np.array([c_m for c_m in centres_m])
-            plotter.add_lines(trajectory, color="blue", width=3, connected=True)
-            
-            # Overlay slice_poly polygons from pl_out, converting lat/lon to meters
-            pl_out = self.gpat.pl_out
-            for seg_id in pl_out["seg_id"].values:
-                for slice_id in pl_out["slice_id"].values:
-                    try:
-                        # shape: (4, 3) for 4 corners, 3 coords (lon_deg, lat_deg, alt_m)
-                        slice_poly_m = pl_out["slice_poly_m"].sel(
-                            seg_id=seg_id, slice_id=slice_id, time=time_idx
-                        ).values  # shape: (4, 3)
-                    except Exception:
-                        continue
-
-                    slice_poly_closed = np.vstack([slice_poly_m, slice_poly_m[0]])
-                    face = np.arange(len(slice_poly_closed))
-                    faces = np.hstack([[len(face)], face])
-                    mesh = pv.PolyData(slice_poly_closed, faces)
-                    plotter.add_mesh(mesh, color="green", opacity=0.3)
-            
-            # xmin, ymin = self.gpat.lons.min(), self.gpat.lats.min()
-            # xmax, ymax = self.gpat.lons.max(), self.gpat.lats.max()
-            # zmin, zmax = 0, 100000
-
-            # # Calculate the physical ranges
-            # x_range = xmax - xmin
-            # y_range = ymax - ymin
-            # z_range = zmax - zmin
-
-            plotter.show()
-
-
-    # Validation methods
-    def mc_test(params, fl_df, pl_df, chem_ds):
-        """Check if mass is conserved in the box model.
-
-        Parameters
-        ----------
-        params : pd.Series
-            Series containing simulation parameters.
-        fl_df : pd.DataFrame
-            DataFrame containing flight data.
-        pl_df : pd.DataFrame
-            DataFrame containing plume data.
-        chem_ds : xr.Dataset
-            Dataset containing chemical data.
-
-        Returns
-        -------
-        pd.DataFrame
-            DataFrame containing mass conservation data.
-        """
-
-        # Initialize the dictionary
-        vecmass = {emi_species: [] for emi_species in chem_ds["emi_species"].values.tolist()}
-        gridmass = {emi_species: [] for emi_species in chem_ds["emi_species"].values.tolist()}
-        mc = {emi_species: [] for emi_species in chem_ds["emi_species"].values.tolist()}
-
-        # Constants
-        mm = [30.01, 46.01, 28.01, 30.03, 44.05, 28.05, 42.08, 26.04, 78.11]  # g/mol
-        NA = 6.022e23  # Avogadro's number
-
-        for s, emi_species in enumerate(chem_ds["emi_species"].values):
-            max_fl_time = fl_df["time"].max()
-
-            for ts, t in enumerate(pl_df["time"].unique()[:-1]):
-                if ts == 0:
-                    total_vector_mass = 0
-                    total_grid_mass = 0
-                    percent_mass_conserved = 0
-                    vecmass[emi_species].append(total_vector_mass)
-                    gridmass[emi_species].append(total_grid_mass)
-                    mc[emi_species].append(percent_mass_conserved)
-                    continue
-
-                previous_time = pl_df["time"].unique()[ts - 1]
-                fl_snapshot = fl_df[fl_df["time"] == previous_time]
-
-                if t <= max_fl_time:
-                    # Accumulate vector mass for all flights
-                    vector_mass = fl_snapshot[emi_species]
-
-                    total_vector_mass += vector_mass.sum()
-
-                # Grab plume mass from grid data
-                grid_concs = chem_ds["emi"].sel(emi_species=emi_species, time=t)
-
-                if (grid_concs == 0).all():
-                    pass
-                else:
-                    # Compute the boolean indexer first
-                    grid_concs_over_zero = grid_concs > 0
-                    grid_concs_over_zero = grid_concs.where(grid_concs_over_zero, drop=True)
-
-                    grid_mass = (
-                        grid_concs_over_zero
-                        * chem_ds["M"].sel(time=t)
-                        * 1e-9
-                        * (mm[s] / NA)
-                        * params.loc["vres_sim"]
-                        * units.latitude_distance_to_m(params.loc["hres_sim"])
-                        * units.longitude_distance_to_m(
-                            params.loc["hres_sim"],
-                            (params.loc["lat_bounds"][0] + params.loc["lat_bounds"][1]) / 2,
-                        )
-                        * 1e03
-                    )  # convert to kg/m^3
-
-                    total_grid_mass = grid_mass.sum().item()
-
-                    percent_mass_conserved = total_grid_mass / total_vector_mass * 100
-
-                # Append the percentage to the list in the dictionary
-                vecmass[emi_species].append(total_vector_mass)
-                gridmass[emi_species].append(total_grid_mass)
-                mc[emi_species].append(percent_mass_conserved)
-
-        # convert the dictionary to a DataFrame
-        vecmass = pd.DataFrame(
-            vecmass, index=pl_df["time"].unique()[:-1], 
-            columns=chem_ds["emi_species"].values.tolist()
-        )
-        gridmass = pd.DataFrame(
-            gridmass, index=pl_df["time"].unique()[:-1], 
-            columns=chem_ds["emi_species"].values.tolist()
-        )
-        mc = pd.DataFrame(
-            mc, index=pl_df["time"].unique()[:-1], 
-            columns=chem_ds["emi_species"].values.tolist()
-        )
-
-        return vecmass, gridmass, mc
-
-    def boxm_test(run_path, data_path, job_id, chem_ds):
-        """Run the box model for selected cells and job_id.
-
-        Parameters
-        ----------
-        run_path : str
-            Path to the box model executable.
-        data_path : str
-            Path to the data directory.
-        job_id : str
-            Job ID.
-        chem_ds : xr.Dataset
-            Dataset containing chemical data.
-
-        Returns
-        -------
-        xr.Dataset
-            Dataset containing chemical data for the selected cells.
-        """
-
-        # create input file for original boxm
-        gen_boxm_orig_input(data_path, chem_ds, job_id)
-
-        gen_zen_file(data_path, chem_ds, job_id)
-
-        gen_emi_file(data_path, chem_ds, job_id)
-
-        # # calls fortran with input file and generates .OUT files
-        subprocess.call(
-            [run_path + "boxm_orig", data_path, job_id],
-        )
-
-        return update_chem_ds(data_path, chem_ds, job_id)
-
-
-# Helper functions for GPAT
+# Helper functions for validation and setup
 def lonlat_to_m(lon, lat, global_ref_lon, global_ref_lat):
     transformer = Transformer.from_crs("epsg:4326", f"+proj=tmerc +lat_0={global_ref_lat} +lon_0={global_ref_lon} +k=1 +x_0=0 +y_0=0", always_xy=True)
     lon_m, lat_m = transformer.transform(lon, lat)
