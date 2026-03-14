@@ -239,6 +239,8 @@ class GPATPlotting:
         time_idx,
         job_id=None,
         species="NO",
+        shared_color_scale=True,
+        color_scale=None,
         overlay_plume_centers=False,
         overlay_trajectories=False,
         flight_ids=None,
@@ -264,6 +266,26 @@ class GPATPlotting:
             if len(time_indices) == 0:
                 raise ValueError("time_idx iterable is empty.")
 
+            color_scale_use = color_scale
+            if shared_color_scale and color_scale is None:
+                # Build a shared scale from timestep-local rows to avoid loading all rows at once.
+                patch_table = self.pp_gpat.patch_table_dict[job_id]
+                time_rows_all = np.asarray(patch_table["time_idx"].values, dtype=int)
+                vmax = 0.0
+                for t_idx in time_indices:
+                    row_sel = np.flatnonzero(time_rows_all == int(t_idx))
+                    if row_sel.size == 0:
+                        continue
+                    vals_t = np.asarray(
+                        patch_table["Y_del_f"].isel(row=row_sel).sel(species_out=species).values
+                    )
+                    vals_t = vals_t[np.isfinite(vals_t) & (vals_t != 0.0)]
+                    if vals_t.size > 0:
+                        vmax = max(vmax, float(np.nanmax(vals_t)))
+
+                if vmax > 0.0:
+                    color_scale_use = (0.0, vmax)
+
             ncols = max(1, min(int(subplot_ncols), len(time_indices)))
             nrows = int(np.ceil(len(time_indices) / ncols))
 
@@ -280,6 +302,8 @@ class GPATPlotting:
                         t_idx,
                         job_id=job_id,
                         species=species,
+                        shared_color_scale=shared_color_scale,
+                        color_scale=color_scale_use,
                         overlay_plume_centers=overlay_plume_centers,
                         overlay_trajectories=overlay_trajectories,
                         flight_ids=flight_ids,
@@ -391,26 +415,35 @@ class GPATPlotting:
         vres_sim_c = _extract_sim_value(sim_raw, "vres_sim_c")
         vres_sim_f = _extract_sim_value(sim_raw, "vres_sim_f")
 
-        vals = patch_table["Y_del_f"].sel(species_out=species).values
-        time_rows = patch_table["time_idx"].values.astype(int)
-        mask = np.isfinite(vals) & (vals != 0.0) & (time_rows == int(time_idx))
+        time_rows = np.asarray(patch_table["time_idx"].values, dtype=int)
+        row_sel = np.flatnonzero(time_rows == int(time_idx))
+        if row_sel.size == 0:
+            raise ValueError(
+                f"No patch_table rows found for time_idx={time_idx}."
+            )
+
+        # Slice to the requested timestep first to avoid loading all rows from disk.
+        patch_t = patch_table.isel(row=row_sel)
+
+        vals = np.asarray(patch_t["Y_del_f"].sel(species_out=species).values)
+        mask = np.isfinite(vals) & (vals != 0.0)
 
         if not np.any(mask):
             raise ValueError(
                 f"No nonzero patch_table values found for species={species} at time_idx={time_idx}."
             )
 
-        if {"latitude_f", "longitude_f"}.issubset(set(patch_table.variables) | set(patch_table.coords)):
-            lat_plot = patch_table["latitude_f"].values[mask]
-            lon_plot = patch_table["longitude_f"].values[mask]
+        if {"latitude_f", "longitude_f"}.issubset(set(patch_t.variables) | set(patch_t.coords)):
+            lat_plot = np.asarray(patch_t["latitude_f"].values)[mask]
+            lon_plot = np.asarray(patch_t["longitude_f"].values)[mask]
         else:
             nx_f = max(1, int(np.rint(hres_sim_c / hres_sim_f)))
             ny_f = nx_f
             nz_f = max(1, int(np.rint(vres_sim_c / vres_sim_f)))
             hres_f_deg = hres_sim_c / nx_f
 
-            row_cell_c = patch_table["row_cell_c"].values.astype(int)
-            row_cell_f = patch_table["row_cell_f"].values.astype(int)
+            row_cell_c = np.asarray(patch_t["row_cell_c"].values, dtype=int)
+            row_cell_f = np.asarray(patch_t["row_cell_f"].values, dtype=int)
 
             rem_f = (row_cell_f - 1) % (nx_f * ny_f)
             iy_f = rem_f // nx_f + 1
@@ -467,12 +500,19 @@ class GPATPlotting:
             ax = _ax
             fig = ax.figure
 
+        if color_scale is None:
+            vmin, vmax = None, None
+        else:
+            vmin, vmax = float(color_scale[0]), float(color_scale[1])
+
         mesh = ax.pcolormesh(
             lon_edges,
             lat_edges,
             da_plot.values,
             shading="auto",
             cmap="viridis",
+            vmin=vmin,
+            vmax=vmax,
         )
         fig.colorbar(mesh, ax=ax, label=f"{species} Y_del_f")
 

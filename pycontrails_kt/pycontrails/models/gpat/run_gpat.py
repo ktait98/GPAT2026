@@ -51,8 +51,8 @@ pl_params = {
 
 # meteorology parameters
 met_params = {
-    "eastward_wind": 5.0,  # m/s
-    "northward_wind": 3.0,  # m/s
+    "eastward_wind": 0.0,  # m/s
+    "northward_wind": 0.0,  # m/s
     "lagrangian_tendency_of_air_pressure": 0.0,  # m/s
 }
 

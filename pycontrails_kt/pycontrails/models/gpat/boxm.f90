@@ -2365,7 +2365,6 @@ CONTAINS
 
             ! Accumulate plume species into boxm species slots
             DO PL_ID = 1, PL_STATE%NSPL
-                PRINT *, "  Checking PL segment", SEG_ID, "PL_ID", PL_ID
                 BOXM_ID = PL_STATE%SPECIES_PL_NUM(PL_ID)
                 IF (BOXM_ID < 1 .OR. BOXM_ID > PATCH_STATE%NSBOXM) CYCLE
                 IF (BOXM_STATE%MOL_MASS_C(BOXM_ID) <= 0.0_DP) CYCLE

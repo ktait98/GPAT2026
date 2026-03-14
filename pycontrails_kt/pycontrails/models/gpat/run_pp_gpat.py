@@ -34,9 +34,9 @@ print(boxm_out)
 #                                     time_idx=280, overlay_patch=True)   
 #
 pp_gpat.plotting.plot_patch_heatmap_2d(
-    range(184, 200, 3),
+    range(184+3*15, 184+3*20, 3),
     job_id=None,
     species="CO",
-    overlay_plume_centers=True,
+    overlay_plume_centers=False,
     overlay_trajectories=True,
 )
