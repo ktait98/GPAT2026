@@ -5,7 +5,9 @@ MODULE HELPERS
 
     INTEGER, PARAMETER, PUBLIC :: DP = KIND(1.0D0)
     LOGICAL, PARAMETER, PUBLIC :: USE_FULL_SLICE_FOOTPRINT = .TRUE.
-    LOGICAL, PARAMETER, PUBLIC :: DEBUG_PROJECTION = .TRUE.
+    LOGICAL, PARAMETER, PUBLIC :: USE_SLICE_BRIDGES = .TRUE.
+    LOGICAL, PARAMETER, PUBLIC :: ENABLE_BACKPROJECTION = .FALSE.
+    LOGICAL, PARAMETER, PUBLIC :: DEBUG_PROJECTION = .FALSE.
     PUBLIC :: NC_CHECK, ERFINV, OVERLAP_1D, DEG_TO_M_DX, DEG_TO_M_DY, RECT_SLICE_RAW_OVERLAP
 
     ! ---------- GENERIC NETCDF ERROR CHECKING ----------
@@ -1580,31 +1582,29 @@ CONTAINS
         PL_STATE%Z_HALF(:,:) = 0.0_DP
 
         DO SEG_ID = 1, PL_STATE%NSEG
-            IF (PL_STATE%ACTIVE_SEG_FLAG(SEG_ID) == 1) THEN
-                DO SLICE_ID = 1, PL_STATE%NSLICES
-                    ! SIGMA_YY, SIGMA_ZZ ARE VARIANCES IN YOUR STATE
-                    SIGMA_Y = SQRT( MAX( PL_STATE%SIGMA_YY(SEG_ID), 1.0E-30_DP ) )
-                    SIGMA_Z = SQRT( MAX( PL_STATE%SIGMA_ZZ(SEG_ID), 1.0E-30_DP ) )
+            DO SLICE_ID = 1, PL_STATE%NSLICES
+                ! SIGMA_YY, SIGMA_ZZ ARE VARIANCES IN YOUR STATE
+                SIGMA_Y = SQRT( MAX( PL_STATE%SIGMA_YY(SEG_ID), 1.0E-30_DP ) )
+                SIGMA_Z = SQRT( MAX( PL_STATE%SIGMA_ZZ(SEG_ID), 1.0E-30_DP ) )
 
-                    ! Y in original order
-                    F  = PL_STATE%M_FRAC(SLICE_ID)
-                    F  = MIN( MAX(F, -1.0_DP + F_EPS), 1.0_DP - F_EPS )
-                    U  = F
-                    PL_STATE%Y_HALF(SEG_ID, SLICE_ID) = SQRT(2.0_DP) * SIGMA_Y * ERFINV(U)
+                ! Y in original order
+                F  = PL_STATE%M_FRAC(SLICE_ID)
+                F  = MIN( MAX(F, -1.0_DP + F_EPS), 1.0_DP - F_EPS )
+                U  = F
+                PL_STATE%Y_HALF(SEG_ID, SLICE_ID) = SQRT(2.0_DP) * SIGMA_Y * ERFINV(U)
 
-                    ! Z in reverse order
-                    F  = PL_STATE%M_FRAC(PL_STATE%NSLICES - SLICE_ID + 1)
-                    ! Z in reverse order
-                    F  = PL_STATE%M_FRAC(PL_STATE%NSLICES - SLICE_ID + 1)
-                    F  = MIN( MAX(F, -1.0_DP + F_EPS), 1.0_DP - F_EPS )
-                    U  = F
-                    PL_STATE%Z_HALF(SEG_ID, SLICE_ID) = SQRT(2.0_DP) * SIGMA_Z * ERFINV(U)
+                ! Z in reverse order
+                F  = PL_STATE%M_FRAC(PL_STATE%NSLICES - SLICE_ID + 1)
+                ! Z in reverse order
+                F  = PL_STATE%M_FRAC(PL_STATE%NSLICES - SLICE_ID + 1)
+                F  = MIN( MAX(F, -1.0_DP + F_EPS), 1.0_DP - F_EPS )
+                U  = F
+                PL_STATE%Z_HALF(SEG_ID, SLICE_ID) = SQRT(2.0_DP) * SIGMA_Z * ERFINV(U)
 
-                    ! CALC SLICE POLYS FOR EACH SEGMENT AND SLICE
-                    CALL PL_STATE%BUILD_ELLIPSES_M(SEG_ID, PL_DS%NPOINTS)
-                    CALL PL_STATE%BUILD_SLICE_POLYS_M(SEG_ID, SLICE_ID)
-                END DO
-            END IF
+                ! CALC SLICE POLYS FOR EACH SEGMENT AND SLICE
+                CALL PL_STATE%BUILD_ELLIPSES_M(SEG_ID, PL_DS%NPOINTS)
+                CALL PL_STATE%BUILD_SLICE_POLYS_M(SEG_ID, SLICE_ID)
+            END DO
         END DO
     END SUBROUTINE PL_STATE_ADVANCE_GEOM
 
@@ -1649,27 +1649,69 @@ CONTAINS
         END IF
     END SUBROUTINE PL_STATE_ADVANCE_MASS
 
-    SUBROUTINE PL_STATE_BUILD_ACTIVE(PL_STATE, BOXM_STATE)
+    SUBROUTINE PL_STATE_BUILD_ACTIVE(PL_STATE, BOXM_DS, BOXM_STATE)
         CLASS(PL_STATE_TYPE),    INTENT(INOUT) :: PL_STATE
+        CLASS(BOXM_DS_TYPE),     INTENT(IN)    :: BOXM_DS
         CLASS(BOXM_STATE_TYPE),  INTENT(INOUT) :: BOXM_STATE
 
-        INTEGER :: I, SEG_ID, CELL_ID
+        INTEGER :: I, SEG_ID, CELL_ID, SLICE_ID
+        LOGICAL :: SEG_HAS_OVERLAP
+        LOGICAL :: SEG_IS_INCLUDED
         REAL(DP) :: PL_LON, PL_LAT, PL_ALT
         REAL(DP) :: BOXM_LON_M, BOXM_LAT_M, BOXM_ALT_M
         REAL(DP) :: MIN_DIST, DIST
+        REAL(DP) :: X_MIN_PL, X_MAX_PL, Y_MIN_PL, Y_MAX_PL, Z_MIN_PL, Z_MAX_PL
+        REAL(DP) :: X_MIN_C, X_MAX_C, Y_MIN_C, Y_MAX_C, Z_MIN_C, Z_MAX_C
+        REAL(DP) :: DZ_C
+        REAL(DP), PARAMETER :: EPS = 1.0E-12_DP
+        REAL(DP), PARAMETER :: MASS_EPS = 1.0E-30_DP
 
         ! RESET BOXM ACTIVE FLAG
         BOXM_STATE%ACTIVE_FLAG(:) = .FALSE.
+        DZ_C = BOXM_DS%VRES_SIM_C
 
-        ! LOOP OVER PLUME SEGMENTS TO SET ACTIVE CELLS
+        ! Activate every coarse cell whose bounds overlap any slice polygon AABB.
+        ! Fallback to nearest-cell center mapping when no overlap is found.
         DO SEG_ID = 1, PL_STATE%NSEG
-            ! USE MID-HEIGHT POINT FOR CELL MAPPING
+            SEG_IS_INCLUDED = (PL_STATE%ACTIVE_SEG_FLAG(SEG_ID) == 1)
+            IF ((.NOT. SEG_IS_INCLUDED) .AND. ALLOCATED(PL_STATE%PL_MASS)) THEN
+                SEG_IS_INCLUDED = (SUM(ABS(PL_STATE%PL_MASS(SEG_ID,:))) > MASS_EPS)
+            END IF
+            IF (.NOT. SEG_IS_INCLUDED) CYCLE
+
+            SEG_HAS_OVERLAP = .FALSE.
+
+            DO SLICE_ID = 1, PL_STATE%NSLICES
+                X_MIN_PL = MINVAL(PL_STATE%SLICE_POLYS_M(SEG_ID, SLICE_ID, :, 1))
+                X_MAX_PL = MAXVAL(PL_STATE%SLICE_POLYS_M(SEG_ID, SLICE_ID, :, 1))
+                Y_MIN_PL = MINVAL(PL_STATE%SLICE_POLYS_M(SEG_ID, SLICE_ID, :, 2))
+                Y_MAX_PL = MAXVAL(PL_STATE%SLICE_POLYS_M(SEG_ID, SLICE_ID, :, 2))
+                Z_MIN_PL = MINVAL(PL_STATE%SLICE_POLYS_M(SEG_ID, SLICE_ID, :, 3))
+                Z_MAX_PL = MAXVAL(PL_STATE%SLICE_POLYS_M(SEG_ID, SLICE_ID, :, 3))
+
+                DO I = 1, BOXM_STATE%NCELL
+                    X_MIN_C = BOXM_STATE%LONGITUDE_C_M(I) - 0.5_DP * BOXM_STATE%DX_C_M(I)
+                    X_MAX_C = BOXM_STATE%LONGITUDE_C_M(I) + 0.5_DP * BOXM_STATE%DX_C_M(I)
+                    Y_MIN_C = BOXM_STATE%LATITUDE_C_M(I) - 0.5_DP * BOXM_STATE%DY_C_M(I)
+                    Y_MAX_C = BOXM_STATE%LATITUDE_C_M(I) + 0.5_DP * BOXM_STATE%DY_C_M(I)
+                    Z_MIN_C = BOXM_STATE%ALTITUDE_C(I) - 0.5_DP * DZ_C
+                    Z_MAX_C = BOXM_STATE%ALTITUDE_C(I) + 0.5_DP * DZ_C
+
+                    IF (OVERLAP_1D(X_MIN_PL, X_MAX_PL, X_MIN_C, X_MAX_C) <= EPS) CYCLE
+                    IF (OVERLAP_1D(Y_MIN_PL, Y_MAX_PL, Y_MIN_C, Y_MAX_C) <= EPS) CYCLE
+                    IF (OVERLAP_1D(Z_MIN_PL, Z_MAX_PL, Z_MIN_C, Z_MAX_C) <= EPS) CYCLE
+
+                    BOXM_STATE%ACTIVE_FLAG(I) = .TRUE.
+                    SEG_HAS_OVERLAP = .TRUE.
+                END DO
+            END DO
+
+            IF (SEG_HAS_OVERLAP) CYCLE
 
             PL_LON = PL_STATE%LONGITUDE_M(SEG_ID)
             PL_LAT = PL_STATE%LATITUDE_M(SEG_ID)
             PL_ALT = PL_STATE%ALTITUDE(SEG_ID)
 
-            ! FIND NEAREST BOXM CELL
             MIN_DIST = 1.0E30_DP
             CELL_ID = -1
 
@@ -1685,8 +1727,6 @@ CONTAINS
                     CELL_ID = I
                 END IF
             END DO
-
-            ! SET ACTIVE FLAG FOR NEAREST CELL
             IF (CELL_ID > 0) THEN
                 BOXM_STATE%ACTIVE_FLAG(CELL_ID) = .TRUE.
             END IF
@@ -1701,17 +1741,24 @@ CONTAINS
         CLASS(PL_DS_TYPE),       INTENT(IN)    :: PL_DS
 
         INTEGER :: CELL_C, CELL_F_LOCAL, ROW_IDX, NNZ
+        INTEGER :: N_ACTIVE_CELL, AC_IDX
         INTEGER :: NX_F, NY_F, NZ_F, SEG_ID, SEG_PREV, SEG_NEXT, SLICE_ID
-        INTEGER :: FL_S, FL_P, FL_N, WP_S, WP_P, WP_N
+        INTEGER :: FL_S, WP_S, SEG_CAND
         INTEGER :: IX_F, IY_F, IZ_F
+        INTEGER :: IX_BEG, IX_END, IY_BEG, IY_END, IZ_BEG, IZ_END
         INTEGER :: N_ACTIVE_SLICE, N_NONZERO_SLICE
+        INTEGER, ALLOCATABLE :: BRIDGE_PREV_SEG(:), BRIDGE_NEXT_SEG(:), ACTIVE_CELLS(:)
+        LOGICAL, ALLOCATABLE :: SEG_INCLUDED(:)
         LOGICAL :: HAS_PREV_BRIDGE, HAS_NEXT_BRIDGE
         REAL(DP) :: LAT_C, ALT_C, LON_C_M, LAT_C_M
         REAL(DP) :: DX_C_M, DY_C_M, DZ_C
         REAL(DP) :: DX_F, DY_F, DZ_F
         REAL(DP) :: X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, Z_MIN_F, Z_MAX_F
-        REAL(DP) :: RAW, RAW_SUM, WEIGHT, W_PREV, W_NEXT
-        REAL(DP) :: RAW_PREV, RAW_NEXT
+        REAL(DP) :: X_MIN_SLICE, X_MAX_SLICE, Y_MIN_SLICE, Y_MAX_SLICE, Z_MIN_SLICE, Z_MAX_SLICE
+        REAL(DP) :: X_MIN_C, X_MAX_C, Y_MIN_C, Y_MAX_C, Z_MIN_C, Z_MAX_C
+        REAL(DP) :: X_OL_MIN, X_OL_MAX, Y_OL_MIN, Y_OL_MAX, Z_OL_MIN, Z_OL_MAX
+        REAL(DP) :: RAW, RAW_SUM, WEIGHT, W_PREV, W_CUR, W_NEXT
+        REAL(DP) :: RAW_PREV, RAW_CUR, RAW_NEXT
         REAL(DP) :: SLICE_POLY(4, 3), SLICE_POLY_CUR(4, 3)
         REAL(DP) :: SLICE_POLY_PREV(4, 3), SLICE_POLY_NEXT(4, 3)
         REAL(DP) :: X_L_P, Y_L_P, X_R_P, Y_R_P
@@ -1719,6 +1766,7 @@ CONTAINS
         REAL(DP) :: X_L_N, Y_L_N, X_R_N, Y_R_N
         REAL(DP) :: Z_MIN_PREV, Z_MAX_PREV, Z_MIN_NEXT, Z_MAX_NEXT
         REAL(DP), PARAMETER :: EPS = 1.0E-12_DP
+        REAL(DP), PARAMETER :: MASS_EPS = 1.0E-30_DP
 
         ! CALCULATE FINE GRID SUBDIVISION
         NX_F = MAX(1, NINT(BOXM_DS%HRES_SIM_C / BOXM_DS%HRES_SIM_F)) ! NUMBER OF FINE CELLS IN X DIRECTION
@@ -1736,36 +1784,61 @@ CONTAINS
         N_ACTIVE_SLICE = 0
         N_NONZERO_SLICE = 0
 
-        ! Pass 1: count all nonzero overlaps so we can allocate the sparse map exactly once.
-        NNZ = 0
-        DO SEG_ID = 1, PL_STATE%NSEG
-            IF (PL_STATE%ACTIVE_SEG_FLAG(SEG_ID) == 0) CYCLE
-            SEG_PREV = SEG_ID - 1
-            SEG_NEXT = SEG_ID + 1
-            HAS_PREV_BRIDGE = .FALSE.
-            HAS_NEXT_BRIDGE = .FALSE.
+        N_ACTIVE_CELL = COUNT(BOXM_STATE%ACTIVE_FLAG)
+        PL_STATE%NNZ_MAP = 0
+        IF (N_ACTIVE_CELL <= 0) RETURN
 
+        ALLOCATE(ACTIVE_CELLS(N_ACTIVE_CELL))
+        AC_IDX = 0
+        DO CELL_C = 1, BOXM_STATE%NCELL
+            IF (.NOT. BOXM_STATE%ACTIVE_FLAG(CELL_C)) CYCLE
+            AC_IDX = AC_IDX + 1
+            ACTIVE_CELLS(AC_IDX) = CELL_C
+        END DO
+
+        ALLOCATE(BRIDGE_PREV_SEG(PL_STATE%NSEG))
+        ALLOCATE(BRIDGE_NEXT_SEG(PL_STATE%NSEG))
+        ALLOCATE(SEG_INCLUDED(PL_STATE%NSEG))
+        BRIDGE_PREV_SEG(:) = 0
+        BRIDGE_NEXT_SEG(:) = 0
+        SEG_INCLUDED(:) = (PL_STATE%ACTIVE_SEG_FLAG(:) == 1)
+
+        IF (ALLOCATED(PL_STATE%PL_MASS)) THEN
+            DO SEG_ID = 1, PL_STATE%NSEG
+                IF (.NOT. SEG_INCLUDED(SEG_ID)) THEN
+                    SEG_INCLUDED(SEG_ID) = (SUM(ABS(PL_STATE%PL_MASS(SEG_ID,:))) > MASS_EPS)
+                END IF
+            END DO
+        END IF
+
+        ! Build bridge neighbors by (flight id, waypoint +/- 1), independent of SEG_ID ordering.
+        DO SEG_ID = 1, PL_STATE%NSEG
+            IF (.NOT. SEG_INCLUDED(SEG_ID)) CYCLE
             FL_S = PL_DS%FL_ID(SEG_ID)
             WP_S = PL_DS%WP(SEG_ID)
 
-            IF (SEG_PREV >= 1) THEN
-                IF (PL_STATE%ACTIVE_SEG_FLAG(SEG_PREV) == 1) THEN
-                    FL_P = PL_DS%FL_ID(SEG_PREV)
-                    WP_P = PL_DS%WP(SEG_PREV)
-                    IF ((FL_P == FL_S) .AND. (WP_S == WP_P + 1)) THEN
-                        HAS_PREV_BRIDGE = .TRUE.
-                    END IF
-                END IF
-            END IF
+            DO SEG_CAND = 1, PL_STATE%NSEG
+                IF (SEG_CAND == SEG_ID) CYCLE
+                IF (.NOT. SEG_INCLUDED(SEG_CAND)) CYCLE
+                IF (PL_DS%FL_ID(SEG_CAND) /= FL_S) CYCLE
 
-            IF (SEG_NEXT <= PL_STATE%NSEG) THEN
-                IF (PL_STATE%ACTIVE_SEG_FLAG(SEG_NEXT) == 1) THEN
-                    FL_N = PL_DS%FL_ID(SEG_NEXT)
-                    WP_N = PL_DS%WP(SEG_NEXT)
-                    IF ((FL_S == FL_N) .AND. (WP_N == WP_S + 1)) THEN
-                        HAS_NEXT_BRIDGE = .TRUE.
-                    END IF
-                END IF
+                IF (PL_DS%WP(SEG_CAND) == WP_S - 1) BRIDGE_PREV_SEG(SEG_ID) = SEG_CAND
+                IF (PL_DS%WP(SEG_CAND) == WP_S + 1) BRIDGE_NEXT_SEG(SEG_ID) = SEG_CAND
+            END DO
+        END DO
+
+        ! Pass 1: count all nonzero overlaps so we can allocate the sparse map exactly once.
+        NNZ = 0
+        DO SEG_ID = 1, PL_STATE%NSEG
+            IF (.NOT. SEG_INCLUDED(SEG_ID)) CYCLE
+            SEG_PREV = BRIDGE_PREV_SEG(SEG_ID)
+            SEG_NEXT = BRIDGE_NEXT_SEG(SEG_ID)
+            HAS_PREV_BRIDGE = (SEG_PREV > 0)
+            HAS_NEXT_BRIDGE = (SEG_NEXT > 0)
+
+            IF (.NOT. USE_SLICE_BRIDGES) THEN
+                HAS_PREV_BRIDGE = .FALSE.
+                HAS_NEXT_BRIDGE = .FALSE.
             END IF
 
             DO SLICE_ID = 1, PL_STATE%NSLICES
@@ -1797,22 +1870,48 @@ CONTAINS
                 END IF
 
                 IF (HAS_PREV_BRIDGE .AND. HAS_NEXT_BRIDGE) THEN
-                    W_PREV = 0.5_DP
-                    W_NEXT = 0.5_DP
-                ELSEIF (HAS_PREV_BRIDGE) THEN
-                    W_PREV = 1.0_DP
+                    W_PREV = 0.25_DP
+                    W_CUR  = 0.50_DP
+                    W_NEXT = 0.25_DP
+                ELSE IF (HAS_PREV_BRIDGE) THEN
+                    W_PREV = 0.50_DP
+                    W_CUR  = 0.50_DP
                     W_NEXT = 0.0_DP
-                ELSEIF (HAS_NEXT_BRIDGE) THEN
+                ELSE IF (HAS_NEXT_BRIDGE) THEN
                     W_PREV = 0.0_DP
-                    W_NEXT = 1.0_DP
+                    W_CUR  = 0.50_DP
+                    W_NEXT = 0.50_DP
                 ELSE
                     W_PREV = 0.0_DP
+                    W_CUR  = 1.0_DP
                     W_NEXT = 0.0_DP
-                    SLICE_POLY(:,:) = SLICE_POLY_CUR(:,:)
                 END IF
 
-                DO CELL_C = 1, BOXM_STATE%NCELL
-                    IF (.NOT. BOXM_STATE%ACTIVE_FLAG(CELL_C)) CYCLE
+                X_MIN_SLICE = MINVAL(SLICE_POLY_CUR(:,1))
+                X_MAX_SLICE = MAXVAL(SLICE_POLY_CUR(:,1))
+                Y_MIN_SLICE = MINVAL(SLICE_POLY_CUR(:,2))
+                Y_MAX_SLICE = MAXVAL(SLICE_POLY_CUR(:,2))
+                Z_MIN_SLICE = MINVAL(SLICE_POLY_CUR(:,3))
+                Z_MAX_SLICE = MAXVAL(SLICE_POLY_CUR(:,3))
+                IF (HAS_PREV_BRIDGE) THEN
+                    X_MIN_SLICE = MIN(X_MIN_SLICE, MINVAL(SLICE_POLY_PREV(:,1)))
+                    X_MAX_SLICE = MAX(X_MAX_SLICE, MAXVAL(SLICE_POLY_PREV(:,1)))
+                    Y_MIN_SLICE = MIN(Y_MIN_SLICE, MINVAL(SLICE_POLY_PREV(:,2)))
+                    Y_MAX_SLICE = MAX(Y_MAX_SLICE, MAXVAL(SLICE_POLY_PREV(:,2)))
+                    Z_MIN_SLICE = MIN(Z_MIN_SLICE, Z_MIN_PREV)
+                    Z_MAX_SLICE = MAX(Z_MAX_SLICE, Z_MAX_PREV)
+                END IF
+                IF (HAS_NEXT_BRIDGE) THEN
+                    X_MIN_SLICE = MIN(X_MIN_SLICE, MINVAL(SLICE_POLY_NEXT(:,1)))
+                    X_MAX_SLICE = MAX(X_MAX_SLICE, MAXVAL(SLICE_POLY_NEXT(:,1)))
+                    Y_MIN_SLICE = MIN(Y_MIN_SLICE, MINVAL(SLICE_POLY_NEXT(:,2)))
+                    Y_MAX_SLICE = MAX(Y_MAX_SLICE, MAXVAL(SLICE_POLY_NEXT(:,2)))
+                    Z_MIN_SLICE = MIN(Z_MIN_SLICE, Z_MIN_NEXT)
+                    Z_MAX_SLICE = MAX(Z_MAX_SLICE, Z_MAX_NEXT)
+                END IF
+
+                DO AC_IDX = 1, N_ACTIVE_CELL
+                    CELL_C = ACTIVE_CELLS(AC_IDX)
 
                     LAT_C = BOXM_STATE%LATITUDE_C(CELL_C)
                     ALT_C = BOXM_STATE%ALTITUDE_C(CELL_C)
@@ -1825,15 +1924,40 @@ CONTAINS
                     DY_F = DY_C_M / REAL(NY_F,DP)
                     DZ_F = DZ_C / REAL(NZ_F,DP)
 
-                    DO IZ_F = 1, NZ_F
+                    X_MIN_C = LON_C_M - 0.5_DP * DX_C_M
+                    X_MAX_C = LON_C_M + 0.5_DP * DX_C_M
+                    Y_MIN_C = LAT_C_M - 0.5_DP * DY_C_M
+                    Y_MAX_C = LAT_C_M + 0.5_DP * DY_C_M
+                    Z_MIN_C = ALT_C - 0.5_DP * DZ_C
+                    Z_MAX_C = ALT_C + 0.5_DP * DZ_C
+                    IF (OVERLAP_1D(X_MIN_SLICE, X_MAX_SLICE, X_MIN_C, X_MAX_C) <= EPS) CYCLE
+                    IF (OVERLAP_1D(Y_MIN_SLICE, Y_MAX_SLICE, Y_MIN_C, Y_MAX_C) <= EPS) CYCLE
+                    IF (OVERLAP_1D(Z_MIN_SLICE, Z_MAX_SLICE, Z_MIN_C, Z_MAX_C) <= EPS) CYCLE
+
+                    X_OL_MIN = MAX(X_MIN_SLICE, X_MIN_C)
+                    X_OL_MAX = MIN(X_MAX_SLICE, X_MAX_C)
+                    Y_OL_MIN = MAX(Y_MIN_SLICE, Y_MIN_C)
+                    Y_OL_MAX = MIN(Y_MAX_SLICE, Y_MAX_C)
+                    Z_OL_MIN = MAX(Z_MIN_SLICE, Z_MIN_C)
+                    Z_OL_MAX = MIN(Z_MAX_SLICE, Z_MAX_C)
+
+                    IX_BEG = MAX(1, FLOOR((X_OL_MIN - X_MIN_C) / DX_F) + 1)
+                    IX_END = MIN(NX_F, CEILING((X_OL_MAX - X_MIN_C) / DX_F))
+                    IY_BEG = MAX(1, FLOOR((Y_OL_MIN - Y_MIN_C) / DY_F) + 1)
+                    IY_END = MIN(NY_F, CEILING((Y_OL_MAX - Y_MIN_C) / DY_F))
+                    IZ_BEG = MAX(1, FLOOR((Z_OL_MIN - Z_MIN_C) / DZ_F) + 1)
+                    IZ_END = MIN(NZ_F, CEILING((Z_OL_MAX - Z_MIN_C) / DZ_F))
+                    IF (IX_END < IX_BEG .OR. IY_END < IY_BEG .OR. IZ_END < IZ_BEG) CYCLE
+
+                    DO IZ_F = IZ_BEG, IZ_END
                         Z_MIN_F = ALT_C - 0.5_DP * DZ_C + REAL(IZ_F - 1, DP) * DZ_F
                         Z_MAX_F = Z_MIN_F + DZ_F
 
-                        DO IY_F = 1, NY_F
+                        DO IY_F = IY_BEG, IY_END
                             Y_MIN_F = LAT_C_M - 0.5_DP * DY_C_M + REAL(IY_F - 1, DP) * DY_F
                             Y_MAX_F = Y_MIN_F + DY_F
 
-                            DO IX_F = 1, NX_F
+                            DO IX_F = IX_BEG, IX_END
                                 X_MIN_F = LON_C_M - 0.5_DP * DX_C_M + REAL(IX_F - 1, DP) * DX_F
                                 X_MAX_F = X_MIN_F + DX_F
 
@@ -1850,7 +1974,8 @@ CONTAINS
                                     SLICE_POLY(4,1) = X_R_P
                                     SLICE_POLY(4,2) = Y_R_P
                                     SLICE_POLY(4,3) = Z_MIN_PREV
-                                    RAW_PREV = RECT_SLICE_RAW_OVERLAP(X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, Z_MIN_F, Z_MAX_F, SLICE_POLY)
+                                    RAW_PREV = RECT_SLICE_RAW_OVERLAP(X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, Z_MIN_F, &
+                                                                        Z_MAX_F, SLICE_POLY)
                                 ELSE
                                     RAW_PREV = 0.0_DP
                                 END IF
@@ -1868,16 +1993,20 @@ CONTAINS
                                     SLICE_POLY(4,1) = X_R_S
                                     SLICE_POLY(4,2) = Y_R_S
                                     SLICE_POLY(4,3) = Z_MIN_NEXT
-                                    RAW_NEXT = RECT_SLICE_RAW_OVERLAP(X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, Z_MIN_F, Z_MAX_F, SLICE_POLY)
+                                    RAW_NEXT = RECT_SLICE_RAW_OVERLAP(X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, Z_MIN_F, &
+                                                                      Z_MAX_F, SLICE_POLY)
                                 ELSE
                                     RAW_NEXT = 0.0_DP
                                 END IF
 
-                                IF ((W_PREV == 0.0_DP) .AND. (W_NEXT == 0.0_DP)) THEN
-                                    RAW = RECT_SLICE_RAW_OVERLAP(X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, Z_MIN_F, Z_MAX_F, SLICE_POLY)
+                                IF (W_CUR > 0.0_DP) THEN
+                                    RAW_CUR = RECT_SLICE_RAW_OVERLAP(X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, Z_MIN_F, &
+                                                                     Z_MAX_F, SLICE_POLY_CUR)
                                 ELSE
-                                    RAW = W_PREV * RAW_PREV + W_NEXT * RAW_NEXT
+                                    RAW_CUR = 0.0_DP
                                 END IF
+
+                                RAW = W_PREV * RAW_PREV + W_CUR * RAW_CUR + W_NEXT * RAW_NEXT
                                 IF (RAW > EPS) NNZ = NNZ + 1
                             END DO
                         END DO
@@ -1887,7 +2016,13 @@ CONTAINS
         END DO
 
         PL_STATE%NNZ_MAP = NNZ
-        IF (NNZ <= 0) RETURN
+        IF (NNZ <= 0) THEN
+            IF (ALLOCATED(ACTIVE_CELLS)) DEALLOCATE(ACTIVE_CELLS)
+            IF (ALLOCATED(BRIDGE_PREV_SEG)) DEALLOCATE(BRIDGE_PREV_SEG)
+            IF (ALLOCATED(BRIDGE_NEXT_SEG)) DEALLOCATE(BRIDGE_NEXT_SEG)
+            IF (ALLOCATED(SEG_INCLUDED)) DEALLOCATE(SEG_INCLUDED)
+            RETURN
+        END IF
 
         ALLOCATE(PL_STATE%MAP_SEG(NNZ))
         ALLOCATE(PL_STATE%MAP_SLICE(NNZ))
@@ -1898,33 +2033,15 @@ CONTAINS
         ! Pass 2: for each slice, recompute candidate overlaps, normalize them, and store.
         ROW_IDX = 0
         DO SEG_ID = 1, PL_STATE%NSEG
-            IF (PL_STATE%ACTIVE_SEG_FLAG(SEG_ID) == 0) CYCLE
-            SEG_PREV = SEG_ID - 1
-            SEG_NEXT = SEG_ID + 1
-            HAS_PREV_BRIDGE = .FALSE.
-            HAS_NEXT_BRIDGE = .FALSE.
+            IF (.NOT. SEG_INCLUDED(SEG_ID)) CYCLE
+            SEG_PREV = BRIDGE_PREV_SEG(SEG_ID)
+            SEG_NEXT = BRIDGE_NEXT_SEG(SEG_ID)
+            HAS_PREV_BRIDGE = (SEG_PREV > 0)
+            HAS_NEXT_BRIDGE = (SEG_NEXT > 0)
 
-            FL_S = PL_DS%FL_ID(SEG_ID)
-            WP_S = PL_DS%WP(SEG_ID)
-
-            IF (SEG_PREV >= 1) THEN
-                IF (PL_STATE%ACTIVE_SEG_FLAG(SEG_PREV) == 1) THEN
-                    FL_P = PL_DS%FL_ID(SEG_PREV)
-                    WP_P = PL_DS%WP(SEG_PREV)
-                    IF ((FL_P == FL_S) .AND. (WP_S == WP_P + 1)) THEN
-                        HAS_PREV_BRIDGE = .TRUE.
-                    END IF
-                END IF
-            END IF
-
-            IF (SEG_NEXT <= PL_STATE%NSEG) THEN
-                IF (PL_STATE%ACTIVE_SEG_FLAG(SEG_NEXT) == 1) THEN
-                    FL_N = PL_DS%FL_ID(SEG_NEXT)
-                    WP_N = PL_DS%WP(SEG_NEXT)
-                    IF ((FL_S == FL_N) .AND. (WP_N == WP_S + 1)) THEN
-                        HAS_NEXT_BRIDGE = .TRUE.
-                    END IF
-                END IF
+            IF (.NOT. USE_SLICE_BRIDGES) THEN
+                HAS_PREV_BRIDGE = .FALSE.
+                HAS_NEXT_BRIDGE = .FALSE.
             END IF
 
             DO SLICE_ID = 1, PL_STATE%NSLICES
@@ -1956,23 +2073,48 @@ CONTAINS
                 END IF
 
                 IF (HAS_PREV_BRIDGE .AND. HAS_NEXT_BRIDGE) THEN
-                    W_PREV = 0.5_DP
-                    W_NEXT = 0.5_DP
-                ELSEIF (HAS_PREV_BRIDGE) THEN
-                    W_PREV = 1.0_DP
+                    W_PREV = 0.25_DP
+                    W_CUR  = 0.50_DP
+                    W_NEXT = 0.25_DP
+                ELSE IF (HAS_PREV_BRIDGE) THEN
+                    W_PREV = 0.50_DP
+                    W_CUR  = 0.50_DP
                     W_NEXT = 0.0_DP
-                ELSEIF (HAS_NEXT_BRIDGE) THEN
+                ELSE IF (HAS_NEXT_BRIDGE) THEN
                     W_PREV = 0.0_DP
-                    W_NEXT = 1.0_DP
+                    W_CUR  = 0.50_DP
+                    W_NEXT = 0.50_DP
                 ELSE
                     W_PREV = 0.0_DP
+                    W_CUR  = 1.0_DP
                     W_NEXT = 0.0_DP
-                    SLICE_POLY(:,:) = SLICE_POLY_CUR(:,:)
+                END IF
+                X_MIN_SLICE = MINVAL(SLICE_POLY_CUR(:,1))
+                X_MAX_SLICE = MAXVAL(SLICE_POLY_CUR(:,1))
+                Y_MIN_SLICE = MINVAL(SLICE_POLY_CUR(:,2))
+                Y_MAX_SLICE = MAXVAL(SLICE_POLY_CUR(:,2))
+                Z_MIN_SLICE = MINVAL(SLICE_POLY_CUR(:,3))
+                Z_MAX_SLICE = MAXVAL(SLICE_POLY_CUR(:,3))
+                IF (HAS_PREV_BRIDGE) THEN
+                    X_MIN_SLICE = MIN(X_MIN_SLICE, MINVAL(SLICE_POLY_PREV(:,1)))
+                    X_MAX_SLICE = MAX(X_MAX_SLICE, MAXVAL(SLICE_POLY_PREV(:,1)))
+                    Y_MIN_SLICE = MIN(Y_MIN_SLICE, MINVAL(SLICE_POLY_PREV(:,2)))
+                    Y_MAX_SLICE = MAX(Y_MAX_SLICE, MAXVAL(SLICE_POLY_PREV(:,2)))
+                    Z_MIN_SLICE = MIN(Z_MIN_SLICE, Z_MIN_PREV)
+                    Z_MAX_SLICE = MAX(Z_MAX_SLICE, Z_MAX_PREV)
+                END IF
+                IF (HAS_NEXT_BRIDGE) THEN
+                    X_MIN_SLICE = MIN(X_MIN_SLICE, MINVAL(SLICE_POLY_NEXT(:,1)))
+                    X_MAX_SLICE = MAX(X_MAX_SLICE, MAXVAL(SLICE_POLY_NEXT(:,1)))
+                    Y_MIN_SLICE = MIN(Y_MIN_SLICE, MINVAL(SLICE_POLY_NEXT(:,2)))
+                    Y_MAX_SLICE = MAX(Y_MAX_SLICE, MAXVAL(SLICE_POLY_NEXT(:,2)))
+                    Z_MIN_SLICE = MIN(Z_MIN_SLICE, Z_MIN_NEXT)
+                    Z_MAX_SLICE = MAX(Z_MAX_SLICE, Z_MAX_NEXT)
                 END IF
                 RAW_SUM = 0.0_DP
 
-                DO CELL_C = 1, BOXM_STATE%NCELL
-                    IF (.NOT. BOXM_STATE%ACTIVE_FLAG(CELL_C)) CYCLE
+                DO AC_IDX = 1, N_ACTIVE_CELL
+                    CELL_C = ACTIVE_CELLS(AC_IDX)
 
                     LAT_C = BOXM_STATE%LATITUDE_C(CELL_C)
                     ALT_C = BOXM_STATE%ALTITUDE_C(CELL_C)
@@ -1985,15 +2127,40 @@ CONTAINS
                     DY_F = DY_C_M / REAL(NY_F, DP)
                     DZ_F = DZ_C / REAL(NZ_F, DP)
 
-                    DO IZ_F = 1, NZ_F
+                    X_MIN_C = LON_C_M - 0.5_DP * DX_C_M
+                    X_MAX_C = LON_C_M + 0.5_DP * DX_C_M
+                    Y_MIN_C = LAT_C_M - 0.5_DP * DY_C_M
+                    Y_MAX_C = LAT_C_M + 0.5_DP * DY_C_M
+                    Z_MIN_C = ALT_C - 0.5_DP * DZ_C
+                    Z_MAX_C = ALT_C + 0.5_DP * DZ_C
+                    IF (OVERLAP_1D(X_MIN_SLICE, X_MAX_SLICE, X_MIN_C, X_MAX_C) <= EPS) CYCLE
+                    IF (OVERLAP_1D(Y_MIN_SLICE, Y_MAX_SLICE, Y_MIN_C, Y_MAX_C) <= EPS) CYCLE
+                    IF (OVERLAP_1D(Z_MIN_SLICE, Z_MAX_SLICE, Z_MIN_C, Z_MAX_C) <= EPS) CYCLE
+
+                    X_OL_MIN = MAX(X_MIN_SLICE, X_MIN_C)
+                    X_OL_MAX = MIN(X_MAX_SLICE, X_MAX_C)
+                    Y_OL_MIN = MAX(Y_MIN_SLICE, Y_MIN_C)
+                    Y_OL_MAX = MIN(Y_MAX_SLICE, Y_MAX_C)
+                    Z_OL_MIN = MAX(Z_MIN_SLICE, Z_MIN_C)
+                    Z_OL_MAX = MIN(Z_MAX_SLICE, Z_MAX_C)
+
+                    IX_BEG = MAX(1, FLOOR((X_OL_MIN - X_MIN_C) / DX_F) + 1)
+                    IX_END = MIN(NX_F, CEILING((X_OL_MAX - X_MIN_C) / DX_F))
+                    IY_BEG = MAX(1, FLOOR((Y_OL_MIN - Y_MIN_C) / DY_F) + 1)
+                    IY_END = MIN(NY_F, CEILING((Y_OL_MAX - Y_MIN_C) / DY_F))
+                    IZ_BEG = MAX(1, FLOOR((Z_OL_MIN - Z_MIN_C) / DZ_F) + 1)
+                    IZ_END = MIN(NZ_F, CEILING((Z_OL_MAX - Z_MIN_C) / DZ_F))
+                    IF (IX_END < IX_BEG .OR. IY_END < IY_BEG .OR. IZ_END < IZ_BEG) CYCLE
+
+                    DO IZ_F = IZ_BEG, IZ_END
                         Z_MIN_F = ALT_C - 0.5_DP * DZ_C + REAL(IZ_F - 1, DP) * DZ_F
                         Z_MAX_F = Z_MIN_F + DZ_F
 
-                        DO IY_F = 1, NY_F
+                        DO IY_F = IY_BEG, IY_END
                             Y_MIN_F = LAT_C_M - 0.5_DP * DY_C_M + REAL(IY_F - 1, DP) * DY_F
                             Y_MAX_F = Y_MIN_F + DY_F
 
-                            DO IX_F = 1, NX_F
+                            DO IX_F = IX_BEG, IX_END
                                 X_MIN_F = LON_C_M - 0.5_DP * DX_C_M + REAL(IX_F - 1, DP) * DX_F
                                 X_MAX_F = X_MIN_F + DX_F
 
@@ -2010,7 +2177,8 @@ CONTAINS
                                     SLICE_POLY(4,1) = X_R_P
                                     SLICE_POLY(4,2) = Y_R_P
                                     SLICE_POLY(4,3) = Z_MIN_PREV
-                                    RAW_PREV = RECT_SLICE_RAW_OVERLAP(X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, Z_MIN_F, Z_MAX_F, SLICE_POLY)
+                                    RAW_PREV = RECT_SLICE_RAW_OVERLAP(X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, Z_MIN_F, &
+                                                                      Z_MAX_F, SLICE_POLY)
                                 ELSE
                                     RAW_PREV = 0.0_DP
                                 END IF
@@ -2028,16 +2196,20 @@ CONTAINS
                                     SLICE_POLY(4,1) = X_R_S
                                     SLICE_POLY(4,2) = Y_R_S
                                     SLICE_POLY(4,3) = Z_MIN_NEXT
-                                    RAW_NEXT = RECT_SLICE_RAW_OVERLAP(X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, Z_MIN_F, Z_MAX_F, SLICE_POLY)
+                                    RAW_NEXT = RECT_SLICE_RAW_OVERLAP(X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, Z_MIN_F, &
+                                                                      Z_MAX_F, SLICE_POLY)
                                 ELSE
                                     RAW_NEXT = 0.0_DP
                                 END IF
 
-                                IF ((W_PREV == 0.0_DP) .AND. (W_NEXT == 0.0_DP)) THEN
-                                    RAW = RECT_SLICE_RAW_OVERLAP(X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, Z_MIN_F, Z_MAX_F, SLICE_POLY)
+                                IF (W_CUR > 0.0_DP) THEN
+                                    RAW_CUR = RECT_SLICE_RAW_OVERLAP(X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, Z_MIN_F, &
+                                                                     Z_MAX_F, SLICE_POLY_CUR)
                                 ELSE
-                                    RAW = W_PREV * RAW_PREV + W_NEXT * RAW_NEXT
+                                    RAW_CUR = 0.0_DP
                                 END IF
+
+                                RAW = W_PREV * RAW_PREV + W_CUR * RAW_CUR + W_NEXT * RAW_NEXT
                                 RAW_SUM = RAW_SUM + RAW
                             END DO
                         END DO
@@ -2047,8 +2219,8 @@ CONTAINS
                 IF (RAW_SUM <= EPS) CYCLE
                 N_NONZERO_SLICE = N_NONZERO_SLICE + 1
 
-                DO CELL_C = 1, BOXM_STATE%NCELL
-                    IF (.NOT. BOXM_STATE%ACTIVE_FLAG(CELL_C)) CYCLE
+                DO AC_IDX = 1, N_ACTIVE_CELL
+                    CELL_C = ACTIVE_CELLS(AC_IDX)
 
                     LAT_C = BOXM_STATE%LATITUDE_C(CELL_C)
                     ALT_C = BOXM_STATE%ALTITUDE_C(CELL_C)
@@ -2061,15 +2233,40 @@ CONTAINS
                     DY_F = DY_C_M / REAL(NY_F, DP)
                     DZ_F = DZ_C / REAL(NZ_F, DP)
 
-                    DO IZ_F = 1, NZ_F
+                    X_MIN_C = LON_C_M - 0.5_DP * DX_C_M
+                    X_MAX_C = LON_C_M + 0.5_DP * DX_C_M
+                    Y_MIN_C = LAT_C_M - 0.5_DP * DY_C_M
+                    Y_MAX_C = LAT_C_M + 0.5_DP * DY_C_M
+                    Z_MIN_C = ALT_C - 0.5_DP * DZ_C
+                    Z_MAX_C = ALT_C + 0.5_DP * DZ_C
+                    IF (OVERLAP_1D(X_MIN_SLICE, X_MAX_SLICE, X_MIN_C, X_MAX_C) <= EPS) CYCLE
+                    IF (OVERLAP_1D(Y_MIN_SLICE, Y_MAX_SLICE, Y_MIN_C, Y_MAX_C) <= EPS) CYCLE
+                    IF (OVERLAP_1D(Z_MIN_SLICE, Z_MAX_SLICE, Z_MIN_C, Z_MAX_C) <= EPS) CYCLE
+
+                    X_OL_MIN = MAX(X_MIN_SLICE, X_MIN_C)
+                    X_OL_MAX = MIN(X_MAX_SLICE, X_MAX_C)
+                    Y_OL_MIN = MAX(Y_MIN_SLICE, Y_MIN_C)
+                    Y_OL_MAX = MIN(Y_MAX_SLICE, Y_MAX_C)
+                    Z_OL_MIN = MAX(Z_MIN_SLICE, Z_MIN_C)
+                    Z_OL_MAX = MIN(Z_MAX_SLICE, Z_MAX_C)
+
+                    IX_BEG = MAX(1, FLOOR((X_OL_MIN - X_MIN_C) / DX_F) + 1)
+                    IX_END = MIN(NX_F, CEILING((X_OL_MAX - X_MIN_C) / DX_F))
+                    IY_BEG = MAX(1, FLOOR((Y_OL_MIN - Y_MIN_C) / DY_F) + 1)
+                    IY_END = MIN(NY_F, CEILING((Y_OL_MAX - Y_MIN_C) / DY_F))
+                    IZ_BEG = MAX(1, FLOOR((Z_OL_MIN - Z_MIN_C) / DZ_F) + 1)
+                    IZ_END = MIN(NZ_F, CEILING((Z_OL_MAX - Z_MIN_C) / DZ_F))
+                    IF (IX_END < IX_BEG .OR. IY_END < IY_BEG .OR. IZ_END < IZ_BEG) CYCLE
+
+                    DO IZ_F = IZ_BEG, IZ_END
                         Z_MIN_F = ALT_C - 0.5_DP * DZ_C + REAL(IZ_F - 1, DP) * DZ_F
                         Z_MAX_F = Z_MIN_F + DZ_F
 
-                        DO IY_F = 1, NY_F
+                        DO IY_F = IY_BEG, IY_END
                             Y_MIN_F = LAT_C_M - 0.5_DP * DY_C_M + REAL(IY_F - 1, DP) * DY_F
                             Y_MAX_F = Y_MIN_F + DY_F
 
-                            DO IX_F = 1, NX_F
+                            DO IX_F = IX_BEG, IX_END
                                 X_MIN_F = LON_C_M - 0.5_DP * DX_C_M + REAL(IX_F - 1, DP) * DX_F
                                 X_MAX_F = X_MIN_F + DX_F
 
@@ -2086,7 +2283,8 @@ CONTAINS
                                     SLICE_POLY(4,1) = X_R_P
                                     SLICE_POLY(4,2) = Y_R_P
                                     SLICE_POLY(4,3) = Z_MIN_PREV
-                                    RAW_PREV = RECT_SLICE_RAW_OVERLAP(X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, Z_MIN_F, Z_MAX_F, SLICE_POLY)
+                                    RAW_PREV = RECT_SLICE_RAW_OVERLAP(X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, Z_MIN_F, &
+                                                                      Z_MAX_F, SLICE_POLY)
                                 ELSE
                                     RAW_PREV = 0.0_DP
                                 END IF
@@ -2104,16 +2302,20 @@ CONTAINS
                                     SLICE_POLY(4,1) = X_R_S
                                     SLICE_POLY(4,2) = Y_R_S
                                     SLICE_POLY(4,3) = Z_MIN_NEXT
-                                    RAW_NEXT = RECT_SLICE_RAW_OVERLAP(X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, Z_MIN_F, Z_MAX_F, SLICE_POLY)
+                                    RAW_NEXT = RECT_SLICE_RAW_OVERLAP(X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, Z_MIN_F, &
+                                                                      Z_MAX_F, SLICE_POLY)
                                 ELSE
                                     RAW_NEXT = 0.0_DP
                                 END IF
 
-                                IF ((W_PREV == 0.0_DP) .AND. (W_NEXT == 0.0_DP)) THEN
-                                    RAW = RECT_SLICE_RAW_OVERLAP(X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, Z_MIN_F, Z_MAX_F, SLICE_POLY)
+                                IF (W_CUR > 0.0_DP) THEN
+                                    RAW_CUR = RECT_SLICE_RAW_OVERLAP(X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, Z_MIN_F, &
+                                                                     Z_MAX_F, SLICE_POLY_CUR)
                                 ELSE
-                                    RAW = W_PREV * RAW_PREV + W_NEXT * RAW_NEXT
+                                    RAW_CUR = 0.0_DP
                                 END IF
+
+                                RAW = W_PREV * RAW_PREV + W_CUR * RAW_CUR + W_NEXT * RAW_NEXT
                                 IF (RAW <= EPS) CYCLE
 
                                 WEIGHT = PL_STATE%W_SLICE(SLICE_ID) * RAW / RAW_SUM
@@ -2144,6 +2346,11 @@ CONTAINS
                      ", nonzero_slices=", N_NONZERO_SLICE, ", nnz_map=", PL_STATE%NNZ_MAP
         END IF
 
+        IF (ALLOCATED(ACTIVE_CELLS)) DEALLOCATE(ACTIVE_CELLS)
+        IF (ALLOCATED(BRIDGE_PREV_SEG)) DEALLOCATE(BRIDGE_PREV_SEG)
+        IF (ALLOCATED(BRIDGE_NEXT_SEG)) DEALLOCATE(BRIDGE_NEXT_SEG)
+        IF (ALLOCATED(SEG_INCLUDED)) DEALLOCATE(SEG_INCLUDED)
+
     END SUBROUTINE PL_STATE_PROJECT_TO_GRID
 
     SUBROUTINE PL_STATE_BACKPROJECT_FROM_GRID(PL_STATE, PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
@@ -2157,6 +2364,10 @@ CONTAINS
         INTEGER :: K, ROW_IDX, P, B, SEG_ID, CELL_C, CELL_F, PL_ID
         INTEGER :: NX_F, NY_F
         REAL(DP) :: DX_C_M, DY_C_M, DX_F, DY_F, VOL_F, LAT_C
+
+        ! Backprojection should only be enabled when PATCH_STATE%Y_DEL_F contains
+        ! chemistry-updated deltas (not the direct forward projection field).
+        IF (.NOT. ENABLE_BACKPROJECTION) RETURN
 
         IF (.NOT. ALLOCATED(PL_STATE%PL_MASS)) RETURN
         IF (.NOT. ALLOCATED(PL_STATE%SPECIES_PL_NUM)) RETURN
@@ -2491,29 +2702,32 @@ CONTAINS
         CLASS(BOXM_DS_TYPE),     INTENT(IN)    :: BOXM_DS
         CLASS(BOXM_STATE_TYPE),  INTENT(IN)    :: BOXM_STATE
 
-        INTEGER  :: K, ROW_IDX, PL_ID, BOXM_ID, SEG_ID
+        INTEGER  :: K, ROW_IDX, PL_ID, BOXM_ID, SEG_ID, CELL_C
         INTEGER  :: NX_F, NY_F
         REAL(DP) :: W, VOL_F
         REAL(DP) :: DX_C_M, DY_C_M, DX_F, DY_F
 
         IF (PATCH_STATE%NROWS <= 0 .OR. PL_STATE%NNZ_MAP <= 0) RETURN
 
-        ! Use representative projected coarse-cell metrics for this lightweight accumulation path.
+        ! Compute fine-grid subdivision factors once.
         NX_F = MAX(1, NINT(BOXM_DS%HRES_SIM_C / BOXM_DS%HRES_SIM_F))
         NY_F = NX_F
-        DX_C_M = SUM(BOXM_STATE%DX_C_M) / REAL(MAX(1, BOXM_STATE%NCELL), DP)
-        DY_C_M = SUM(BOXM_STATE%DY_C_M) / REAL(MAX(1, BOXM_STATE%NCELL), DP)
-        DX_F = DX_C_M / REAL(NX_F, DP)
-        DY_F = DY_C_M / REAL(NY_F, DP)
-        VOL_F = DX_F * DY_F * BOXM_DS%VRES_SIM_F
-        IF (VOL_F <= 0.0_DP) STOP "PATCH_STATE_ACCUM_DELTAS_FROM_W: NON-POSITIVE VOL_F"
 
         PATCH_STATE%Y_DEL_F(:,:) = 0.0_DP
 
         DO K = 1, PL_STATE%NNZ_MAP
-            PRINT *, "Processing PL map entry", K, "of", PL_STATE%NNZ_MAP
             SEG_ID = PL_STATE%MAP_SEG(K)
             W      = PL_STATE%MAP_W(K)
+            CELL_C = PL_STATE%MAP_CELL_C(K)
+
+            IF (CELL_C < 1 .OR. CELL_C > BOXM_STATE%NCELL) CYCLE
+
+            DX_C_M = BOXM_STATE%DX_C_M(CELL_C)
+            DY_C_M = BOXM_STATE%DY_C_M(CELL_C)
+            DX_F = DX_C_M / REAL(NX_F, DP)
+            DY_F = DY_C_M / REAL(NY_F, DP)
+            VOL_F = DX_F * DY_F * BOXM_DS%VRES_SIM_F
+            IF (VOL_F <= 0.0_DP) CYCLE
 
             ! Find patch row for this (cell_c, cell_f)
             ROW_IDX = -1
@@ -2525,15 +2739,12 @@ CONTAINS
 
             ! Accumulate plume species into boxm species slots
             DO PL_ID = 1, PL_STATE%NSPL
-                PRINT *, "  Checking PL segment", SEG_ID, "PL_ID", PL_ID
                 BOXM_ID = PL_STATE%SPECIES_PL_NUM(PL_ID)
                 IF (BOXM_ID < 1 .OR. BOXM_ID > PATCH_STATE%NSBOXM) CYCLE
                 IF (BOXM_STATE%MOL_MASS_C(BOXM_ID) <= 0.0_DP) CYCLE
                 PATCH_STATE%Y_DEL_F(ROW_IDX, BOXM_ID) = PATCH_STATE%Y_DEL_F(ROW_IDX, BOXM_ID) + &
                     W * PL_STATE%PL_MASS(SEG_ID, PL_ID) / (BOXM_STATE%MOL_MASS_C(BOXM_ID) * VOL_F)
             END DO
-
-            PRINT *, "Accumulating from PL segment", SEG_ID, "to patch row", ROW_IDX, "with weight", W
         END DO
     END SUBROUTINE PATCH_STATE_ACCUM_DELTAS_FROM_W
 
@@ -3451,7 +3662,7 @@ CONTAINS
         INTEGER, INTENT(IN) :: TIME_IDX
         CALL PL_STATE%ADVANCE_GEOM(PL_DS, BOXM_DS, TIME_IDX)
         CALL PL_STATE%ADVANCE_MASS(FL_DS, PL_DS, TIME_IDX)
-        CALL PL_STATE%BUILD_ACTIVE(BOXM_STATE)
+        CALL PL_STATE%BUILD_ACTIVE(BOXM_DS, BOXM_STATE)
         CALL PL_STATE%PROJECT_TO_GRID(PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE)
 
         CALL PATCH_STATE%BUILD_ROWS_FROM_W(PL_STATE, BOXM_STATE)

@@ -18,7 +18,7 @@ sim_params = {
     "hres_sim_c": 0.05,  # coarse horizontal resolution [deg]
     "vres_sim_c": 500,  # coarse vertical resolution [m]
     "hres_sim_f": 0.01,  # fine horizontal resolution [deg]
-    "vres_sim_f": 100,  # fine vertical resolution [m]
+    "vres_sim_f": 500,  # fine vertical resolution [m]
 
     "run_path": "/home/ktait98/GPAT2026/pycontrails_kt/pycontrails/models/gpat/",
     "data_path": "/home/ktait98/GPAT2026/pycontrails_kt/pycontrails/models/gpat/data/", # "/projects/Impact_of_aviation_on_climate
