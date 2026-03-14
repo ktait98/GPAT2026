@@ -1701,20 +1701,23 @@ CONTAINS
         CLASS(PL_DS_TYPE),       INTENT(IN)    :: PL_DS
 
         INTEGER :: CELL_C, CELL_F_LOCAL, ROW_IDX, NNZ
-        INTEGER :: NX_F, NY_F, NZ_F, SEG_ID, SEG_NEXT, SLICE_ID
-        INTEGER :: FL_S, FL_N, WP_S, WP_N
+        INTEGER :: NX_F, NY_F, NZ_F, SEG_ID, SEG_PREV, SEG_NEXT, SLICE_ID
+        INTEGER :: FL_S, FL_P, FL_N, WP_S, WP_P, WP_N
         INTEGER :: IX_F, IY_F, IZ_F
         INTEGER :: N_ACTIVE_SLICE, N_NONZERO_SLICE
-        LOGICAL :: HAS_BRIDGE
+        LOGICAL :: HAS_PREV_BRIDGE, HAS_NEXT_BRIDGE
         REAL(DP) :: LAT_C, ALT_C, LON_C_M, LAT_C_M
         REAL(DP) :: DX_C_M, DY_C_M, DZ_C
         REAL(DP) :: DX_F, DY_F, DZ_F
         REAL(DP) :: X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, Z_MIN_F, Z_MAX_F
-        REAL(DP) :: RAW, RAW_SUM, WEIGHT
-        REAL(DP) :: SLICE_POLY(4, 3), SLICE_POLY_CUR(4, 3), SLICE_POLY_NEXT(4, 3)
+        REAL(DP) :: RAW, RAW_SUM, WEIGHT, W_PREV, W_NEXT
+        REAL(DP) :: RAW_PREV, RAW_NEXT
+        REAL(DP) :: SLICE_POLY(4, 3), SLICE_POLY_CUR(4, 3)
+        REAL(DP) :: SLICE_POLY_PREV(4, 3), SLICE_POLY_NEXT(4, 3)
+        REAL(DP) :: X_L_P, Y_L_P, X_R_P, Y_R_P
         REAL(DP) :: X_L_S, Y_L_S, X_R_S, Y_R_S
         REAL(DP) :: X_L_N, Y_L_N, X_R_N, Y_R_N
-        REAL(DP) :: Z_MIN_BRIDGE, Z_MAX_BRIDGE
+        REAL(DP) :: Z_MIN_PREV, Z_MAX_PREV, Z_MIN_NEXT, Z_MAX_NEXT
         REAL(DP), PARAMETER :: EPS = 1.0E-12_DP
 
         ! CALCULATE FINE GRID SUBDIVISION
@@ -1737,55 +1740,74 @@ CONTAINS
         NNZ = 0
         DO SEG_ID = 1, PL_STATE%NSEG
             IF (PL_STATE%ACTIVE_SEG_FLAG(SEG_ID) == 0) CYCLE
+            SEG_PREV = SEG_ID - 1
             SEG_NEXT = SEG_ID + 1
-            HAS_BRIDGE = .FALSE.
+            HAS_PREV_BRIDGE = .FALSE.
+            HAS_NEXT_BRIDGE = .FALSE.
+
+            FL_S = PL_DS%FL_ID(SEG_ID)
+            WP_S = PL_DS%WP(SEG_ID)
+
+            IF (SEG_PREV >= 1) THEN
+                IF (PL_STATE%ACTIVE_SEG_FLAG(SEG_PREV) == 1) THEN
+                    FL_P = PL_DS%FL_ID(SEG_PREV)
+                    WP_P = PL_DS%WP(SEG_PREV)
+                    IF ((FL_P == FL_S) .AND. (WP_S == WP_P + 1)) THEN
+                        HAS_PREV_BRIDGE = .TRUE.
+                    END IF
+                END IF
+            END IF
 
             IF (SEG_NEXT <= PL_STATE%NSEG) THEN
                 IF (PL_STATE%ACTIVE_SEG_FLAG(SEG_NEXT) == 1) THEN
-                    FL_S = PL_DS%FL_ID(SEG_ID)
                     FL_N = PL_DS%FL_ID(SEG_NEXT)
-                    WP_S = PL_DS%WP(SEG_ID)
                     WP_N = PL_DS%WP(SEG_NEXT)
                     IF ((FL_S == FL_N) .AND. (WP_N == WP_S + 1)) THEN
-                        HAS_BRIDGE = .TRUE.
+                        HAS_NEXT_BRIDGE = .TRUE.
                     END IF
                 END IF
             END IF
 
             DO SLICE_ID = 1, PL_STATE%NSLICES
                 SLICE_POLY_CUR(:,:) = PL_STATE%SLICE_POLYS_M(SEG_ID,SLICE_ID,:,:)
-                IF (HAS_BRIDGE) THEN
+
+                X_L_S = 0.5_DP * (SLICE_POLY_CUR(1,1) + SLICE_POLY_CUR(2,1))
+                Y_L_S = 0.5_DP * (SLICE_POLY_CUR(1,2) + SLICE_POLY_CUR(2,2))
+                X_R_S = 0.5_DP * (SLICE_POLY_CUR(3,1) + SLICE_POLY_CUR(4,1))
+                Y_R_S = 0.5_DP * (SLICE_POLY_CUR(3,2) + SLICE_POLY_CUR(4,2))
+
+                IF (HAS_PREV_BRIDGE) THEN
+                    SLICE_POLY_PREV(:,:) = PL_STATE%SLICE_POLYS_M(SEG_PREV,SLICE_ID,:,:)
+                    X_L_P = 0.5_DP * (SLICE_POLY_PREV(1,1) + SLICE_POLY_PREV(2,1))
+                    Y_L_P = 0.5_DP * (SLICE_POLY_PREV(1,2) + SLICE_POLY_PREV(2,2))
+                    X_R_P = 0.5_DP * (SLICE_POLY_PREV(3,1) + SLICE_POLY_PREV(4,1))
+                    Y_R_P = 0.5_DP * (SLICE_POLY_PREV(3,2) + SLICE_POLY_PREV(4,2))
+                    Z_MIN_PREV = MIN(MINVAL(SLICE_POLY_PREV(:,3)), MINVAL(SLICE_POLY_CUR(:,3)))
+                    Z_MAX_PREV = MAX(MAXVAL(SLICE_POLY_PREV(:,3)), MAXVAL(SLICE_POLY_CUR(:,3)))
+                END IF
+
+                IF (HAS_NEXT_BRIDGE) THEN
                     SLICE_POLY_NEXT(:,:) = PL_STATE%SLICE_POLYS_M(SEG_NEXT,SLICE_ID,:,:)
-
-                    X_L_S = 0.5_DP * (SLICE_POLY_CUR(1,1) + SLICE_POLY_CUR(2,1))
-                    Y_L_S = 0.5_DP * (SLICE_POLY_CUR(1,2) + SLICE_POLY_CUR(2,2))
-                    X_R_S = 0.5_DP * (SLICE_POLY_CUR(3,1) + SLICE_POLY_CUR(4,1))
-                    Y_R_S = 0.5_DP * (SLICE_POLY_CUR(3,2) + SLICE_POLY_CUR(4,2))
-
                     X_L_N = 0.5_DP * (SLICE_POLY_NEXT(1,1) + SLICE_POLY_NEXT(2,1))
                     Y_L_N = 0.5_DP * (SLICE_POLY_NEXT(1,2) + SLICE_POLY_NEXT(2,2))
                     X_R_N = 0.5_DP * (SLICE_POLY_NEXT(3,1) + SLICE_POLY_NEXT(4,1))
                     Y_R_N = 0.5_DP * (SLICE_POLY_NEXT(3,2) + SLICE_POLY_NEXT(4,2))
+                    Z_MIN_NEXT = MIN(MINVAL(SLICE_POLY_CUR(:,3)), MINVAL(SLICE_POLY_NEXT(:,3)))
+                    Z_MAX_NEXT = MAX(MAXVAL(SLICE_POLY_CUR(:,3)), MAXVAL(SLICE_POLY_NEXT(:,3)))
+                END IF
 
-                    Z_MIN_BRIDGE = MIN(MINVAL(SLICE_POLY_CUR(:,3)), MINVAL(SLICE_POLY_NEXT(:,3)))
-                    Z_MAX_BRIDGE = MAX(MAXVAL(SLICE_POLY_CUR(:,3)), MAXVAL(SLICE_POLY_NEXT(:,3)))
-
-                    SLICE_POLY(1,1) = X_L_S
-                    SLICE_POLY(1,2) = Y_L_S
-                    SLICE_POLY(1,3) = Z_MIN_BRIDGE
-
-                    SLICE_POLY(2,1) = X_L_N
-                    SLICE_POLY(2,2) = Y_L_N
-                    SLICE_POLY(2,3) = Z_MAX_BRIDGE
-
-                    SLICE_POLY(3,1) = X_R_N
-                    SLICE_POLY(3,2) = Y_R_N
-                    SLICE_POLY(3,3) = Z_MAX_BRIDGE
-
-                    SLICE_POLY(4,1) = X_R_S
-                    SLICE_POLY(4,2) = Y_R_S
-                    SLICE_POLY(4,3) = Z_MIN_BRIDGE
+                IF (HAS_PREV_BRIDGE .AND. HAS_NEXT_BRIDGE) THEN
+                    W_PREV = 0.5_DP
+                    W_NEXT = 0.5_DP
+                ELSEIF (HAS_PREV_BRIDGE) THEN
+                    W_PREV = 1.0_DP
+                    W_NEXT = 0.0_DP
+                ELSEIF (HAS_NEXT_BRIDGE) THEN
+                    W_PREV = 0.0_DP
+                    W_NEXT = 1.0_DP
                 ELSE
+                    W_PREV = 0.0_DP
+                    W_NEXT = 0.0_DP
                     SLICE_POLY(:,:) = SLICE_POLY_CUR(:,:)
                 END IF
 
@@ -1815,7 +1837,47 @@ CONTAINS
                                 X_MIN_F = LON_C_M - 0.5_DP * DX_C_M + REAL(IX_F - 1, DP) * DX_F
                                 X_MAX_F = X_MIN_F + DX_F
 
-                                RAW = RECT_SLICE_RAW_OVERLAP(X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, Z_MIN_F, Z_MAX_F, SLICE_POLY)
+                                IF (W_PREV > 0.0_DP) THEN
+                                    SLICE_POLY(1,1) = X_L_P
+                                    SLICE_POLY(1,2) = Y_L_P
+                                    SLICE_POLY(1,3) = Z_MIN_PREV
+                                    SLICE_POLY(2,1) = X_L_S
+                                    SLICE_POLY(2,2) = Y_L_S
+                                    SLICE_POLY(2,3) = Z_MAX_PREV
+                                    SLICE_POLY(3,1) = X_R_S
+                                    SLICE_POLY(3,2) = Y_R_S
+                                    SLICE_POLY(3,3) = Z_MAX_PREV
+                                    SLICE_POLY(4,1) = X_R_P
+                                    SLICE_POLY(4,2) = Y_R_P
+                                    SLICE_POLY(4,3) = Z_MIN_PREV
+                                    RAW_PREV = RECT_SLICE_RAW_OVERLAP(X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, Z_MIN_F, Z_MAX_F, SLICE_POLY)
+                                ELSE
+                                    RAW_PREV = 0.0_DP
+                                END IF
+
+                                IF (W_NEXT > 0.0_DP) THEN
+                                    SLICE_POLY(1,1) = X_L_S
+                                    SLICE_POLY(1,2) = Y_L_S
+                                    SLICE_POLY(1,3) = Z_MIN_NEXT
+                                    SLICE_POLY(2,1) = X_L_N
+                                    SLICE_POLY(2,2) = Y_L_N
+                                    SLICE_POLY(2,3) = Z_MAX_NEXT
+                                    SLICE_POLY(3,1) = X_R_N
+                                    SLICE_POLY(3,2) = Y_R_N
+                                    SLICE_POLY(3,3) = Z_MAX_NEXT
+                                    SLICE_POLY(4,1) = X_R_S
+                                    SLICE_POLY(4,2) = Y_R_S
+                                    SLICE_POLY(4,3) = Z_MIN_NEXT
+                                    RAW_NEXT = RECT_SLICE_RAW_OVERLAP(X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, Z_MIN_F, Z_MAX_F, SLICE_POLY)
+                                ELSE
+                                    RAW_NEXT = 0.0_DP
+                                END IF
+
+                                IF ((W_PREV == 0.0_DP) .AND. (W_NEXT == 0.0_DP)) THEN
+                                    RAW = RECT_SLICE_RAW_OVERLAP(X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, Z_MIN_F, Z_MAX_F, SLICE_POLY)
+                                ELSE
+                                    RAW = W_PREV * RAW_PREV + W_NEXT * RAW_NEXT
+                                END IF
                                 IF (RAW > EPS) NNZ = NNZ + 1
                             END DO
                         END DO
@@ -1837,17 +1899,30 @@ CONTAINS
         ROW_IDX = 0
         DO SEG_ID = 1, PL_STATE%NSEG
             IF (PL_STATE%ACTIVE_SEG_FLAG(SEG_ID) == 0) CYCLE
+            SEG_PREV = SEG_ID - 1
             SEG_NEXT = SEG_ID + 1
-            HAS_BRIDGE = .FALSE.
+            HAS_PREV_BRIDGE = .FALSE.
+            HAS_NEXT_BRIDGE = .FALSE.
+
+            FL_S = PL_DS%FL_ID(SEG_ID)
+            WP_S = PL_DS%WP(SEG_ID)
+
+            IF (SEG_PREV >= 1) THEN
+                IF (PL_STATE%ACTIVE_SEG_FLAG(SEG_PREV) == 1) THEN
+                    FL_P = PL_DS%FL_ID(SEG_PREV)
+                    WP_P = PL_DS%WP(SEG_PREV)
+                    IF ((FL_P == FL_S) .AND. (WP_S == WP_P + 1)) THEN
+                        HAS_PREV_BRIDGE = .TRUE.
+                    END IF
+                END IF
+            END IF
 
             IF (SEG_NEXT <= PL_STATE%NSEG) THEN
                 IF (PL_STATE%ACTIVE_SEG_FLAG(SEG_NEXT) == 1) THEN
-                    FL_S = PL_DS%FL_ID(SEG_ID)
                     FL_N = PL_DS%FL_ID(SEG_NEXT)
-                    WP_S = PL_DS%WP(SEG_ID)
                     WP_N = PL_DS%WP(SEG_NEXT)
                     IF ((FL_S == FL_N) .AND. (WP_N == WP_S + 1)) THEN
-                        HAS_BRIDGE = .TRUE.
+                        HAS_NEXT_BRIDGE = .TRUE.
                     END IF
                 END IF
             END IF
@@ -1855,38 +1930,43 @@ CONTAINS
             DO SLICE_ID = 1, PL_STATE%NSLICES
                 N_ACTIVE_SLICE = N_ACTIVE_SLICE + 1
                 SLICE_POLY_CUR(:,:) = PL_STATE%SLICE_POLYS_M(SEG_ID,SLICE_ID,:,:)
-                IF (HAS_BRIDGE) THEN
+                X_L_S = 0.5_DP * (SLICE_POLY_CUR(1,1) + SLICE_POLY_CUR(2,1))
+                Y_L_S = 0.5_DP * (SLICE_POLY_CUR(1,2) + SLICE_POLY_CUR(2,2))
+                X_R_S = 0.5_DP * (SLICE_POLY_CUR(3,1) + SLICE_POLY_CUR(4,1))
+                Y_R_S = 0.5_DP * (SLICE_POLY_CUR(3,2) + SLICE_POLY_CUR(4,2))
+
+                IF (HAS_PREV_BRIDGE) THEN
+                    SLICE_POLY_PREV(:,:) = PL_STATE%SLICE_POLYS_M(SEG_PREV,SLICE_ID,:,:)
+                    X_L_P = 0.5_DP * (SLICE_POLY_PREV(1,1) + SLICE_POLY_PREV(2,1))
+                    Y_L_P = 0.5_DP * (SLICE_POLY_PREV(1,2) + SLICE_POLY_PREV(2,2))
+                    X_R_P = 0.5_DP * (SLICE_POLY_PREV(3,1) + SLICE_POLY_PREV(4,1))
+                    Y_R_P = 0.5_DP * (SLICE_POLY_PREV(3,2) + SLICE_POLY_PREV(4,2))
+                    Z_MIN_PREV = MIN(MINVAL(SLICE_POLY_PREV(:,3)), MINVAL(SLICE_POLY_CUR(:,3)))
+                    Z_MAX_PREV = MAX(MAXVAL(SLICE_POLY_PREV(:,3)), MAXVAL(SLICE_POLY_CUR(:,3)))
+                END IF
+
+                IF (HAS_NEXT_BRIDGE) THEN
                     SLICE_POLY_NEXT(:,:) = PL_STATE%SLICE_POLYS_M(SEG_NEXT,SLICE_ID,:,:)
-
-                    X_L_S = 0.5_DP * (SLICE_POLY_CUR(1,1) + SLICE_POLY_CUR(2,1))
-                    Y_L_S = 0.5_DP * (SLICE_POLY_CUR(1,2) + SLICE_POLY_CUR(2,2))
-                    X_R_S = 0.5_DP * (SLICE_POLY_CUR(3,1) + SLICE_POLY_CUR(4,1))
-                    Y_R_S = 0.5_DP * (SLICE_POLY_CUR(3,2) + SLICE_POLY_CUR(4,2))
-
                     X_L_N = 0.5_DP * (SLICE_POLY_NEXT(1,1) + SLICE_POLY_NEXT(2,1))
                     Y_L_N = 0.5_DP * (SLICE_POLY_NEXT(1,2) + SLICE_POLY_NEXT(2,2))
                     X_R_N = 0.5_DP * (SLICE_POLY_NEXT(3,1) + SLICE_POLY_NEXT(4,1))
                     Y_R_N = 0.5_DP * (SLICE_POLY_NEXT(3,2) + SLICE_POLY_NEXT(4,2))
+                    Z_MIN_NEXT = MIN(MINVAL(SLICE_POLY_CUR(:,3)), MINVAL(SLICE_POLY_NEXT(:,3)))
+                    Z_MAX_NEXT = MAX(MAXVAL(SLICE_POLY_CUR(:,3)), MAXVAL(SLICE_POLY_NEXT(:,3)))
+                END IF
 
-                    Z_MIN_BRIDGE = MIN(MINVAL(SLICE_POLY_CUR(:,3)), MINVAL(SLICE_POLY_NEXT(:,3)))
-                    Z_MAX_BRIDGE = MAX(MAXVAL(SLICE_POLY_CUR(:,3)), MAXVAL(SLICE_POLY_NEXT(:,3)))
-
-                    SLICE_POLY(1,1) = X_L_S
-                    SLICE_POLY(1,2) = Y_L_S
-                    SLICE_POLY(1,3) = Z_MIN_BRIDGE
-
-                    SLICE_POLY(2,1) = X_L_N
-                    SLICE_POLY(2,2) = Y_L_N
-                    SLICE_POLY(2,3) = Z_MAX_BRIDGE
-
-                    SLICE_POLY(3,1) = X_R_N
-                    SLICE_POLY(3,2) = Y_R_N
-                    SLICE_POLY(3,3) = Z_MAX_BRIDGE
-
-                    SLICE_POLY(4,1) = X_R_S
-                    SLICE_POLY(4,2) = Y_R_S
-                    SLICE_POLY(4,3) = Z_MIN_BRIDGE
+                IF (HAS_PREV_BRIDGE .AND. HAS_NEXT_BRIDGE) THEN
+                    W_PREV = 0.5_DP
+                    W_NEXT = 0.5_DP
+                ELSEIF (HAS_PREV_BRIDGE) THEN
+                    W_PREV = 1.0_DP
+                    W_NEXT = 0.0_DP
+                ELSEIF (HAS_NEXT_BRIDGE) THEN
+                    W_PREV = 0.0_DP
+                    W_NEXT = 1.0_DP
                 ELSE
+                    W_PREV = 0.0_DP
+                    W_NEXT = 0.0_DP
                     SLICE_POLY(:,:) = SLICE_POLY_CUR(:,:)
                 END IF
                 RAW_SUM = 0.0_DP
@@ -1917,7 +1997,47 @@ CONTAINS
                                 X_MIN_F = LON_C_M - 0.5_DP * DX_C_M + REAL(IX_F - 1, DP) * DX_F
                                 X_MAX_F = X_MIN_F + DX_F
 
-                                RAW = RECT_SLICE_RAW_OVERLAP(X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, Z_MIN_F, Z_MAX_F, SLICE_POLY)
+                                IF (W_PREV > 0.0_DP) THEN
+                                    SLICE_POLY(1,1) = X_L_P
+                                    SLICE_POLY(1,2) = Y_L_P
+                                    SLICE_POLY(1,3) = Z_MIN_PREV
+                                    SLICE_POLY(2,1) = X_L_S
+                                    SLICE_POLY(2,2) = Y_L_S
+                                    SLICE_POLY(2,3) = Z_MAX_PREV
+                                    SLICE_POLY(3,1) = X_R_S
+                                    SLICE_POLY(3,2) = Y_R_S
+                                    SLICE_POLY(3,3) = Z_MAX_PREV
+                                    SLICE_POLY(4,1) = X_R_P
+                                    SLICE_POLY(4,2) = Y_R_P
+                                    SLICE_POLY(4,3) = Z_MIN_PREV
+                                    RAW_PREV = RECT_SLICE_RAW_OVERLAP(X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, Z_MIN_F, Z_MAX_F, SLICE_POLY)
+                                ELSE
+                                    RAW_PREV = 0.0_DP
+                                END IF
+
+                                IF (W_NEXT > 0.0_DP) THEN
+                                    SLICE_POLY(1,1) = X_L_S
+                                    SLICE_POLY(1,2) = Y_L_S
+                                    SLICE_POLY(1,3) = Z_MIN_NEXT
+                                    SLICE_POLY(2,1) = X_L_N
+                                    SLICE_POLY(2,2) = Y_L_N
+                                    SLICE_POLY(2,3) = Z_MAX_NEXT
+                                    SLICE_POLY(3,1) = X_R_N
+                                    SLICE_POLY(3,2) = Y_R_N
+                                    SLICE_POLY(3,3) = Z_MAX_NEXT
+                                    SLICE_POLY(4,1) = X_R_S
+                                    SLICE_POLY(4,2) = Y_R_S
+                                    SLICE_POLY(4,3) = Z_MIN_NEXT
+                                    RAW_NEXT = RECT_SLICE_RAW_OVERLAP(X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, Z_MIN_F, Z_MAX_F, SLICE_POLY)
+                                ELSE
+                                    RAW_NEXT = 0.0_DP
+                                END IF
+
+                                IF ((W_PREV == 0.0_DP) .AND. (W_NEXT == 0.0_DP)) THEN
+                                    RAW = RECT_SLICE_RAW_OVERLAP(X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, Z_MIN_F, Z_MAX_F, SLICE_POLY)
+                                ELSE
+                                    RAW = W_PREV * RAW_PREV + W_NEXT * RAW_NEXT
+                                END IF
                                 RAW_SUM = RAW_SUM + RAW
                             END DO
                         END DO
@@ -1953,7 +2073,47 @@ CONTAINS
                                 X_MIN_F = LON_C_M - 0.5_DP * DX_C_M + REAL(IX_F - 1, DP) * DX_F
                                 X_MAX_F = X_MIN_F + DX_F
 
-                                RAW = RECT_SLICE_RAW_OVERLAP(X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, Z_MIN_F, Z_MAX_F, SLICE_POLY)
+                                IF (W_PREV > 0.0_DP) THEN
+                                    SLICE_POLY(1,1) = X_L_P
+                                    SLICE_POLY(1,2) = Y_L_P
+                                    SLICE_POLY(1,3) = Z_MIN_PREV
+                                    SLICE_POLY(2,1) = X_L_S
+                                    SLICE_POLY(2,2) = Y_L_S
+                                    SLICE_POLY(2,3) = Z_MAX_PREV
+                                    SLICE_POLY(3,1) = X_R_S
+                                    SLICE_POLY(3,2) = Y_R_S
+                                    SLICE_POLY(3,3) = Z_MAX_PREV
+                                    SLICE_POLY(4,1) = X_R_P
+                                    SLICE_POLY(4,2) = Y_R_P
+                                    SLICE_POLY(4,3) = Z_MIN_PREV
+                                    RAW_PREV = RECT_SLICE_RAW_OVERLAP(X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, Z_MIN_F, Z_MAX_F, SLICE_POLY)
+                                ELSE
+                                    RAW_PREV = 0.0_DP
+                                END IF
+
+                                IF (W_NEXT > 0.0_DP) THEN
+                                    SLICE_POLY(1,1) = X_L_S
+                                    SLICE_POLY(1,2) = Y_L_S
+                                    SLICE_POLY(1,3) = Z_MIN_NEXT
+                                    SLICE_POLY(2,1) = X_L_N
+                                    SLICE_POLY(2,2) = Y_L_N
+                                    SLICE_POLY(2,3) = Z_MAX_NEXT
+                                    SLICE_POLY(3,1) = X_R_N
+                                    SLICE_POLY(3,2) = Y_R_N
+                                    SLICE_POLY(3,3) = Z_MAX_NEXT
+                                    SLICE_POLY(4,1) = X_R_S
+                                    SLICE_POLY(4,2) = Y_R_S
+                                    SLICE_POLY(4,3) = Z_MIN_NEXT
+                                    RAW_NEXT = RECT_SLICE_RAW_OVERLAP(X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, Z_MIN_F, Z_MAX_F, SLICE_POLY)
+                                ELSE
+                                    RAW_NEXT = 0.0_DP
+                                END IF
+
+                                IF ((W_PREV == 0.0_DP) .AND. (W_NEXT == 0.0_DP)) THEN
+                                    RAW = RECT_SLICE_RAW_OVERLAP(X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, Z_MIN_F, Z_MAX_F, SLICE_POLY)
+                                ELSE
+                                    RAW = W_PREV * RAW_PREV + W_NEXT * RAW_NEXT
+                                END IF
                                 IF (RAW <= EPS) CYCLE
 
                                 WEIGHT = PL_STATE%W_SLICE(SLICE_ID) * RAW / RAW_SUM
@@ -2365,6 +2525,7 @@ CONTAINS
 
             ! Accumulate plume species into boxm species slots
             DO PL_ID = 1, PL_STATE%NSPL
+                PRINT *, "  Checking PL segment", SEG_ID, "PL_ID", PL_ID
                 BOXM_ID = PL_STATE%SPECIES_PL_NUM(PL_ID)
                 IF (BOXM_ID < 1 .OR. BOXM_ID > PATCH_STATE%NSBOXM) CYCLE
                 IF (BOXM_STATE%MOL_MASS_C(BOXM_ID) <= 0.0_DP) CYCLE
