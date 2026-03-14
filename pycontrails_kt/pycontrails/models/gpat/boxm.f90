@@ -4,7 +4,9 @@ MODULE HELPERS
     PRIVATE
 
     INTEGER, PARAMETER, PUBLIC :: DP = KIND(1.0D0)
-    PUBLIC :: NC_CHECK, ERFINV
+    LOGICAL, PARAMETER, PUBLIC :: USE_FULL_SLICE_FOOTPRINT = .TRUE.
+    LOGICAL, PARAMETER, PUBLIC :: DEBUG_PROJECTION = .TRUE.
+    PUBLIC :: NC_CHECK, ERFINV, OVERLAP_1D, DEG_TO_M_DX, DEG_TO_M_DY, RECT_SLICE_RAW_OVERLAP
 
     ! ---------- GENERIC NETCDF ERROR CHECKING ----------
 CONTAINS
@@ -31,6 +33,115 @@ CONTAINS
         LN1 = LOG(1.0_DP - X*X)
         Y = SX * SQRT( SQRT( (2.0_DP/(PI*A) + 0.5_DP*LN1)**2 - LN1/A ) - (2.0_DP/(PI*A) + 0.5_DP*LN1) )
     END FUNCTION ERFINV
+
+    PURE FUNCTION OVERLAP_1D(A_MIN, A_MAX, B_MIN, B_MAX) RESULT(OL)
+        REAL(DP), INTENT(IN) :: A_MIN, A_MAX, B_MIN, B_MAX
+        REAL(DP) :: OL
+
+        OL = MAX(0.0_DP, MIN(A_MAX, B_MAX) - MAX(A_MIN, B_MIN))
+    END FUNCTION OVERLAP_1D
+
+    PURE FUNCTION DEG_TO_M_DX(DLON_DEG, LAT_DEG) RESULT(DX_M)
+        REAL(DP), INTENT(IN) :: DLON_DEG, LAT_DEG
+        REAL(DP) :: DX_M
+        REAL(DP), PARAMETER :: PI = 3.14159265358979323846_DP
+        REAL(DP), PARAMETER :: EARTH_RADIUS_M = 6371000.0_DP
+
+        DX_M = EARTH_RADIUS_M * COS(LAT_DEG * PI / 180.0_DP) * DLON_DEG * PI / 180.0_DP
+    END FUNCTION DEG_TO_M_DX
+
+    PURE FUNCTION DEG_TO_M_DY(DLAT_DEG) RESULT(DY_M)
+        REAL(DP), INTENT(IN) :: DLAT_DEG
+        REAL(DP) :: DY_M
+        REAL(DP), PARAMETER :: PI = 3.14159265358979323846_DP
+        REAL(DP), PARAMETER :: EARTH_RADIUS_M = 6371000.0_DP
+
+        DY_M = EARTH_RADIUS_M * DLAT_DEG * PI / 180.0_DP
+    END FUNCTION DEG_TO_M_DY
+
+    PURE FUNCTION RECT_SLICE_RAW_OVERLAP(X_MIN, X_MAX, Y_MIN, Y_MAX, Z_MIN, Z_MAX, SLICE_POLY) RESULT(RAW)
+        REAL(DP), INTENT(IN) :: X_MIN, X_MAX, Y_MIN, Y_MAX, Z_MIN, Z_MAX
+        REAL(DP), INTENT(IN) :: SLICE_POLY(4, 3)
+        REAL(DP) :: RAW
+
+        REAL(DP) :: X0, Y0, WIDTH_H, Z_SLICE_MIN, Z_SLICE_MAX
+        REAL(DP) :: NX, NY, TX, TY
+        REAL(DP) :: ETA_1, ETA_2, ETA_3, ETA_4, ETA_MIN, ETA_MAX
+        REAL(DP) :: ETA_S1, ETA_S2, ETA_S3, ETA_S4, ETA_SLICE_MIN, ETA_SLICE_MAX
+        REAL(DP) :: XI_1, XI_2, XI_3, XI_4, XI_MIN, XI_MAX
+        REAL(DP) :: XI_S1, XI_S2, XI_S3, XI_S4, XI_SLICE_MIN, XI_SLICE_MAX
+        REAL(DP) :: RAW_H_ETA, RAW_H_XI, RAW_H
+        REAL(DP) :: RAW_V
+        REAL(DP), PARAMETER :: EPS = 1.0E-12_DP
+
+        RAW = 0.0_DP
+
+        X0 = 0.5_DP * (SLICE_POLY(1, 1) + SLICE_POLY(4, 1))
+        Y0 = 0.5_DP * (SLICE_POLY(1, 2) + SLICE_POLY(4, 2))
+
+        WIDTH_H = SQRT((SLICE_POLY(4, 1) - SLICE_POLY(1, 1))**2 + (SLICE_POLY(4, 2) - SLICE_POLY(1, 2))**2)
+        IF (WIDTH_H <= EPS) RETURN
+
+        NX = (SLICE_POLY(4, 1) - SLICE_POLY(1, 1)) / WIDTH_H
+        NY = (SLICE_POLY(4, 2) - SLICE_POLY(1, 2)) / WIDTH_H
+        TX = -NY
+        TY = NX
+
+        ETA_1 = NX * (X_MIN - X0) + NY * (Y_MIN - Y0)
+        ETA_2 = NX * (X_MIN - X0) + NY * (Y_MAX - Y0)
+        ETA_3 = NX * (X_MAX - X0) + NY * (Y_MIN - Y0)
+        ETA_4 = NX * (X_MAX - X0) + NY * (Y_MAX - Y0)
+        ETA_MIN = MIN(MIN(ETA_1, ETA_2), MIN(ETA_3, ETA_4))
+        ETA_MAX = MAX(MAX(ETA_1, ETA_2), MAX(ETA_3, ETA_4))
+
+        ETA_S1 = NX * (SLICE_POLY(1, 1) - X0) + NY * (SLICE_POLY(1, 2) - Y0)
+        ETA_S2 = NX * (SLICE_POLY(2, 1) - X0) + NY * (SLICE_POLY(2, 2) - Y0)
+        ETA_S3 = NX * (SLICE_POLY(3, 1) - X0) + NY * (SLICE_POLY(3, 2) - Y0)
+        ETA_S4 = NX * (SLICE_POLY(4, 1) - X0) + NY * (SLICE_POLY(4, 2) - Y0)
+        ETA_SLICE_MIN = MIN(MIN(ETA_S1, ETA_S2), MIN(ETA_S3, ETA_S4))
+        ETA_SLICE_MAX = MAX(MAX(ETA_S1, ETA_S2), MAX(ETA_S3, ETA_S4))
+
+        RAW_H_ETA = OVERLAP_1D(ETA_MIN, ETA_MAX, ETA_SLICE_MIN, ETA_SLICE_MAX)
+        IF (RAW_H_ETA <= EPS) RETURN
+
+        XI_1 = TX * (X_MIN - X0) + TY * (Y_MIN - Y0)
+        XI_2 = TX * (X_MIN - X0) + TY * (Y_MAX - Y0)
+        XI_3 = TX * (X_MAX - X0) + TY * (Y_MIN - Y0)
+        XI_4 = TX * (X_MAX - X0) + TY * (Y_MAX - Y0)
+        XI_MIN = MIN(MIN(XI_1, XI_2), MIN(XI_3, XI_4))
+        XI_MAX = MAX(MAX(XI_1, XI_2), MAX(XI_3, XI_4))
+
+        XI_S1 = TX * (SLICE_POLY(1, 1) - X0) + TY * (SLICE_POLY(1, 2) - Y0)
+        XI_S2 = TX * (SLICE_POLY(2, 1) - X0) + TY * (SLICE_POLY(2, 2) - Y0)
+        XI_S3 = TX * (SLICE_POLY(3, 1) - X0) + TY * (SLICE_POLY(3, 2) - Y0)
+        XI_S4 = TX * (SLICE_POLY(4, 1) - X0) + TY * (SLICE_POLY(4, 2) - Y0)
+        XI_SLICE_MIN = MIN(MIN(XI_S1, XI_S2), MIN(XI_S3, XI_S4))
+        XI_SLICE_MAX = MAX(MAX(XI_S1, XI_S2), MAX(XI_S3, XI_S4))
+
+        IF (USE_FULL_SLICE_FOOTPRINT) THEN
+            ! If along-track span is effectively zero, gracefully fall back to centerline logic.
+            IF ((XI_SLICE_MAX - XI_SLICE_MIN) <= EPS) THEN
+                IF ((XI_MIN > 0.0_DP) .OR. (XI_MAX < 0.0_DP)) RETURN
+                RAW_H_XI = 1.0_DP
+            ELSE
+                RAW_H_XI = OVERLAP_1D(XI_MIN, XI_MAX, XI_SLICE_MIN, XI_SLICE_MAX)
+                IF (RAW_H_XI <= EPS) RETURN
+            END IF
+            RAW_H = RAW_H_ETA * RAW_H_XI
+        ELSE
+            ! Legacy centerline projection in along-track direction.
+            IF ((XI_MIN > 0.0_DP) .OR. (XI_MAX < 0.0_DP)) RETURN
+            RAW_H = RAW_H_ETA
+        END IF
+        IF (RAW_H <= EPS) RETURN
+
+        Z_SLICE_MIN = MIN(MIN(SLICE_POLY(1, 3), SLICE_POLY(2, 3)), MIN(SLICE_POLY(3, 3), SLICE_POLY(4, 3)))
+        Z_SLICE_MAX = MAX(MAX(SLICE_POLY(1, 3), SLICE_POLY(2, 3)), MAX(SLICE_POLY(3, 3), SLICE_POLY(4, 3)))
+        RAW_V = OVERLAP_1D(Z_MIN, Z_MAX, Z_SLICE_MIN, Z_SLICE_MAX)
+        IF (RAW_V <= EPS) RETURN
+
+        RAW = RAW_H * RAW_V
+    END FUNCTION RECT_SLICE_RAW_OVERLAP
 
 END MODULE HELPERS
 
@@ -207,11 +318,16 @@ MODULE DEFINE_INPUT_TYPES
         INTEGER,   ALLOCATABLE :: TIME_REL_S(:)
         INTEGER,   ALLOCATABLE :: TIME_IDX(:)
         INTEGER,   ALLOCATABLE :: SPECIES_BOXM_NUM(:)
+        REAL(DP), ALLOCATABLE :: MOL_MASS_C(:)   ! (NSBOXM) kg/mol
 
-        REAL(DP), ALLOCATABLE :: LATITUDE_C(:)
         REAL(DP), ALLOCATABLE :: LONGITUDE_C(:)
+        REAL(DP), ALLOCATABLE :: LATITUDE_C(:)
         REAL(DP), ALLOCATABLE :: ALTITUDE_C(:)
         REAL(DP), ALLOCATABLE :: LEVEL_C(:)
+
+        REAL(DP), ALLOCATABLE :: LONGITUDE_C_M(:)
+        REAL(DP), ALLOCATABLE :: LATITUDE_C_M(:)
+        
 
         ! BOXM VARS
         REAL(DP), ALLOCATABLE :: TEMP(:,:)
@@ -252,11 +368,15 @@ MODULE DEFINE_INPUT_TYPES
         INTEGER, PRIVATE :: VARID_TIME_REL_S = -1
         INTEGER, PRIVATE :: VARID_TIME_IDX = -1
         INTEGER, PRIVATE :: VARID_SPECIES_BOXM_NUM = -1
+        INTEGER, PRIVATE :: VARID_MOL_MASS_C = -1
 
         INTEGER, PRIVATE :: VARID_LONGITUDE_C = -1
         INTEGER, PRIVATE :: VARID_LATITUDE_C = -1
         INTEGER, PRIVATE :: VARID_ALTITUDE_C = -1
         INTEGER, PRIVATE :: VARID_LEVEL_C = -1
+
+        INTEGER, PRIVATE :: VARID_LONGITUDE_C_M = -1
+        INTEGER, PRIVATE :: VARID_LATITUDE_C_M = -1
 
         INTEGER, PRIVATE :: VARID_TEMP = -1
         INTEGER, PRIVATE :: VARID_H2O = -1
@@ -891,6 +1011,12 @@ CONTAINS
         STATUS = NF90_INQ_VARID(BOXM_DS%BOXM_NCID, "level_c", BOXM_DS%VARID_LEVEL_C)
         CALL NC_CHECK(STATUS, "NF90_INQ_VARID(level_c)")
 
+        STATUS = NF90_INQ_VARID(BOXM_DS%BOXM_NCID, "longitude_c_m", BOXM_DS%VARID_LONGITUDE_C_M)
+        CALL NC_CHECK(STATUS, "NF90_INQ_VARID(longitude_c_m)")
+
+        STATUS = NF90_INQ_VARID(BOXM_DS%BOXM_NCID, "latitude_c_m", BOXM_DS%VARID_LATITUDE_C_M)
+        CALL NC_CHECK(STATUS, "NF90_INQ_VARID(latitude_c_m)")
+
         STATUS = NF90_INQ_VARID(BOXM_DS%BOXM_NCID, "air_temperature", BOXM_DS%VARID_TEMP)
         CALL NC_CHECK(STATUS, "NF90_INQ_VARID(air_temperature)")
 
@@ -912,6 +1038,9 @@ CONTAINS
         STATUS = NF90_INQ_VARID(BOXM_DS%BOXM_NCID, "Y_bg_c", BOXM_DS%VARID_Y_BG_C)
         CALL NC_CHECK(STATUS, "NF90_INQ_VARID(Y_bg_c)")
 
+        STATUS = NF90_INQ_VARID(BOXM_DS%BOXM_NCID, "mol_mass_c", BOXM_DS%VARID_MOL_MASS_C)
+        CALL NC_CHECK(STATUS, "NF90_INQ_VARID(mol_mass_c)")
+
     END SUBROUTINE BOXM_INIT
 
     SUBROUTINE BOXM_READ_STATIC(BOXM_DS)
@@ -932,6 +1061,9 @@ CONTAINS
         IF (.NOT. ALLOCATED(BOXM_DS%ALTITUDE_C)) ALLOCATE(BOXM_DS%ALTITUDE_C(BOXM_DS%NCELL))
         IF (.NOT. ALLOCATED(BOXM_DS%LEVEL_C)) ALLOCATE(BOXM_DS%LEVEL_C(BOXM_DS%NCELL))
 
+        IF (.NOT. ALLOCATED(BOXM_DS%LONGITUDE_C_M)) ALLOCATE(BOXM_DS%LONGITUDE_C_M(BOXM_DS%NCELL))
+        IF (.NOT. ALLOCATED(BOXM_DS%LATITUDE_C_M)) ALLOCATE(BOXM_DS%LATITUDE_C_M(BOXM_DS%NCELL))
+
         IF (.NOT. ALLOCATED(BOXM_DS%TEMP)) ALLOCATE(BOXM_DS%TEMP(BOXM_DS%NCELL, BOXM_DS%NTBOXM))
         IF (.NOT. ALLOCATED(BOXM_DS%H2O)) ALLOCATE(BOXM_DS%H2O(BOXM_DS%NCELL, BOXM_DS%NTBOXM))
         IF (.NOT. ALLOCATED(BOXM_DS%M)) ALLOCATE(BOXM_DS%M(BOXM_DS%NCELL, BOXM_DS%NTBOXM))
@@ -939,6 +1071,7 @@ CONTAINS
         IF (.NOT. ALLOCATED(BOXM_DS%N2)) ALLOCATE(BOXM_DS%N2(BOXM_DS%NCELL, BOXM_DS%NTBOXM))
         IF (.NOT. ALLOCATED(BOXM_DS%SZA)) ALLOCATE(BOXM_DS%SZA(BOXM_DS%NCELL, BOXM_DS%NTBOXM))
         IF (.NOT. ALLOCATED(BOXM_DS%Y_BG_C)) ALLOCATE(BOXM_DS%Y_BG_C(BOXM_DS%NCELL, BOXM_DS%NSBOXM))
+        IF (.NOT. ALLOCATED(BOXM_DS%MOL_MASS_C)) ALLOCATE(BOXM_DS%MOL_MASS_C(BOXM_DS%NSBOXM))
 
         ! BOXM ATTRIBUTES
         STATUS = NF90_GET_ATT(BOXM_DS%BOXM_NCID, NF90_GLOBAL, "ts_fl", BOXM_DS%TS_FL)
@@ -981,6 +1114,15 @@ CONTAINS
         STATUS = NF90_GET_VAR(BOXM_DS%BOXM_NCID, BOXM_DS%VARID_LATITUDE_C, BOXM_DS%LATITUDE_C)
         CALL NC_CHECK(STATUS, "NF90_GET_VAR(latitude_c)")
 
+        STATUS = NF90_GET_VAR(BOXM_DS%BOXM_NCID, BOXM_DS%VARID_LONGITUDE_C_M, BOXM_DS%LONGITUDE_C_M)
+        CALL NC_CHECK(STATUS, "NF90_GET_VAR(longitude_c_m)")
+
+        STATUS = NF90_GET_VAR(BOXM_DS%BOXM_NCID, BOXM_DS%VARID_LATITUDE_C_M, BOXM_DS%LATITUDE_C_M)
+        CALL NC_CHECK(STATUS, "NF90_GET_VAR(latitude_c_m)")
+
+        PRINT *, "Longitude_c: ", BOXM_DS%LONGITUDE_C(1:5)
+        PRINT *, "Latitude_c: ", BOXM_DS%LATITUDE_C(1:5)
+
         STATUS = NF90_GET_VAR(BOXM_DS%BOXM_NCID, BOXM_DS%VARID_ALTITUDE_C, BOXM_DS%ALTITUDE_C)
         CALL NC_CHECK(STATUS, "NF90_GET_VAR(altitude_c)")
 
@@ -1015,6 +1157,9 @@ CONTAINS
         STATUS = NF90_GET_VAR(BOXM_DS%BOXM_NCID, BOXM_DS%VARID_Y_BG_C, BOXM_DS%Y_BG_C, &
                               START=[1, 1], COUNT=[BOXM_DS%NSBOXM, BOXM_DS%NCELL])
         CALL NC_CHECK(STATUS, "NF90_GET_VAR(Y_bg_c)")
+
+        STATUS = NF90_GET_VAR(BOXM_DS%BOXM_NCID, BOXM_DS%VARID_MOL_MASS_C, BOXM_DS%MOL_MASS_C)
+        CALL NC_CHECK(STATUS, "NF90_GET_VAR(mol_mass_c)")
     END SUBROUTINE BOXM_READ_STATIC
 
     SUBROUTINE BOXM_SUMMARY(BOXM_DS)
@@ -1064,7 +1209,8 @@ CONTAINS
         BOXM_DS%VARID_O2 = -1
         BOXM_DS%VARID_N2 = -1
         BOXM_DS%VARID_SZA = -1
-        BOXM_DS%VARID_Y_BG_C = -1       
+        BOXM_DS%VARID_Y_BG_C = -1
+        BOXM_DS%VARID_MOL_MASS_C = -1
 
         BOXM_DS%IS_OPEN = .FALSE.
 
@@ -1113,8 +1259,8 @@ MODULE DEFINE_STATE_TYPES
         REAL(DP), ALLOCATABLE :: ALTITUDE(:)      ! (NSEG)
         REAL(DP), ALLOCATABLE :: LEVEL(:)    ! (NSEG) optional if you use model levels
 
-        REAL(DP), ALLOCATABLE :: LONGITUDE_M(:)      ! (NSEG) projected longitude for grid mapping
-        REAL(DP), ALLOCATABLE :: LATITUDE_M(:)      ! (NSEG) projected latitude for grid mapping
+        REAL(DP), ALLOCATABLE :: LONGITUDE_M(:)      ! (NSEG) projected longitude in metres for grid mapping
+        REAL(DP), ALLOCATABLE :: LATITUDE_M(:)      ! (NSEG) projected latitude in metres for grid mapping
 
         REAL(DP), ALLOCATABLE :: WIDTH(:)    ! (NSEG) m (or sigma_y derived)
         REAL(DP), ALLOCATABLE :: DEPTH(:)    ! (NSEG) m (sigma_z)
@@ -1135,6 +1281,15 @@ MODULE DEFINE_STATE_TYPES
         REAL(DP), ALLOCATABLE :: ELLIPSES_M(:,:,:) ! (NSEG, NPOINTS, 3) projected PL ellipse points for grid mapping
         REAL(DP), ALLOCATABLE :: SLICE_POLYS_M(:,:,:,:) ! (NSEG, NSLICES, 4, 3) projected PL slice corners for grid mapping
         
+        ! Sparse projection map: (seg,slice) → fine cells
+        INTEGER :: NNZ_MAP = 0  ! number of nonzero weights
+        INTEGER, ALLOCATABLE :: MAP_SEG(:)      ! (NNZ_MAP) source segment
+        INTEGER, ALLOCATABLE :: MAP_SLICE(:)    ! (NNZ_MAP) source slice
+        INTEGER, ALLOCATABLE :: MAP_CELL_C(:)   ! (NNZ_MAP) coarse cell id
+        INTEGER, ALLOCATABLE :: MAP_CELL_F(:)   ! (NNZ_MAP) fine subcell id (local or global)
+        REAL(DP), ALLOCATABLE :: MAP_W(:)       ! (NNZ_MAP) combined weight (h×v×w_slice)
+        
+
     CONTAINS
         PROCEDURE, PASS :: INIT_FROM_PL_DS => PL_STATE_INIT_FROM_PL_DS
         PROCEDURE, PASS :: INIT_FROM_PL_OUT => PL_STATE_INIT_FROM_PL_OUT
@@ -1143,7 +1298,8 @@ MODULE DEFINE_STATE_TYPES
         PROCEDURE, PASS :: ADVANCE_GEOM    => PL_STATE_ADVANCE_GEOM
         PROCEDURE, PASS :: ADVANCE_MASS    => PL_STATE_ADVANCE_MASS
         PROCEDURE, PASS :: BUILD_ACTIVE     => PL_STATE_BUILD_ACTIVE
-        ! PROCEDURE, PASS :: PROJECT_TO_GRID => PL_STATE_PROJECT_TO_GRID
+        PROCEDURE, PASS :: PROJECT_TO_GRID => PL_STATE_PROJECT_TO_GRID
+        PROCEDURE, PASS :: BACKPROJECT_FROM_GRID => PL_STATE_BACKPROJECT_FROM_GRID
 
     END TYPE PL_STATE_TYPE
 
@@ -1157,10 +1313,16 @@ MODULE DEFINE_STATE_TYPES
         INTEGER :: TIME_REL_S = 0
 
         INTEGER, ALLOCATABLE :: SPECIES_BOXM_NUM(:)
+        REAL(DP), ALLOCATABLE :: MOL_MASS_C(:)   ! (NSBOXM) kg/mol
         REAL(DP), ALLOCATABLE :: LONGITUDE_C(:)     ! (NCELL)
         REAL(DP), ALLOCATABLE :: LATITUDE_C(:)     ! (NCELL)
         REAL(DP), ALLOCATABLE :: ALTITUDE_C(:)     ! (NCELL)
         REAL(DP), ALLOCATABLE :: LEVEL_C(:)     ! (NCELL) or altitude midpoints
+
+        REAL(DP), ALLOCATABLE :: LONGITUDE_C_M(:)     ! (NCELL) projected longitude in metres for grid mapping
+        REAL(DP), ALLOCATABLE :: LATITUDE_C_M(:)     ! (NCELL) projected latitude in metres for grid mapping
+        REAL(DP), ALLOCATABLE :: DX_C_M(:)           ! (NCELL) coarse-cell width in projected x [m]
+        REAL(DP), ALLOCATABLE :: DY_C_M(:)           ! (NCELL) coarse-cell width in projected y [m]
 
 
         ! Met used for post conversion to ppb (store for analysis, not required for solver)
@@ -1178,6 +1340,9 @@ MODULE DEFINE_STATE_TYPES
 
     CONTAINS
         PROCEDURE, PASS :: INIT_FROM_BOXM_DS => BOXM_STATE_INIT_FROM_BOXM_DS
+        PROCEDURE, PASS :: ADVANCE_MET => BOXM_STATE_ADVANCE_MET
+        PROCEDURE, PASS :: RUN_COARSE_BG_CHEM => BOXM_STATE_RUN_COARSE_BG_CHEM
+        PROCEDURE, PASS :: RUN_COARSE_DELTA_CHEM => BOXM_STATE_RUN_COARSE_DELTA_CHEM
         ! PROCEDURE, PASS :: RESET_DELTAS      => BOXM_STATE_RESET_DELTAS
         ! PROCEDURE, PASS :: SET_ACTIVE        => BOXM_STATE_SET_ACTIVE
         ! PROCEDURE, PASS :: ACCUM_DELTA       => BOXM_STATE_ACCUM_DELTA
@@ -1193,16 +1358,19 @@ MODULE DEFINE_STATE_TYPES
         ! PATCH COORDS
         INTEGER :: ROW_IDX = 0
 
-        INTEGER, ALLOCATABLE :: PATCH_ID(:)
         INTEGER, ALLOCATABLE :: TIME_REL_S(:)
         INTEGER, ALLOCATABLE :: SPECIES_BOXM_NUM(:)
+        INTEGER, ALLOCATABLE :: ROW_CELL_C(:)
+        INTEGER, ALLOCATABLE :: ROW_CELL_F(:)
 
         ! PATCH VARS
         REAL(DP), ALLOCATABLE :: Y_DEL_F(:,:)
 
     CONTAINS
         PROCEDURE, PASS :: INIT_FROM_BOXM_DS => PATCH_STATE_INIT_FROM_BOXM_DS
-        ! PROCEDURE, PASS :: ACCUM_DELTA       => PATCH_STATE_ACCUM_DELTA
+        PROCEDURE, PASS :: BUILD_ROWS_FROM_W       => PATCH_STATE_BUILD_ROWS_FROM_W
+        PROCEDURE, PASS :: ACCUM_DELTAS_FROM_W       => PATCH_STATE_ACCUM_DELTAS_FROM_W
+        PROCEDURE, PASS :: RUN_FINE_DELTA_CHEM       => PATCH_STATE_RUN_FINE_DELTA_CHEM
 
     END TYPE PATCH_STATE_TYPE
    
@@ -1241,6 +1409,7 @@ CONTAINS
         IF (.NOT. ALLOCATED(PL_STATE%SIGMA_ZZ)) ALLOCATE(PL_STATE%SIGMA_ZZ(PL_STATE%NSEG))
 
         IF (.NOT. ALLOCATED(PL_STATE%PL_MASS)) ALLOCATE(PL_STATE%PL_MASS(PL_STATE%NSEG, PL_STATE%NSPL))
+        PL_STATE%PL_MASS(:,:) = 0.0_DP
 
     END SUBROUTINE PL_STATE_INIT_FROM_PL_DS
 
@@ -1396,13 +1565,6 @@ CONTAINS
         PL_STATE%ALTITUDE(:)  = PL_DS%ALTITUDE(:,PL_I)
         PL_STATE%LEVEL(:)     = PL_DS%LEVEL(:,PL_I)
 
-        PRINT *, "TIME_IDX=", TIME_IDX
-        PRINT *, "PLUME TIME (S): ", PL_I, PL_DS%TIME_REL_S(PL_I)
-        PRINT *, "SEG ACTIVE?", PL_DS%ACTIVE_SEG_FLAG(1,PL_I)
-        PRINT *, "AGE_S (S): ", PL_DS%AGE_S(1,PL_I)
-        PRINT *, "PLUME ORIGIN (DEG): ", PL_DS%LONGITUDE(1,PL_I), PL_DS%LATITUDE(1,PL_I)
-        PRINT *, "PLUME ORIGIN (M): ", PL_DS%LONGITUDE_M(1,PL_I), PL_DS%LATITUDE_M(1,PL_I)
-
         PL_STATE%ACTIVE_SEG_FLAG(:) = PL_DS%ACTIVE_SEG_FLAG(:,PL_I)
         PL_STATE%AGE_S(:)           = PL_DS%AGE_S(:,PL_I)
 
@@ -1462,11 +1624,11 @@ CONTAINS
         END IF
 
         ! BEFORE PLUME TIME, ZERO OUT MASS
-        IF (TIME_IDX < FL_DS%TIME_IDX(1)) THEN
+        IF (TIME_IDX < PL_DS%TIME_IDX(1)) THEN
             PL_STATE%PL_MASS(:,:) = 0.0_DP
         END IF
 
-        IF ( (TIME_IDX >= PL_DS%TIME_IDX(1)) .AND. (TIME_IDX <= PL_DS%TIME_IDX(PL_DS%NSEG)) ) THEN
+        IF ( (TIME_IDX >= PL_DS%TIME_IDX(1)) .AND. (TIME_IDX <= PL_DS%TIME_IDX(PL_DS%NTPL)) ) THEN
             
             MASK = (FL_DS%TIME_IDX == TIME_IDX)
             SEG_IDS = PACK([(I, I=1, SIZE(FL_DS%TIME_IDX))], MASK)
@@ -1474,6 +1636,7 @@ CONTAINS
             DO I = 1, SIZE(SEG_IDS)
                 SEG_ID = SEG_IDS(I)
                 PL_STATE%PL_MASS(SEG_ID,:) = 0.0_DP
+                
                 DO EMI_ID = 1, PL_DS%NSEMI
                     DO PL_ID = 1, PL_STATE%NSPL
                         IF (PL_STATE%SPECIES_PL_NUM(PL_ID) == PL_DS%SPECIES_EMI_NUM(EMI_ID)) THEN
@@ -1483,9 +1646,7 @@ CONTAINS
                     END DO
                 END DO
             END DO
-
         END IF
-    
     END SUBROUTINE PL_STATE_ADVANCE_MASS
 
     SUBROUTINE PL_STATE_BUILD_ACTIVE(PL_STATE, BOXM_STATE)
@@ -1494,7 +1655,7 @@ CONTAINS
 
         INTEGER :: I, SEG_ID, CELL_ID
         REAL(DP) :: PL_LON, PL_LAT, PL_ALT
-        REAL(DP) :: BOXM_LON, BOXM_LAT, BOXM_ALT
+        REAL(DP) :: BOXM_LON_M, BOXM_LAT_M, BOXM_ALT_M
         REAL(DP) :: MIN_DIST, DIST
 
         ! RESET BOXM ACTIVE FLAG
@@ -1504,8 +1665,8 @@ CONTAINS
         DO SEG_ID = 1, PL_STATE%NSEG
             ! USE MID-HEIGHT POINT FOR CELL MAPPING
 
-            PL_LON = PL_STATE%LONGITUDE(SEG_ID)
-            PL_LAT = PL_STATE%LATITUDE(SEG_ID)
+            PL_LON = PL_STATE%LONGITUDE_M(SEG_ID)
+            PL_LAT = PL_STATE%LATITUDE_M(SEG_ID)
             PL_ALT = PL_STATE%ALTITUDE(SEG_ID)
 
             ! FIND NEAREST BOXM CELL
@@ -1513,11 +1674,11 @@ CONTAINS
             CELL_ID = -1
 
             DO I = 1, BOXM_STATE%NCELL
-                BOXM_LON = BOXM_STATE%LONGITUDE_C(I)
-                BOXM_LAT = BOXM_STATE%LATITUDE_C(I)
-                BOXM_ALT = BOXM_STATE%ALTITUDE_C(I)
+                BOXM_LON_M = BOXM_STATE%LONGITUDE_C_M(I)
+                BOXM_LAT_M = BOXM_STATE%LATITUDE_C_M(I)
+                BOXM_ALT_M = BOXM_STATE%ALTITUDE_C(I)
 
-                DIST = SQRT( (PL_LON - BOXM_LON)**2 + (PL_LAT - BOXM_LAT)**2 + (PL_ALT - BOXM_ALT)**2 )
+                DIST = SQRT( (PL_LON - BOXM_LON_M)**2 + (PL_LAT - BOXM_LAT_M)**2 + (PL_ALT - BOXM_ALT_M)**2 )
 
                 IF (DIST < MIN_DIST) THEN
                     MIN_DIST = DIST
@@ -1529,9 +1690,372 @@ CONTAINS
             IF (CELL_ID > 0) THEN
                 BOXM_STATE%ACTIVE_FLAG(CELL_ID) = .TRUE.
             END IF
-
         END DO
     END SUBROUTINE PL_STATE_BUILD_ACTIVE
+
+    SUBROUTINE PL_STATE_PROJECT_TO_GRID(PL_STATE, PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE)
+        CLASS(PL_STATE_TYPE),    INTENT(INOUT) :: PL_STATE
+        CLASS(PATCH_STATE_TYPE),  INTENT(INOUT) :: PATCH_STATE
+        CLASS(BOXM_DS_TYPE),      INTENT(IN)    :: BOXM_DS
+        CLASS(BOXM_STATE_TYPE),    INTENT(IN)    :: BOXM_STATE
+        CLASS(PL_DS_TYPE),       INTENT(IN)    :: PL_DS
+
+        INTEGER :: CELL_C, CELL_F_LOCAL, ROW_IDX, NNZ
+        INTEGER :: NX_F, NY_F, NZ_F, SEG_ID, SEG_NEXT, SLICE_ID
+        INTEGER :: FL_S, FL_N, WP_S, WP_N
+        INTEGER :: IX_F, IY_F, IZ_F
+        INTEGER :: N_ACTIVE_SLICE, N_NONZERO_SLICE
+        LOGICAL :: HAS_BRIDGE
+        REAL(DP) :: LAT_C, ALT_C, LON_C_M, LAT_C_M
+        REAL(DP) :: DX_C_M, DY_C_M, DZ_C
+        REAL(DP) :: DX_F, DY_F, DZ_F
+        REAL(DP) :: X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, Z_MIN_F, Z_MAX_F
+        REAL(DP) :: RAW, RAW_SUM, WEIGHT
+        REAL(DP) :: SLICE_POLY(4, 3), SLICE_POLY_CUR(4, 3), SLICE_POLY_NEXT(4, 3)
+        REAL(DP) :: X_L_S, Y_L_S, X_R_S, Y_R_S
+        REAL(DP) :: X_L_N, Y_L_N, X_R_N, Y_R_N
+        REAL(DP) :: Z_MIN_BRIDGE, Z_MAX_BRIDGE
+        REAL(DP), PARAMETER :: EPS = 1.0E-12_DP
+
+        ! CALCULATE FINE GRID SUBDIVISION
+        NX_F = MAX(1, NINT(BOXM_DS%HRES_SIM_C / BOXM_DS%HRES_SIM_F)) ! NUMBER OF FINE CELLS IN X DIRECTION
+        NY_F = NX_F ! MAINTAIN SQUARE CELLS IN HORIZONTAL
+        NZ_F = MAX(1, NINT(BOXM_DS%VRES_SIM_C / BOXM_DS%VRES_SIM_F)) ! NUMBER OF FINE CELLS IN Z DIRECTION
+
+        DZ_C = BOXM_DS%VRES_SIM_C ! COARSE CELL HEIGHT
+
+        IF (ALLOCATED(PL_STATE%MAP_SEG)) DEALLOCATE(PL_STATE%MAP_SEG)
+        IF (ALLOCATED(PL_STATE%MAP_SLICE)) DEALLOCATE(PL_STATE%MAP_SLICE)
+        IF (ALLOCATED(PL_STATE%MAP_CELL_C)) DEALLOCATE(PL_STATE%MAP_CELL_C)
+        IF (ALLOCATED(PL_STATE%MAP_CELL_F)) DEALLOCATE(PL_STATE%MAP_CELL_F)
+        IF (ALLOCATED(PL_STATE%MAP_W)) DEALLOCATE(PL_STATE%MAP_W)
+
+        N_ACTIVE_SLICE = 0
+        N_NONZERO_SLICE = 0
+
+        ! Pass 1: count all nonzero overlaps so we can allocate the sparse map exactly once.
+        NNZ = 0
+        DO SEG_ID = 1, PL_STATE%NSEG
+            IF (PL_STATE%ACTIVE_SEG_FLAG(SEG_ID) == 0) CYCLE
+            SEG_NEXT = SEG_ID + 1
+            HAS_BRIDGE = .FALSE.
+
+            IF (SEG_NEXT <= PL_STATE%NSEG) THEN
+                IF (PL_STATE%ACTIVE_SEG_FLAG(SEG_NEXT) == 1) THEN
+                    FL_S = PL_DS%FL_ID(SEG_ID)
+                    FL_N = PL_DS%FL_ID(SEG_NEXT)
+                    WP_S = PL_DS%WP(SEG_ID)
+                    WP_N = PL_DS%WP(SEG_NEXT)
+                    IF ((FL_S == FL_N) .AND. (WP_N == WP_S + 1)) THEN
+                        HAS_BRIDGE = .TRUE.
+                    END IF
+                END IF
+            END IF
+
+            DO SLICE_ID = 1, PL_STATE%NSLICES
+                SLICE_POLY_CUR(:,:) = PL_STATE%SLICE_POLYS_M(SEG_ID,SLICE_ID,:,:)
+                IF (HAS_BRIDGE) THEN
+                    SLICE_POLY_NEXT(:,:) = PL_STATE%SLICE_POLYS_M(SEG_NEXT,SLICE_ID,:,:)
+
+                    X_L_S = 0.5_DP * (SLICE_POLY_CUR(1,1) + SLICE_POLY_CUR(2,1))
+                    Y_L_S = 0.5_DP * (SLICE_POLY_CUR(1,2) + SLICE_POLY_CUR(2,2))
+                    X_R_S = 0.5_DP * (SLICE_POLY_CUR(3,1) + SLICE_POLY_CUR(4,1))
+                    Y_R_S = 0.5_DP * (SLICE_POLY_CUR(3,2) + SLICE_POLY_CUR(4,2))
+
+                    X_L_N = 0.5_DP * (SLICE_POLY_NEXT(1,1) + SLICE_POLY_NEXT(2,1))
+                    Y_L_N = 0.5_DP * (SLICE_POLY_NEXT(1,2) + SLICE_POLY_NEXT(2,2))
+                    X_R_N = 0.5_DP * (SLICE_POLY_NEXT(3,1) + SLICE_POLY_NEXT(4,1))
+                    Y_R_N = 0.5_DP * (SLICE_POLY_NEXT(3,2) + SLICE_POLY_NEXT(4,2))
+
+                    Z_MIN_BRIDGE = MIN(MINVAL(SLICE_POLY_CUR(:,3)), MINVAL(SLICE_POLY_NEXT(:,3)))
+                    Z_MAX_BRIDGE = MAX(MAXVAL(SLICE_POLY_CUR(:,3)), MAXVAL(SLICE_POLY_NEXT(:,3)))
+
+                    SLICE_POLY(1,1) = X_L_S
+                    SLICE_POLY(1,2) = Y_L_S
+                    SLICE_POLY(1,3) = Z_MIN_BRIDGE
+
+                    SLICE_POLY(2,1) = X_L_N
+                    SLICE_POLY(2,2) = Y_L_N
+                    SLICE_POLY(2,3) = Z_MAX_BRIDGE
+
+                    SLICE_POLY(3,1) = X_R_N
+                    SLICE_POLY(3,2) = Y_R_N
+                    SLICE_POLY(3,3) = Z_MAX_BRIDGE
+
+                    SLICE_POLY(4,1) = X_R_S
+                    SLICE_POLY(4,2) = Y_R_S
+                    SLICE_POLY(4,3) = Z_MIN_BRIDGE
+                ELSE
+                    SLICE_POLY(:,:) = SLICE_POLY_CUR(:,:)
+                END IF
+
+                DO CELL_C = 1, BOXM_STATE%NCELL
+                    IF (.NOT. BOXM_STATE%ACTIVE_FLAG(CELL_C)) CYCLE
+
+                    LAT_C = BOXM_STATE%LATITUDE_C(CELL_C)
+                    ALT_C = BOXM_STATE%ALTITUDE_C(CELL_C)
+                    LON_C_M = BOXM_STATE%LONGITUDE_C_M(CELL_C)
+                    LAT_C_M = BOXM_STATE%LATITUDE_C_M(CELL_C)
+
+                    DX_C_M = BOXM_STATE%DX_C_M(CELL_C)
+                    DY_C_M = BOXM_STATE%DY_C_M(CELL_C)
+                    DX_F = DX_C_M / REAL(NX_F,DP)
+                    DY_F = DY_C_M / REAL(NY_F,DP)
+                    DZ_F = DZ_C / REAL(NZ_F,DP)
+
+                    DO IZ_F = 1, NZ_F
+                        Z_MIN_F = ALT_C - 0.5_DP * DZ_C + REAL(IZ_F - 1, DP) * DZ_F
+                        Z_MAX_F = Z_MIN_F + DZ_F
+
+                        DO IY_F = 1, NY_F
+                            Y_MIN_F = LAT_C_M - 0.5_DP * DY_C_M + REAL(IY_F - 1, DP) * DY_F
+                            Y_MAX_F = Y_MIN_F + DY_F
+
+                            DO IX_F = 1, NX_F
+                                X_MIN_F = LON_C_M - 0.5_DP * DX_C_M + REAL(IX_F - 1, DP) * DX_F
+                                X_MAX_F = X_MIN_F + DX_F
+
+                                RAW = RECT_SLICE_RAW_OVERLAP(X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, Z_MIN_F, Z_MAX_F, SLICE_POLY)
+                                IF (RAW > EPS) NNZ = NNZ + 1
+                            END DO
+                        END DO
+                    END DO
+                END DO
+            END DO
+        END DO
+
+        PL_STATE%NNZ_MAP = NNZ
+        IF (NNZ <= 0) RETURN
+
+        ALLOCATE(PL_STATE%MAP_SEG(NNZ))
+        ALLOCATE(PL_STATE%MAP_SLICE(NNZ))
+        ALLOCATE(PL_STATE%MAP_CELL_C(NNZ))
+        ALLOCATE(PL_STATE%MAP_CELL_F(NNZ))
+        ALLOCATE(PL_STATE%MAP_W(NNZ))
+
+        ! Pass 2: for each slice, recompute candidate overlaps, normalize them, and store.
+        ROW_IDX = 0
+        DO SEG_ID = 1, PL_STATE%NSEG
+            IF (PL_STATE%ACTIVE_SEG_FLAG(SEG_ID) == 0) CYCLE
+            SEG_NEXT = SEG_ID + 1
+            HAS_BRIDGE = .FALSE.
+
+            IF (SEG_NEXT <= PL_STATE%NSEG) THEN
+                IF (PL_STATE%ACTIVE_SEG_FLAG(SEG_NEXT) == 1) THEN
+                    FL_S = PL_DS%FL_ID(SEG_ID)
+                    FL_N = PL_DS%FL_ID(SEG_NEXT)
+                    WP_S = PL_DS%WP(SEG_ID)
+                    WP_N = PL_DS%WP(SEG_NEXT)
+                    IF ((FL_S == FL_N) .AND. (WP_N == WP_S + 1)) THEN
+                        HAS_BRIDGE = .TRUE.
+                    END IF
+                END IF
+            END IF
+
+            DO SLICE_ID = 1, PL_STATE%NSLICES
+                N_ACTIVE_SLICE = N_ACTIVE_SLICE + 1
+                SLICE_POLY_CUR(:,:) = PL_STATE%SLICE_POLYS_M(SEG_ID,SLICE_ID,:,:)
+                IF (HAS_BRIDGE) THEN
+                    SLICE_POLY_NEXT(:,:) = PL_STATE%SLICE_POLYS_M(SEG_NEXT,SLICE_ID,:,:)
+
+                    X_L_S = 0.5_DP * (SLICE_POLY_CUR(1,1) + SLICE_POLY_CUR(2,1))
+                    Y_L_S = 0.5_DP * (SLICE_POLY_CUR(1,2) + SLICE_POLY_CUR(2,2))
+                    X_R_S = 0.5_DP * (SLICE_POLY_CUR(3,1) + SLICE_POLY_CUR(4,1))
+                    Y_R_S = 0.5_DP * (SLICE_POLY_CUR(3,2) + SLICE_POLY_CUR(4,2))
+
+                    X_L_N = 0.5_DP * (SLICE_POLY_NEXT(1,1) + SLICE_POLY_NEXT(2,1))
+                    Y_L_N = 0.5_DP * (SLICE_POLY_NEXT(1,2) + SLICE_POLY_NEXT(2,2))
+                    X_R_N = 0.5_DP * (SLICE_POLY_NEXT(3,1) + SLICE_POLY_NEXT(4,1))
+                    Y_R_N = 0.5_DP * (SLICE_POLY_NEXT(3,2) + SLICE_POLY_NEXT(4,2))
+
+                    Z_MIN_BRIDGE = MIN(MINVAL(SLICE_POLY_CUR(:,3)), MINVAL(SLICE_POLY_NEXT(:,3)))
+                    Z_MAX_BRIDGE = MAX(MAXVAL(SLICE_POLY_CUR(:,3)), MAXVAL(SLICE_POLY_NEXT(:,3)))
+
+                    SLICE_POLY(1,1) = X_L_S
+                    SLICE_POLY(1,2) = Y_L_S
+                    SLICE_POLY(1,3) = Z_MIN_BRIDGE
+
+                    SLICE_POLY(2,1) = X_L_N
+                    SLICE_POLY(2,2) = Y_L_N
+                    SLICE_POLY(2,3) = Z_MAX_BRIDGE
+
+                    SLICE_POLY(3,1) = X_R_N
+                    SLICE_POLY(3,2) = Y_R_N
+                    SLICE_POLY(3,3) = Z_MAX_BRIDGE
+
+                    SLICE_POLY(4,1) = X_R_S
+                    SLICE_POLY(4,2) = Y_R_S
+                    SLICE_POLY(4,3) = Z_MIN_BRIDGE
+                ELSE
+                    SLICE_POLY(:,:) = SLICE_POLY_CUR(:,:)
+                END IF
+                RAW_SUM = 0.0_DP
+
+                DO CELL_C = 1, BOXM_STATE%NCELL
+                    IF (.NOT. BOXM_STATE%ACTIVE_FLAG(CELL_C)) CYCLE
+
+                    LAT_C = BOXM_STATE%LATITUDE_C(CELL_C)
+                    ALT_C = BOXM_STATE%ALTITUDE_C(CELL_C)
+                    LON_C_M = BOXM_STATE%LONGITUDE_C_M(CELL_C)
+                    LAT_C_M = BOXM_STATE%LATITUDE_C_M(CELL_C)
+
+                    DX_C_M = BOXM_STATE%DX_C_M(CELL_C)
+                    DY_C_M = BOXM_STATE%DY_C_M(CELL_C)
+                    DX_F = DX_C_M / REAL(NX_F, DP)
+                    DY_F = DY_C_M / REAL(NY_F, DP)
+                    DZ_F = DZ_C / REAL(NZ_F, DP)
+
+                    DO IZ_F = 1, NZ_F
+                        Z_MIN_F = ALT_C - 0.5_DP * DZ_C + REAL(IZ_F - 1, DP) * DZ_F
+                        Z_MAX_F = Z_MIN_F + DZ_F
+
+                        DO IY_F = 1, NY_F
+                            Y_MIN_F = LAT_C_M - 0.5_DP * DY_C_M + REAL(IY_F - 1, DP) * DY_F
+                            Y_MAX_F = Y_MIN_F + DY_F
+
+                            DO IX_F = 1, NX_F
+                                X_MIN_F = LON_C_M - 0.5_DP * DX_C_M + REAL(IX_F - 1, DP) * DX_F
+                                X_MAX_F = X_MIN_F + DX_F
+
+                                RAW = RECT_SLICE_RAW_OVERLAP(X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, Z_MIN_F, Z_MAX_F, SLICE_POLY)
+                                RAW_SUM = RAW_SUM + RAW
+                            END DO
+                        END DO
+                    END DO
+                END DO
+
+                IF (RAW_SUM <= EPS) CYCLE
+                N_NONZERO_SLICE = N_NONZERO_SLICE + 1
+
+                DO CELL_C = 1, BOXM_STATE%NCELL
+                    IF (.NOT. BOXM_STATE%ACTIVE_FLAG(CELL_C)) CYCLE
+
+                    LAT_C = BOXM_STATE%LATITUDE_C(CELL_C)
+                    ALT_C = BOXM_STATE%ALTITUDE_C(CELL_C)
+                    LON_C_M = BOXM_STATE%LONGITUDE_C_M(CELL_C)
+                    LAT_C_M = BOXM_STATE%LATITUDE_C_M(CELL_C)
+
+                    DX_C_M = BOXM_STATE%DX_C_M(CELL_C)
+                    DY_C_M = BOXM_STATE%DY_C_M(CELL_C)
+                    DX_F = DX_C_M / REAL(NX_F, DP)
+                    DY_F = DY_C_M / REAL(NY_F, DP)
+                    DZ_F = DZ_C / REAL(NZ_F, DP)
+
+                    DO IZ_F = 1, NZ_F
+                        Z_MIN_F = ALT_C - 0.5_DP * DZ_C + REAL(IZ_F - 1, DP) * DZ_F
+                        Z_MAX_F = Z_MIN_F + DZ_F
+
+                        DO IY_F = 1, NY_F
+                            Y_MIN_F = LAT_C_M - 0.5_DP * DY_C_M + REAL(IY_F - 1, DP) * DY_F
+                            Y_MAX_F = Y_MIN_F + DY_F
+
+                            DO IX_F = 1, NX_F
+                                X_MIN_F = LON_C_M - 0.5_DP * DX_C_M + REAL(IX_F - 1, DP) * DX_F
+                                X_MAX_F = X_MIN_F + DX_F
+
+                                RAW = RECT_SLICE_RAW_OVERLAP(X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, Z_MIN_F, Z_MAX_F, SLICE_POLY)
+                                IF (RAW <= EPS) CYCLE
+
+                                WEIGHT = PL_STATE%W_SLICE(SLICE_ID) * RAW / RAW_SUM
+                                ROW_IDX = ROW_IDX + 1
+                                CELL_F_LOCAL = (IZ_F - 1) * NX_F * NY_F + (IY_F - 1) * NX_F + IX_F
+
+                                PL_STATE%MAP_SEG(ROW_IDX) = SEG_ID
+                                PL_STATE%MAP_SLICE(ROW_IDX) = SLICE_ID
+                                PL_STATE%MAP_CELL_C(ROW_IDX) = CELL_C
+                                PL_STATE%MAP_CELL_F(ROW_IDX) = CELL_F_LOCAL
+                                PL_STATE%MAP_W(ROW_IDX) = WEIGHT
+                            END DO
+                        END DO
+                    END DO
+                END DO
+            END DO
+        END DO
+
+        IF (ROW_IDX /= NNZ) THEN
+            PRINT *, "PL_STATE_PROJECT_TO_GRID: sparse map row mismatch", ROW_IDX, NNZ
+            STOP 1
+        END IF
+
+        IF (DEBUG_PROJECTION) THEN
+            PRINT *, "Projection diagnostics: time_rel_s=", PL_STATE%TIME_REL_S, &
+                     ", mode_full_footprint=", USE_FULL_SLICE_FOOTPRINT
+            PRINT *, "Projection diagnostics: active_slices=", N_ACTIVE_SLICE, &
+                     ", nonzero_slices=", N_NONZERO_SLICE, ", nnz_map=", PL_STATE%NNZ_MAP
+        END IF
+
+    END SUBROUTINE PL_STATE_PROJECT_TO_GRID
+
+    SUBROUTINE PL_STATE_BACKPROJECT_FROM_GRID(PL_STATE, PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
+        CLASS(PL_STATE_TYPE),    INTENT(INOUT) :: PL_STATE
+        CLASS(PL_DS_TYPE),       INTENT(IN)    :: PL_DS
+        CLASS(BOXM_DS_TYPE),     INTENT(IN)    :: BOXM_DS
+        CLASS(BOXM_STATE_TYPE),  INTENT(IN)    :: BOXM_STATE
+        CLASS(PATCH_STATE_TYPE), INTENT(IN)    :: PATCH_STATE
+        INTEGER,                 INTENT(IN)    :: TIME_IDX
+
+        INTEGER :: K, ROW_IDX, P, B, SEG_ID, CELL_C, CELL_F, PL_ID
+        INTEGER :: NX_F, NY_F
+        REAL(DP) :: DX_C_M, DY_C_M, DX_F, DY_F, VOL_F, LAT_C
+
+        IF (.NOT. ALLOCATED(PL_STATE%PL_MASS)) RETURN
+        IF (.NOT. ALLOCATED(PL_STATE%SPECIES_PL_NUM)) RETURN
+        IF (.NOT. ALLOCATED(PL_STATE%MAP_W)) RETURN
+        IF (.NOT. ALLOCATED(PL_STATE%MAP_SEG)) RETURN
+        IF (.NOT. ALLOCATED(PL_STATE%MAP_CELL_C)) RETURN
+        IF (.NOT. ALLOCATED(PL_STATE%MAP_CELL_F)) RETURN
+        IF (.NOT. ALLOCATED(PATCH_STATE%Y_DEL_F)) RETURN
+        IF (.NOT. ALLOCATED(PATCH_STATE%ROW_CELL_C)) RETURN
+        IF (.NOT. ALLOCATED(PATCH_STATE%ROW_CELL_F)) RETURN
+        IF (.NOT. ALLOCATED(BOXM_STATE%MOL_MASS_C)) RETURN
+        IF (.NOT. ALLOCATED(BOXM_STATE%LATITUDE_C)) RETURN
+        IF (PL_STATE%NNZ_MAP <= 0) RETURN
+        IF (PATCH_STATE%NROWS <= 0) RETURN
+
+        NX_F = MAX(1, NINT(BOXM_DS%HRES_SIM_C / BOXM_DS%HRES_SIM_F))
+        NY_F = NX_F
+
+        ! TIME_IDX and PL_DS are kept in signature for orchestration symmetry and future time-aware updates.
+        IF (TIME_IDX < 0 .OR. PL_DS%NSEG < 0) RETURN
+
+        DO K = 1, PL_STATE%NNZ_MAP
+            SEG_ID = PL_STATE%MAP_SEG(K)
+            CELL_C = PL_STATE%MAP_CELL_C(K)
+            CELL_F = PL_STATE%MAP_CELL_F(K)
+
+            IF (SEG_ID < 1 .OR. SEG_ID > PL_STATE%NSEG) CYCLE
+            IF (CELL_C < 1 .OR. CELL_C > BOXM_STATE%NCELL) CYCLE
+
+            ROW_IDX = -1
+            DO P = 1, PATCH_STATE%NROWS
+                IF (PATCH_STATE%ROW_CELL_C(P) == CELL_C .AND. PATCH_STATE%ROW_CELL_F(P) == CELL_F) THEN
+                    ROW_IDX = P
+                    EXIT
+                END IF
+            END DO
+            IF (ROW_IDX < 1) CYCLE
+
+            LAT_C = BOXM_STATE%LATITUDE_C(CELL_C)
+            DX_C_M = BOXM_STATE%DX_C_M(CELL_C)
+            DY_C_M = BOXM_STATE%DY_C_M(CELL_C)
+            DX_F = DX_C_M / REAL(NX_F, DP)
+            DY_F = DY_C_M / REAL(NY_F, DP)
+            VOL_F = DX_F * DY_F * BOXM_DS%VRES_SIM_F
+            IF (VOL_F <= 0.0_DP) CYCLE
+
+            DO PL_ID = 1, PL_STATE%NSPL
+                B = PL_STATE%SPECIES_PL_NUM(PL_ID)
+                IF (B < 1 .OR. B > PATCH_STATE%NSBOXM) CYCLE
+                IF (B > SIZE(BOXM_STATE%MOL_MASS_C)) CYCLE
+                IF (BOXM_STATE%MOL_MASS_C(B) <= 0.0_DP) CYCLE
+                IF (PL_ID > SIZE(PL_STATE%PL_MASS, 2)) CYCLE
+
+                PL_STATE%PL_MASS(SEG_ID, PL_ID) = PL_STATE%PL_MASS(SEG_ID, PL_ID) + &
+                    PL_STATE%MAP_W(K) * PATCH_STATE%Y_DEL_F(ROW_IDX, B) * BOXM_STATE%MOL_MASS_C(B) * VOL_F
+            END DO
+        END DO
+
+    END SUBROUTINE PL_STATE_BACKPROJECT_FROM_GRID
 
     ! ---------- BOXM STATE METHODS ----------
     SUBROUTINE BOXM_STATE_INIT_FROM_BOXM_DS(BOXM_STATE, BOXM_DS)
@@ -1545,11 +2069,17 @@ CONTAINS
 
         ! ALLOCATE ARRAYS
         IF (.NOT. ALLOCATED(BOXM_STATE%SPECIES_BOXM_NUM)) ALLOCATE(BOXM_STATE%SPECIES_BOXM_NUM(BOXM_STATE%NSBOXM))
+        IF (.NOT. ALLOCATED(BOXM_STATE%MOL_MASS_C)) ALLOCATE(BOXM_STATE%MOL_MASS_C(BOXM_STATE%NSBOXM))
 
         IF (.NOT. ALLOCATED(BOXM_STATE%LONGITUDE_C)) ALLOCATE(BOXM_STATE%LONGITUDE_C(BOXM_STATE%NCELL))
         IF (.NOT. ALLOCATED(BOXM_STATE%LATITUDE_C)) ALLOCATE(BOXM_STATE%LATITUDE_C(BOXM_STATE%NCELL))
         IF (.NOT. ALLOCATED(BOXM_STATE%ALTITUDE_C)) ALLOCATE(BOXM_STATE%ALTITUDE_C(BOXM_STATE%NCELL))
         IF (.NOT. ALLOCATED(BOXM_STATE%LEVEL_C)) ALLOCATE(BOXM_STATE%LEVEL_C(BOXM_STATE%NCELL))
+
+        IF (.NOT. ALLOCATED(BOXM_STATE%LONGITUDE_C_M)) ALLOCATE(BOXM_STATE%LONGITUDE_C_M(BOXM_STATE%NCELL))
+        IF (.NOT. ALLOCATED(BOXM_STATE%LATITUDE_C_M)) ALLOCATE(BOXM_STATE%LATITUDE_C_M(BOXM_STATE%NCELL))
+        IF (.NOT. ALLOCATED(BOXM_STATE%DX_C_M)) ALLOCATE(BOXM_STATE%DX_C_M(BOXM_STATE%NCELL))
+        IF (.NOT. ALLOCATED(BOXM_STATE%DY_C_M)) ALLOCATE(BOXM_STATE%DY_C_M(BOXM_STATE%NCELL))
 
         IF (.NOT. ALLOCATED(BOXM_STATE%TEMP)) ALLOCATE(BOXM_STATE%TEMP(BOXM_STATE%NCELL))
         IF (.NOT. ALLOCATED(BOXM_STATE%H2O)) ALLOCATE(BOXM_STATE%H2O(BOXM_STATE%NCELL))
@@ -1562,7 +2092,155 @@ CONTAINS
         IF (.NOT. ALLOCATED(BOXM_STATE%Y_DEL_C)) ALLOCATE(BOXM_STATE%Y_DEL_C(BOXM_STATE%NCELL, BOXM_STATE%NSBOXM))
         IF (.NOT. ALLOCATED(BOXM_STATE%ACTIVE_FLAG)) ALLOCATE(BOXM_STATE%ACTIVE_FLAG(BOXM_STATE%NCELL))
 
+        BOXM_STATE%TIME_REL_S = 0
+        BOXM_STATE%SPECIES_BOXM_NUM(:) = BOXM_DS%SPECIES_BOXM_NUM(:)
+        BOXM_STATE%MOL_MASS_C(:) = BOXM_DS%MOL_MASS_C(:)
+        BOXM_STATE%LONGITUDE_C(:) = BOXM_DS%LONGITUDE_C(:)
+        BOXM_STATE%LATITUDE_C(:) = BOXM_DS%LATITUDE_C(:)
+        BOXM_STATE%ALTITUDE_C(:) = BOXM_DS%ALTITUDE_C(:)
+        BOXM_STATE%LEVEL_C(:) = BOXM_DS%LEVEL_C(:)
+        BOXM_STATE%LONGITUDE_C_M(:) = BOXM_DS%LONGITUDE_C_M(:)
+        BOXM_STATE%LATITUDE_C_M(:) = BOXM_DS%LATITUDE_C_M(:)
+        CALL BOXM_STATE_BUILD_CELL_METRICS(BOXM_STATE, BOXM_DS)
+        BOXM_STATE%TEMP(:) = BOXM_DS%TEMP(:,1)
+        BOXM_STATE%H2O(:) = BOXM_DS%H2O(:,1)
+        BOXM_STATE%M(:) = BOXM_DS%M(:,1)
+        BOXM_STATE%O2(:) = BOXM_DS%O2(:,1)
+        BOXM_STATE%N2(:) = BOXM_DS%N2(:,1)
+        BOXM_STATE%SZA(:) = BOXM_DS%SZA(:,1)
+        BOXM_STATE%Y_BG_C(:,:) = BOXM_DS%Y_BG_C(:,:)
+        BOXM_STATE%Y_DEL_C(:,:) = 0.0_DP
+        BOXM_STATE%ACTIVE_FLAG(:) = .FALSE.
+
     END SUBROUTINE BOXM_STATE_INIT_FROM_BOXM_DS
+
+    SUBROUTINE BOXM_STATE_BUILD_CELL_METRICS(BOXM_STATE, BOXM_DS)
+        CLASS(BOXM_STATE_TYPE), INTENT(INOUT) :: BOXM_STATE
+        CLASS(BOXM_DS_TYPE),    INTENT(IN)    :: BOXM_DS
+
+        INTEGER :: I, J
+        REAL(DP) :: LON_C, LAT_C, LEV_C, RES
+        REAL(DP) :: DX_E, DX_W, DY_N, DY_S
+        REAL(DP) :: LON_TOL, LAT_TOL, LEV_TOL
+        LOGICAL :: HAVE_E, HAVE_W, HAVE_N, HAVE_S
+
+        RES = BOXM_DS%HRES_SIM_C
+        LON_TOL = MAX(1.0E-10_DP, 1.0E-3_DP * ABS(RES))
+        LAT_TOL = LON_TOL
+        LEV_TOL = 1.0E-6_DP
+
+        DO I = 1, BOXM_STATE%NCELL
+            LON_C = BOXM_STATE%LONGITUDE_C(I)
+            LAT_C = BOXM_STATE%LATITUDE_C(I)
+            LEV_C = BOXM_STATE%LEVEL_C(I)
+
+            ! Fallback: spherical local metric if a neighbour lookup fails.
+            BOXM_STATE%DX_C_M(I) = DEG_TO_M_DX(RES, LAT_C)
+            BOXM_STATE%DY_C_M(I) = DEG_TO_M_DY(RES)
+
+            HAVE_E = .FALSE.
+            HAVE_W = .FALSE.
+            HAVE_N = .FALSE.
+            HAVE_S = .FALSE.
+            DX_E = 0.0_DP
+            DX_W = 0.0_DP
+            DY_N = 0.0_DP
+            DY_S = 0.0_DP
+
+            DO J = 1, BOXM_STATE%NCELL
+                IF (J == I) CYCLE
+                IF (ABS(BOXM_STATE%LEVEL_C(J) - LEV_C) > LEV_TOL) CYCLE
+
+                IF (ABS(BOXM_STATE%LATITUDE_C(J) - LAT_C) <= LAT_TOL) THEN
+                    IF (ABS(BOXM_STATE%LONGITUDE_C(J) - (LON_C + RES)) <= LON_TOL) THEN
+                        DX_E = ABS(BOXM_STATE%LONGITUDE_C_M(J) - BOXM_STATE%LONGITUDE_C_M(I))
+                        HAVE_E = .TRUE.
+                    ELSE IF (ABS(BOXM_STATE%LONGITUDE_C(J) - (LON_C - RES)) <= LON_TOL) THEN
+                        DX_W = ABS(BOXM_STATE%LONGITUDE_C_M(I) - BOXM_STATE%LONGITUDE_C_M(J))
+                        HAVE_W = .TRUE.
+                    END IF
+                END IF
+
+                IF (ABS(BOXM_STATE%LONGITUDE_C(J) - LON_C) <= LON_TOL) THEN
+                    IF (ABS(BOXM_STATE%LATITUDE_C(J) - (LAT_C + RES)) <= LAT_TOL) THEN
+                        DY_N = ABS(BOXM_STATE%LATITUDE_C_M(J) - BOXM_STATE%LATITUDE_C_M(I))
+                        HAVE_N = .TRUE.
+                    ELSE IF (ABS(BOXM_STATE%LATITUDE_C(J) - (LAT_C - RES)) <= LAT_TOL) THEN
+                        DY_S = ABS(BOXM_STATE%LATITUDE_C_M(I) - BOXM_STATE%LATITUDE_C_M(J))
+                        HAVE_S = .TRUE.
+                    END IF
+                END IF
+            END DO
+
+            IF (HAVE_E .AND. HAVE_W) THEN
+                BOXM_STATE%DX_C_M(I) = 0.5_DP * (DX_E + DX_W)
+            ELSE IF (HAVE_E) THEN
+                BOXM_STATE%DX_C_M(I) = DX_E
+            ELSE IF (HAVE_W) THEN
+                BOXM_STATE%DX_C_M(I) = DX_W
+            END IF
+
+            IF (HAVE_N .AND. HAVE_S) THEN
+                BOXM_STATE%DY_C_M(I) = 0.5_DP * (DY_N + DY_S)
+            ELSE IF (HAVE_N) THEN
+                BOXM_STATE%DY_C_M(I) = DY_N
+            ELSE IF (HAVE_S) THEN
+                BOXM_STATE%DY_C_M(I) = DY_S
+            END IF
+        END DO
+    END SUBROUTINE BOXM_STATE_BUILD_CELL_METRICS
+
+    SUBROUTINE BOXM_STATE_ADVANCE_MET(BOXM_STATE, BOXM_DS, TIME_IDX)
+        CLASS(BOXM_STATE_TYPE), INTENT(INOUT) :: BOXM_STATE
+        CLASS(BOXM_DS_TYPE),    INTENT(IN)    :: BOXM_DS
+        INTEGER, INTENT(IN) :: TIME_IDX
+
+        BOXM_STATE%TIME_REL_S = BOXM_DS%TIME_REL_S(TIME_IDX)
+        BOXM_STATE%TEMP(:) = BOXM_DS%TEMP(:,TIME_IDX)
+        BOXM_STATE%H2O(:) = BOXM_DS%H2O(:,TIME_IDX)
+        BOXM_STATE%M(:) = BOXM_DS%M(:,TIME_IDX)
+        BOXM_STATE%O2(:) = BOXM_DS%O2(:,TIME_IDX)
+        BOXM_STATE%N2(:) = BOXM_DS%N2(:,TIME_IDX)
+        BOXM_STATE%SZA(:) = BOXM_DS%SZA(:,TIME_IDX)
+
+    END SUBROUTINE BOXM_STATE_ADVANCE_MET
+
+    SUBROUTINE BOXM_STATE_RUN_COARSE_BG_CHEM(BOXM_STATE, BOXM_DS)
+        CLASS(BOXM_STATE_TYPE), INTENT(INOUT) :: BOXM_STATE
+        CLASS(BOXM_DS_TYPE),    INTENT(IN)    :: BOXM_DS
+
+        INTEGER :: I, J, K
+        REAL(DP) :: Y_DEL_C_TMP(BOXM_STATE%NSBOXM)
+
+        ! DO I = 1, BOXM_STATE%NCELL
+        !     IF (.NOT. BOXM_STATE%ACTIVE_FLAG(I)) CYCLE
+
+        !     CALL COARSE_BG_CHEM(BOXM_STATE%Y_BG_C(I,:), BOXM_DS%REACTIONS, BOXM_DS%NSBOXM, Y_DEL_C_TMP)
+        !     DO K = 1, BOXM_STATE%NSBOXM
+        !         BOXM_STATE%Y_DEL_C(I,K) = Y_DEL_C_TMP(K)
+        !     END DO
+        ! END DO
+
+    END SUBROUTINE BOXM_STATE_RUN_COARSE_BG_CHEM
+
+    SUBROUTINE BOXM_STATE_RUN_COARSE_DELTA_CHEM(BOXM_STATE, BOXM_DS, PATCH_STATE)
+        CLASS(BOXM_STATE_TYPE), INTENT(INOUT) :: BOXM_STATE
+        CLASS(BOXM_DS_TYPE),    INTENT(IN)    :: BOXM_DS
+        CLASS(PATCH_STATE_TYPE), INTENT(IN)   :: PATCH_STATE
+
+        INTEGER :: I, J, K
+        REAL(DP) :: Y_DEL_C_TMP(BOXM_STATE%NSBOXM)
+
+        ! DO I = 1, BOXM_STATE%NCELL
+        !     IF (.NOT. BOXM_STATE%ACTIVE_FLAG(I)) CYCLE
+
+        !     CALL COARSE_DELTA_CHEM(BOXM_STATE%Y_BG_C(I,:), PATCH_STATE%Y_DEL_F(I,:), BOXM_DS%REACTIONS, BOXM_DS%NSBOXM, Y_DEL_C_TMP)
+        !     DO K = 1, BOXM_STATE%NSBOXM
+        !         BOXM_STATE%Y_DEL_C(I,K) = Y_DEL_C_TMP(K)
+        !     END DO
+        ! END DO
+
+    END SUBROUTINE BOXM_STATE_RUN_COARSE_DELTA_CHEM
 
     ! ---------- PATCH STATE METHODS ----------
     SUBROUTINE PATCH_STATE_INIT_FROM_BOXM_DS(PATCH_STATE, BOXM_DS)
@@ -1575,6 +2253,139 @@ CONTAINS
         PATCH_STATE%SPECIES_BOXM_NUM(:) = BOXM_DS%SPECIES_BOXM_NUM(:)
 
     END SUBROUTINE PATCH_STATE_INIT_FROM_BOXM_DS
+
+    SUBROUTINE PATCH_STATE_BUILD_ROWS_FROM_W(PATCH_STATE, PL_STATE, BOXM_STATE)
+        IMPLICIT NONE
+        CLASS(PATCH_STATE_TYPE), INTENT(INOUT) :: PATCH_STATE
+        CLASS(PL_STATE_TYPE),    INTENT(IN)    :: PL_STATE
+        CLASS(BOXM_STATE_TYPE),  INTENT(IN)    :: BOXM_STATE
+
+        INTEGER :: I, J, ROW_IDX, CELL_C, CELL_F
+        INTEGER :: CELL_C_CAND, CELL_F_CAND
+        INTEGER :: NNZ
+        LOGICAL :: FOUND
+        INTEGER, ALLOCATABLE :: TMP_CELL_C(:), TMP_CELL_F(:)
+
+        PATCH_STATE%NSBOXM = BOXM_STATE%NSBOXM
+        PATCH_STATE%NROWS = 0
+        PATCH_STATE%ROW_IDX = 0
+
+        NNZ = PL_STATE%NNZ_MAP
+        IF (NNZ <= 0) RETURN
+
+        IF (ALLOCATED(PATCH_STATE%TIME_REL_S)) DEALLOCATE(PATCH_STATE%TIME_REL_S)
+        IF (ALLOCATED(PATCH_STATE%ROW_CELL_C)) DEALLOCATE(PATCH_STATE%ROW_CELL_C)
+        IF (ALLOCATED(PATCH_STATE%ROW_CELL_F)) DEALLOCATE(PATCH_STATE%ROW_CELL_F)
+        IF (ALLOCATED(PATCH_STATE%Y_DEL_F)) DEALLOCATE(PATCH_STATE%Y_DEL_F)
+
+        ALLOCATE(TMP_CELL_C(NNZ), TMP_CELL_F(NNZ))
+        TMP_CELL_C(:) = 0
+        TMP_CELL_F(:) = 0
+
+        ! Build one PATCH row per unique (coarse cell, fine subcell) pair found in W.
+        DO I = 1, NNZ
+            CELL_C_CAND = PL_STATE%MAP_CELL_C(I)
+            CELL_F_CAND = PL_STATE%MAP_CELL_F(I)
+            FOUND = .FALSE.
+            DO J = 1, PATCH_STATE%NROWS
+                IF (TMP_CELL_C(J) == CELL_C_CAND .AND. TMP_CELL_F(J) == CELL_F_CAND) THEN
+                    FOUND = .TRUE.
+                    EXIT
+                END IF
+            END DO
+            IF (.NOT. FOUND) THEN
+                PATCH_STATE%NROWS = PATCH_STATE%NROWS + 1
+                TMP_CELL_C(PATCH_STATE%NROWS) = CELL_C_CAND
+                TMP_CELL_F(PATCH_STATE%NROWS) = CELL_F_CAND
+            END IF
+        END DO
+
+        IF (PATCH_STATE%NROWS <= 0) THEN
+            DEALLOCATE(TMP_CELL_C, TMP_CELL_F)
+            RETURN
+        END IF
+
+        ALLOCATE(PATCH_STATE%TIME_REL_S(PATCH_STATE%NROWS))
+        ALLOCATE(PATCH_STATE%ROW_CELL_C(PATCH_STATE%NROWS))
+        ALLOCATE(PATCH_STATE%ROW_CELL_F(PATCH_STATE%NROWS))
+        ALLOCATE(PATCH_STATE%Y_DEL_F(PATCH_STATE%NROWS, PATCH_STATE%NSBOXM))
+
+        DO ROW_IDX = 1, PATCH_STATE%NROWS
+            CELL_C = TMP_CELL_C(ROW_IDX)
+            CELL_F = TMP_CELL_F(ROW_IDX)
+
+            PATCH_STATE%TIME_REL_S(ROW_IDX) = BOXM_STATE%TIME_REL_S
+            PATCH_STATE%ROW_CELL_C(ROW_IDX) = CELL_C
+            PATCH_STATE%ROW_CELL_F(ROW_IDX) = CELL_F
+        END DO
+        PATCH_STATE%Y_DEL_F(:,:) = 0.0_DP
+        PATCH_STATE%ROW_IDX = PATCH_STATE%NROWS
+
+        DEALLOCATE(TMP_CELL_C, TMP_CELL_F)
+
+    END SUBROUTINE PATCH_STATE_BUILD_ROWS_FROM_W
+
+    SUBROUTINE PATCH_STATE_ACCUM_DELTAS_FROM_W(PATCH_STATE, PL_STATE, BOXM_DS, BOXM_STATE)
+        CLASS(PATCH_STATE_TYPE), INTENT(INOUT) :: PATCH_STATE
+        CLASS(PL_STATE_TYPE),    INTENT(IN)    :: PL_STATE
+        CLASS(BOXM_DS_TYPE),     INTENT(IN)    :: BOXM_DS
+        CLASS(BOXM_STATE_TYPE),  INTENT(IN)    :: BOXM_STATE
+
+        INTEGER  :: K, ROW_IDX, PL_ID, BOXM_ID, SEG_ID
+        INTEGER  :: NX_F, NY_F
+        REAL(DP) :: W, VOL_F
+        REAL(DP) :: DX_C_M, DY_C_M, DX_F, DY_F
+
+        IF (PATCH_STATE%NROWS <= 0 .OR. PL_STATE%NNZ_MAP <= 0) RETURN
+
+        ! Use representative projected coarse-cell metrics for this lightweight accumulation path.
+        NX_F = MAX(1, NINT(BOXM_DS%HRES_SIM_C / BOXM_DS%HRES_SIM_F))
+        NY_F = NX_F
+        DX_C_M = SUM(BOXM_STATE%DX_C_M) / REAL(MAX(1, BOXM_STATE%NCELL), DP)
+        DY_C_M = SUM(BOXM_STATE%DY_C_M) / REAL(MAX(1, BOXM_STATE%NCELL), DP)
+        DX_F = DX_C_M / REAL(NX_F, DP)
+        DY_F = DY_C_M / REAL(NY_F, DP)
+        VOL_F = DX_F * DY_F * BOXM_DS%VRES_SIM_F
+        IF (VOL_F <= 0.0_DP) STOP "PATCH_STATE_ACCUM_DELTAS_FROM_W: NON-POSITIVE VOL_F"
+
+        PATCH_STATE%Y_DEL_F(:,:) = 0.0_DP
+
+        DO K = 1, PL_STATE%NNZ_MAP
+            PRINT *, "Processing PL map entry", K, "of", PL_STATE%NNZ_MAP
+            SEG_ID = PL_STATE%MAP_SEG(K)
+            W      = PL_STATE%MAP_W(K)
+
+            ! Find patch row for this (cell_c, cell_f)
+            ROW_IDX = -1
+            DO ROW_IDX = 1, PATCH_STATE%NROWS
+                IF (PATCH_STATE%ROW_CELL_C(ROW_IDX) == PL_STATE%MAP_CELL_C(K) .AND. &
+                    PATCH_STATE%ROW_CELL_F(ROW_IDX) == PL_STATE%MAP_CELL_F(K)) EXIT
+            END DO
+            IF (ROW_IDX > PATCH_STATE%NROWS) CYCLE   ! not found — should not happen
+
+            ! Accumulate plume species into boxm species slots
+            DO PL_ID = 1, PL_STATE%NSPL
+                PRINT *, "  Checking PL segment", SEG_ID, "PL_ID", PL_ID
+                BOXM_ID = PL_STATE%SPECIES_PL_NUM(PL_ID)
+                IF (BOXM_ID < 1 .OR. BOXM_ID > PATCH_STATE%NSBOXM) CYCLE
+                IF (BOXM_STATE%MOL_MASS_C(BOXM_ID) <= 0.0_DP) CYCLE
+                PATCH_STATE%Y_DEL_F(ROW_IDX, BOXM_ID) = PATCH_STATE%Y_DEL_F(ROW_IDX, BOXM_ID) + &
+                    W * PL_STATE%PL_MASS(SEG_ID, PL_ID) / (BOXM_STATE%MOL_MASS_C(BOXM_ID) * VOL_F)
+            END DO
+
+            PRINT *, "Accumulating from PL segment", SEG_ID, "to patch row", ROW_IDX, "with weight", W
+        END DO
+    END SUBROUTINE PATCH_STATE_ACCUM_DELTAS_FROM_W
+
+    SUBROUTINE PATCH_STATE_RUN_FINE_DELTA_CHEM(PATCH_STATE, BOXM_DS, BOXM_STATE)
+        CLASS(PATCH_STATE_TYPE), INTENT(INOUT) :: PATCH_STATE
+        CLASS(BOXM_DS_TYPE),     INTENT(IN)    :: BOXM_DS
+        CLASS(BOXM_STATE_TYPE),  INTENT(IN)    :: BOXM_STATE
+
+        ! Placeholder until row-wise chemistry update is implemented.
+        IF (PATCH_STATE%NROWS <= 0) RETURN
+
+    END SUBROUTINE PATCH_STATE_RUN_FINE_DELTA_CHEM
 
 END MODULE DEFINE_STATE_TYPES
 
@@ -1699,13 +2510,16 @@ MODULE DEFINE_OUTPUT_TYPES
         ! PATCH TABLE DIMLENS
         INTEGER :: NROWS = 0
         INTEGER :: NSOUT = 0
+        INTEGER :: NEXT_ROW = 1
 
         ! PATCH TABLE COORDS
-        INTEGER, ALLOCATABLE :: PATCH_ID(:)
 
         INTEGER, ALLOCATABLE :: TIME_REL_S(:)
         INTEGER, ALLOCATABLE :: TIME_IDX(:)
         INTEGER, ALLOCATABLE :: SPECIES_OUT_NUM(:)
+
+        INTEGER, ALLOCATABLE :: ROW_CELL_C(:)
+        INTEGER, ALLOCATABLE :: ROW_CELL_F(:)
 
         REAL(DP), ALLOCATABLE :: LATITUDE_F(:)
         REAL(DP), ALLOCATABLE :: LONGITUDE_F(:)
@@ -1723,8 +2537,10 @@ MODULE DEFINE_OUTPUT_TYPES
         INTEGER, PRIVATE :: DIMID_SPECIES_OUT = -1
 
         ! PATCH TABLE VAR IDs
+        INTEGER, PRIVATE :: VARID_ROW = -1
         INTEGER, PRIVATE :: VARID_SPECIES_OUT_NUM = -1
-        INTEGER, PRIVATE :: VARID_PATCH_ID = -1
+        INTEGER, PRIVATE :: VARID_ROW_CELL_C = -1
+        INTEGER, PRIVATE :: VARID_ROW_CELL_F = -1
         INTEGER, PRIVATE :: VARID_TIME_REL_S = -1
         INTEGER, PRIVATE :: VARID_TIME_IDX = -1
         INTEGER, PRIVATE :: VARID_LATITUDE_F = -1
@@ -1746,7 +2562,6 @@ MODULE DEFINE_OUTPUT_TYPES
     END TYPE PATCH_TABLE_TYPE
 
 CONTAINS
-
     ! ... PL_OUT METHODS ...
     SUBROUTINE PL_OUT_INIT(PL_OUT, PL_DS, FILEPATH)
         CLASS(PL_OUT_TYPE), INTENT(INOUT) :: PL_OUT
@@ -2180,12 +2995,20 @@ CONTAINS
         STATUS = NF90_INQUIRE_DIMENSION(PATCH_TABLE%PATCH_TABLE_NCID, PATCH_TABLE%DIMID_SPECIES_OUT, LEN=PATCH_TABLE%NSOUT)
         CALL NC_CHECK(STATUS, "NF90_INQUIRE_DIMENSION(species_out)")
 
+        PATCH_TABLE%NEXT_ROW = PATCH_TABLE%NROWS + 1
+
         ! VAR IDS
+        STATUS = NF90_INQ_VARID(PATCH_TABLE%PATCH_TABLE_NCID, "row", PATCH_TABLE%VARID_ROW)
+        CALL NC_CHECK(STATUS, "NF90_INQ_VARID(row)")
+
         STATUS = NF90_INQ_VARID(PATCH_TABLE%PATCH_TABLE_NCID, "species_out_num", PATCH_TABLE%VARID_SPECIES_OUT_NUM)
         CALL NC_CHECK(STATUS, "NF90_INQ_VARID(species_out_num)")
 
-        STATUS = NF90_INQ_VARID(PATCH_TABLE%PATCH_TABLE_NCID, "patch_id", PATCH_TABLE%VARID_PATCH_ID)
-        CALL NC_CHECK(STATUS, "NF90_INQ_VARID(patch_id)")
+        STATUS = NF90_INQ_VARID(PATCH_TABLE%PATCH_TABLE_NCID, "row_cell_c", PATCH_TABLE%VARID_ROW_CELL_C)
+        CALL NC_CHECK(STATUS, "NF90_INQ_VARID(row_cell_c)")
+
+        STATUS = NF90_INQ_VARID(PATCH_TABLE%PATCH_TABLE_NCID, "row_cell_f", PATCH_TABLE%VARID_ROW_CELL_F)
+        CALL NC_CHECK(STATUS, "NF90_INQ_VARID(row_cell_f)")
 
         STATUS = NF90_INQ_VARID(PATCH_TABLE%PATCH_TABLE_NCID, "time_rel_s", PATCH_TABLE%VARID_TIME_REL_S)
         CALL NC_CHECK(STATUS, "NF90_INQ_VARID(time_rel_s)")
@@ -2218,37 +3041,149 @@ CONTAINS
         IF (PATCH_TABLE%NSOUT <= 0) STOP "PATCH_TABLE_READ_STATIC: NSOUT NOT SET"
 
         IF (.NOT. ALLOCATED(PATCH_TABLE%SPECIES_OUT_NUM)) ALLOCATE(PATCH_TABLE%SPECIES_OUT_NUM(PATCH_TABLE%NSOUT))
-        IF (.NOT. ALLOCATED(PATCH_TABLE%PATCH_ID)) ALLOCATE(PATCH_TABLE%PATCH_ID(PATCH_TABLE%NROWS))
         IF (.NOT. ALLOCATED(PATCH_TABLE%TIME_REL_S)) ALLOCATE(PATCH_TABLE%TIME_REL_S(PATCH_TABLE%NROWS))
         IF (.NOT. ALLOCATED(PATCH_TABLE%TIME_IDX)) ALLOCATE(PATCH_TABLE%TIME_IDX(PATCH_TABLE%NROWS))
+        IF (.NOT. ALLOCATED(PATCH_TABLE%ROW_CELL_C)) ALLOCATE(PATCH_TABLE%ROW_CELL_C(PATCH_TABLE%NROWS))
+        IF (.NOT. ALLOCATED(PATCH_TABLE%ROW_CELL_F)) ALLOCATE(PATCH_TABLE%ROW_CELL_F(PATCH_TABLE%NROWS))
         
         STATUS = NF90_GET_VAR(PATCH_TABLE%PATCH_TABLE_NCID, PATCH_TABLE%VARID_SPECIES_OUT_NUM, PATCH_TABLE%SPECIES_OUT_NUM)
         CALL NC_CHECK(STATUS, "NF90_GET_VAR(species_out_num)")
 
+        IF (PATCH_TABLE%NROWS > 0) THEN
+            STATUS = NF90_GET_VAR(PATCH_TABLE%PATCH_TABLE_NCID, PATCH_TABLE%VARID_TIME_REL_S, PATCH_TABLE%TIME_REL_S)
+            CALL NC_CHECK(STATUS, "NF90_GET_VAR(time_rel_s)")
+
+            STATUS = NF90_GET_VAR(PATCH_TABLE%PATCH_TABLE_NCID, PATCH_TABLE%VARID_TIME_IDX, PATCH_TABLE%TIME_IDX)
+            CALL NC_CHECK(STATUS, "NF90_GET_VAR(time_idx)")
+
+            STATUS = NF90_GET_VAR(PATCH_TABLE%PATCH_TABLE_NCID, PATCH_TABLE%VARID_ROW_CELL_C, PATCH_TABLE%ROW_CELL_C)
+            CALL NC_CHECK(STATUS, "NF90_GET_VAR(row_cell_c)")
+
+            STATUS = NF90_GET_VAR(PATCH_TABLE%PATCH_TABLE_NCID, PATCH_TABLE%VARID_ROW_CELL_F, PATCH_TABLE%ROW_CELL_F)
+            CALL NC_CHECK(STATUS, "NF90_GET_VAR(row_cell_f)")
+        END IF
+
     END SUBROUTINE PATCH_TABLE_READ_STATIC
 
-    SUBROUTINE PATCH_TABLE_WRITE(PATCH_TABLE, PATCH_STATE, TIME_IDX)
+    SUBROUTINE PATCH_TABLE_WRITE(PATCH_TABLE, PATCH_STATE, BOXM_DS, BOXM_STATE, TIME_IDX)
         CLASS(PATCH_TABLE_TYPE), INTENT(INOUT) :: PATCH_TABLE
         CLASS(PATCH_STATE_TYPE), INTENT(IN) :: PATCH_STATE
+        CLASS(BOXM_DS_TYPE), INTENT(IN) :: BOXM_DS
+        CLASS(BOXM_STATE_TYPE), INTENT(IN) :: BOXM_STATE
         
         INTEGER, INTENT(IN) :: TIME_IDX
-        INTEGER :: STATUS, OUT_I
+        INTEGER :: STATUS, OUT_I, I, ROW_IDX, CELL_C, CELL_F
+        INTEGER :: NX_F, NY_F, NZ_F, IX_F, IY_F, IZ_F, REM_F
+        INTEGER :: S_OUT, BOXM_ID_S
+        INTEGER, ALLOCATABLE :: ROW_IDS(:)
+        INTEGER, ALLOCATABLE :: TIME_IDX_ROWS(:)
+        REAL(DP), ALLOCATABLE :: LAT_ROWS(:), LON_ROWS(:), ALT_ROWS(:)
+        REAL(DP), ALLOCATABLE :: Y_DEL_F_OUT(:,:)
+        REAL(DP) :: HRES_F_DEG, DZ_F
+        REAL(DP) :: LAT_C, LON_C, ALT_C
 
         IF (.NOT. PATCH_TABLE%IS_OPEN) STOP "PATCH_TABLE_WRITE: FILE NOT OPEN (CALL INIT FIRST)"
         IF (PATCH_TABLE%NSOUT <= 0) STOP "PATCH_TABLE_WRITE: NSOUT NOT SET"
 
         ! WRITE PATCH TABLE VARS
+        IF (.NOT. ALLOCATED(PATCH_STATE%TIME_REL_S)) RETURN
         IF (.NOT. ALLOCATED(PATCH_STATE%Y_DEL_F)) RETURN
         IF (PATCH_STATE%NROWS <= 0) RETURN
         IF (PATCH_STATE%ROW_IDX <= 0) RETURN
 
-        OUT_I = MINLOC(ABS(PATCH_TABLE%TIME_IDX - TIME_IDX),1)
+        OUT_I = PATCH_TABLE%NEXT_ROW
+        NX_F = MAX(1, NINT(BOXM_DS%HRES_SIM_C / BOXM_DS%HRES_SIM_F))
+        NY_F = NX_F
+        NZ_F = MAX(1, NINT(BOXM_DS%VRES_SIM_C / BOXM_DS%VRES_SIM_F))
+        HRES_F_DEG = BOXM_DS%HRES_SIM_C / REAL(NX_F, DP)
+        DZ_F = BOXM_DS%VRES_SIM_C / REAL(NZ_F, DP)
 
-        IF (PATCH_TABLE%TIME_IDX(OUT_I) == TIME_IDX) THEN
-            STATUS = NF90_PUT_VAR(PATCH_TABLE%PATCH_TABLE_NCID, PATCH_TABLE%VARID_Y_DEL_F, PATCH_STATE%Y_DEL_F, &
-                            START=[1, PATCH_STATE%ROW_IDX], COUNT=[PATCH_TABLE%NSOUT, PATCH_STATE%NROWS])
-            CALL NC_CHECK(STATUS, "NF90_PUT_VAR(Y_del_f)")
+        ALLOCATE(ROW_IDS(PATCH_STATE%NROWS))
+        ALLOCATE(TIME_IDX_ROWS(PATCH_STATE%NROWS))
+        ALLOCATE(LAT_ROWS(PATCH_STATE%NROWS))
+        ALLOCATE(LON_ROWS(PATCH_STATE%NROWS))
+        ALLOCATE(ALT_ROWS(PATCH_STATE%NROWS))
+        ROW_IDS(:) = [(OUT_I + I - 1, I=1, PATCH_STATE%NROWS)]
+        TIME_IDX_ROWS(:) = TIME_IDX
+
+        DO ROW_IDX = 1, PATCH_STATE%NROWS
+            CELL_C = PATCH_STATE%ROW_CELL_C(ROW_IDX)
+            CELL_F = PATCH_STATE%ROW_CELL_F(ROW_IDX)
+
+            LAT_C = BOXM_STATE%LATITUDE_C(CELL_C)
+            LON_C = BOXM_STATE%LONGITUDE_C(CELL_C)
+            ALT_C = BOXM_STATE%ALTITUDE_C(CELL_C)
+
+            IZ_F = (CELL_F - 1) / (NX_F * NY_F) + 1
+            REM_F = MOD(CELL_F - 1, NX_F * NY_F)
+            IY_F = REM_F / NX_F + 1
+            IX_F = MOD(REM_F, NX_F) + 1
+
+            LAT_ROWS(ROW_IDX) = LAT_C - 0.5_DP * BOXM_DS%HRES_SIM_C + (REAL(IY_F, DP) - 0.5_DP) * HRES_F_DEG
+            LON_ROWS(ROW_IDX) = LON_C - 0.5_DP * BOXM_DS%HRES_SIM_C + (REAL(IX_F, DP) - 0.5_DP) * HRES_F_DEG
+            ALT_ROWS(ROW_IDX) = ALT_C - 0.5_DP * BOXM_DS%VRES_SIM_C + (REAL(IZ_F, DP) - 0.5_DP) * DZ_F
+        END DO
+
+        STATUS = NF90_PUT_VAR(PATCH_TABLE%PATCH_TABLE_NCID, PATCH_TABLE%VARID_ROW, ROW_IDS, &
+                START=[OUT_I], COUNT=[PATCH_STATE%NROWS])
+        CALL NC_CHECK(STATUS, "NF90_PUT_VAR(row)")
+
+        STATUS = NF90_PUT_VAR(PATCH_TABLE%PATCH_TABLE_NCID, PATCH_TABLE%VARID_TIME_REL_S, PATCH_STATE%TIME_REL_S, &
+                        START=[OUT_I], COUNT=[PATCH_STATE%NROWS])
+        CALL NC_CHECK(STATUS, "NF90_PUT_VAR(time_rel_s)")
+
+        STATUS = NF90_PUT_VAR(PATCH_TABLE%PATCH_TABLE_NCID, PATCH_TABLE%VARID_TIME_IDX, TIME_IDX_ROWS, &
+                        START=[OUT_I], COUNT=[PATCH_STATE%NROWS])
+        CALL NC_CHECK(STATUS, "NF90_PUT_VAR(time_idx)")
+
+        STATUS = NF90_PUT_VAR(PATCH_TABLE%PATCH_TABLE_NCID, PATCH_TABLE%VARID_ROW_CELL_C, PATCH_STATE%ROW_CELL_C, &
+                START=[OUT_I], COUNT=[PATCH_STATE%NROWS])
+        CALL NC_CHECK(STATUS, "NF90_PUT_VAR(row_cell_c)")
+
+        STATUS = NF90_PUT_VAR(PATCH_TABLE%PATCH_TABLE_NCID, PATCH_TABLE%VARID_ROW_CELL_F, PATCH_STATE%ROW_CELL_F, &
+                START=[OUT_I], COUNT=[PATCH_STATE%NROWS])
+        CALL NC_CHECK(STATUS, "NF90_PUT_VAR(row_cell_f)")
+
+        STATUS = NF90_PUT_VAR(PATCH_TABLE%PATCH_TABLE_NCID, PATCH_TABLE%VARID_LATITUDE_F, LAT_ROWS, &
+                START=[OUT_I], COUNT=[PATCH_STATE%NROWS])
+        CALL NC_CHECK(STATUS, "NF90_PUT_VAR(latitude_f)")
+
+        STATUS = NF90_PUT_VAR(PATCH_TABLE%PATCH_TABLE_NCID, PATCH_TABLE%VARID_LONGITUDE_F, LON_ROWS, &
+                START=[OUT_I], COUNT=[PATCH_STATE%NROWS])
+        CALL NC_CHECK(STATUS, "NF90_PUT_VAR(longitude_f)")
+
+        STATUS = NF90_PUT_VAR(PATCH_TABLE%PATCH_TABLE_NCID, PATCH_TABLE%VARID_ALTITUDE_F, ALT_ROWS, &
+                START=[OUT_I], COUNT=[PATCH_STATE%NROWS])
+        CALL NC_CHECK(STATUS, "NF90_PUT_VAR(altitude_f)")
+
+        ! Build correctly transposed output array: (NSOUT, NROWS) in Fortran col-major
+        ! so that species varies fastest, matching the netcdf variable layout (species_out, row).
+        ! PATCH_STATE%Y_DEL_F is (NROWS, NSBOXM); we must select the right BOXM column per
+        ! output species using PATCH_TABLE%SPECIES_OUT_NUM.
+        ALLOCATE(Y_DEL_F_OUT(PATCH_TABLE%NSOUT, PATCH_STATE%NROWS))
+        Y_DEL_F_OUT(:,:) = 0.0_DP
+        IF (ALLOCATED(PATCH_TABLE%SPECIES_OUT_NUM)) THEN
+            DO S_OUT = 1, PATCH_TABLE%NSOUT
+                BOXM_ID_S = PATCH_TABLE%SPECIES_OUT_NUM(S_OUT)
+                IF (BOXM_ID_S >= 1 .AND. BOXM_ID_S <= PATCH_STATE%NSBOXM) THEN
+                    Y_DEL_F_OUT(S_OUT, :) = PATCH_STATE%Y_DEL_F(:, BOXM_ID_S)
+                END IF
+            END DO
         END IF
+
+        STATUS = NF90_PUT_VAR(PATCH_TABLE%PATCH_TABLE_NCID, PATCH_TABLE%VARID_Y_DEL_F, Y_DEL_F_OUT, &
+                        START=[1, OUT_I], COUNT=[PATCH_TABLE%NSOUT, PATCH_STATE%NROWS])
+        CALL NC_CHECK(STATUS, "NF90_PUT_VAR(Y_del_f)")
+        DEALLOCATE(Y_DEL_F_OUT)
+
+        PATCH_TABLE%NEXT_ROW = PATCH_TABLE%NEXT_ROW + PATCH_STATE%NROWS
+        PATCH_TABLE%NROWS = PATCH_TABLE%NEXT_ROW - 1
+
+        DEALLOCATE(ROW_IDS)
+        DEALLOCATE(TIME_IDX_ROWS)
+        DEALLOCATE(LAT_ROWS)
+        DEALLOCATE(LON_ROWS)
+        DEALLOCATE(ALT_ROWS)
 
     END SUBROUTINE PATCH_TABLE_WRITE
 
@@ -2357,7 +3292,10 @@ CONTAINS
         CALL PL_STATE%ADVANCE_GEOM(PL_DS, BOXM_DS, TIME_IDX)
         CALL PL_STATE%ADVANCE_MASS(FL_DS, PL_DS, TIME_IDX)
         CALL PL_STATE%BUILD_ACTIVE(BOXM_STATE)
-        ! CALL PL_STATE%PROJECT_TO_GRID(PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE)
+        CALL PL_STATE%PROJECT_TO_GRID(PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE)
+
+        CALL PATCH_STATE%BUILD_ROWS_FROM_W(PL_STATE, BOXM_STATE)
+        CALL PATCH_STATE%ACCUM_DELTAS_FROM_W(PL_STATE, BOXM_DS, BOXM_STATE)
 
     END SUBROUTINE PROJECT_PLUMES_TO_GRID
 
@@ -2373,7 +3311,10 @@ CONTAINS
 
         INTEGER, INTENT(IN) :: TIME_IDX
 
-        ! IMPLEMENT RUN_CHEM LOGIC HERE
+        CALL BOXM_STATE%ADVANCE_MET(BOXM_DS, TIME_IDX)
+        CALL BOXM_STATE%RUN_COARSE_BG_CHEM(BOXM_DS)
+        CALL PATCH_STATE%RUN_FINE_DELTA_CHEM(BOXM_DS, BOXM_STATE)
+        CALL BOXM_STATE%RUN_COARSE_DELTA_CHEM(BOXM_DS, PATCH_STATE)
 
     END SUBROUTINE RUN_CHEM
 
@@ -2391,9 +3332,34 @@ CONTAINS
 
         INTEGER, INTENT(IN) :: TIME_IDX
 
-        ! IMPLEMENT BACKPROJECT_GRID_TO_PLUMES LOGIC HERE
+        CALL PL_STATE%BACKPROJECT_FROM_GRID(PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
 
     END SUBROUTINE BACKPROJECT_GRID_TO_PLUMES
+
+    SUBROUTINE WRITE_OUTPUTS(PL_OUT, BOXM_OUT, PATCH_TABLE, PL_DS, BOXM_DS, PL_STATE, BOXM_STATE, PATCH_STATE, TIME_IDX)
+        USE DEFINE_INPUT_TYPES
+        USE DEFINE_OUTPUT_TYPES
+        USE DEFINE_STATE_TYPES
+        IMPLICIT NONE
+
+        CLASS(PL_DS_TYPE),       INTENT(IN)    :: PL_DS
+        CLASS(BOXM_DS_TYPE),     INTENT(IN)    :: BOXM_DS
+
+        CLASS(PL_OUT_TYPE),      INTENT(INOUT) :: PL_OUT
+        CLASS(BOXM_OUT_TYPE),    INTENT(INOUT) :: BOXM_OUT
+        CLASS(PATCH_TABLE_TYPE), INTENT(INOUT) :: PATCH_TABLE
+
+        CLASS(PL_STATE_TYPE),    INTENT(INOUT) :: PL_STATE
+        CLASS(BOXM_STATE_TYPE),  INTENT(INOUT) :: BOXM_STATE
+        CLASS(PATCH_STATE_TYPE), INTENT(INOUT) :: PATCH_STATE
+
+        INTEGER, INTENT(IN) :: TIME_IDX
+
+        CALL PL_OUT%WRITE(PL_STATE, PL_DS, TIME_IDX)
+        CALL BOXM_OUT%WRITE(BOXM_STATE, TIME_IDX)
+        CALL PATCH_TABLE%WRITE(PATCH_STATE, BOXM_DS, BOXM_STATE, TIME_IDX)
+
+    END SUBROUTINE WRITE_OUTPUTS
 
     SUBROUTINE RESET_STATES(PL_STATE, BOXM_STATE, PATCH_STATE)
         USE HELPERS
@@ -2417,7 +3383,8 @@ CONTAINS
         IF (ALLOCATED(PL_STATE%SIGMA_YY)) PL_STATE%SIGMA_YY(:) = 0.0_DP
         IF (ALLOCATED(PL_STATE%SIGMA_YZ)) PL_STATE%SIGMA_YZ(:) = 0.0_DP
         IF (ALLOCATED(PL_STATE%SIGMA_ZZ)) PL_STATE%SIGMA_ZZ(:) = 0.0_DP
-        IF (ALLOCATED(PL_STATE%PL_MASS)) PL_STATE%PL_MASS(:,:) = 0.0_DP
+        ! Keep carried plume mass between timesteps; it is updated by BACKPROJECT_GRID_TO_PLUMES
+        ! and only newly emitted segments are reset in PL_STATE_ADVANCE_MASS.
 
         IF (ALLOCATED(PL_STATE%Y_HALF)) PL_STATE%Y_HALF(:,:) = 0.0_DP
         IF (ALLOCATED(PL_STATE%Z_HALF)) PL_STATE%Z_HALF(:,:) = 0.0_DP
@@ -2433,35 +3400,12 @@ CONTAINS
         IF (ALLOCATED(BOXM_STATE%Y_DEL_C)) BOXM_STATE%Y_DEL_C(:,:) = 0.0_DP
         IF (ALLOCATED(BOXM_STATE%ACTIVE_FLAG)) BOXM_STATE%ACTIVE_FLAG(:) = .FALSE.
 
-        IF (ALLOCATED(PATCH_STATE%PATCH_ID)) PATCH_STATE%PATCH_ID(:) = 0
         IF (ALLOCATED(PATCH_STATE%TIME_REL_S)) PATCH_STATE%TIME_REL_S(:) = 0
+        IF (ALLOCATED(PATCH_STATE%ROW_CELL_C)) PATCH_STATE%ROW_CELL_C(:) = 0
+        IF (ALLOCATED(PATCH_STATE%ROW_CELL_F)) PATCH_STATE%ROW_CELL_F(:) = 0
         IF (ALLOCATED(PATCH_STATE%Y_DEL_F)) PATCH_STATE%Y_DEL_F(:,:) = 0.0_DP
 
     END SUBROUTINE RESET_STATES
-
-    SUBROUTINE WRITE_OUTPUTS(PL_OUT, BOXM_OUT, PATCH_TABLE, PL_DS, PL_STATE, BOXM_STATE, PATCH_STATE, TIME_IDX)
-        USE DEFINE_INPUT_TYPES
-        USE DEFINE_OUTPUT_TYPES
-        USE DEFINE_STATE_TYPES
-        IMPLICIT NONE
-
-        CLASS(PL_DS_TYPE),       INTENT(IN)    :: PL_DS
-
-        CLASS(PL_OUT_TYPE),      INTENT(INOUT) :: PL_OUT
-        CLASS(BOXM_OUT_TYPE),    INTENT(INOUT) :: BOXM_OUT
-        CLASS(PATCH_TABLE_TYPE), INTENT(INOUT) :: PATCH_TABLE
-
-        CLASS(PL_STATE_TYPE),    INTENT(INOUT) :: PL_STATE
-        CLASS(BOXM_STATE_TYPE),  INTENT(INOUT) :: BOXM_STATE
-        CLASS(PATCH_STATE_TYPE), INTENT(INOUT) :: PATCH_STATE
-
-        INTEGER, INTENT(IN) :: TIME_IDX
-
-        CALL PL_OUT%WRITE(PL_STATE, PL_DS, TIME_IDX)
-        CALL BOXM_OUT%WRITE(BOXM_STATE, TIME_IDX)
-        CALL PATCH_TABLE%WRITE(PATCH_STATE, TIME_IDX)
-
-    END SUBROUTINE WRITE_OUTPUTS
 
     SUBROUTINE CLOSE_DATASETS(FL_DS, PL_DS, BOXM_DS, PL_OUT, BOXM_OUT, PATCH_TABLE)
         USE DEFINE_INPUT_TYPES
@@ -2488,7 +3432,6 @@ CONTAINS
 
 END MODULE BOXM_RUN_UTILS
 
-
 PROGRAM BOXM_RUN
     USE BOXM_RUN_UTILS
     USE DEFINE_INPUT_TYPES
@@ -2512,6 +3455,7 @@ PROGRAM BOXM_RUN
     CHARACTER(LEN=1024)    :: DATA_PATH
 
     INTEGER :: TIME_IDX
+    REAL :: PROG_PCT
 
     ! RETRIEVE JOB ID FROM COMMAND LINE ARG
     CALL GETARG(1, JOB_ID)
@@ -2522,6 +3466,9 @@ PROGRAM BOXM_RUN
 
     ! MAIN SIMULATION LOOP OVER BOXM TIME STEPS
     DO TIME_IDX = 1, BOXM_DS%NTBOXM
+
+        PROG_PCT = 100.0 * REAL(TIME_IDX) / REAL(MAX(1, BOXM_DS%NTBOXM))
+        WRITE(*,'(A,I0,A,I0,A,F6.2,A)') "SIM progress: TIME_IDX ", TIME_IDX, " / ", BOXM_DS%NTBOXM, " (", PROG_PCT, "%)"
 
         CALL RESET_STATES(PL_STATE, BOXM_STATE, PATCH_STATE)
 
@@ -2535,7 +3482,7 @@ PROGRAM BOXM_RUN
         CALL BACKPROJECT_GRID_TO_PLUMES(PL_DS, BOXM_DS, PL_STATE, BOXM_STATE, PATCH_STATE, TIME_IDX)
 
         ! WRITE OUTPUTS
-        CALL WRITE_OUTPUTS(PL_OUT, BOXM_OUT, PATCH_TABLE, PL_DS, PL_STATE, BOXM_STATE, PATCH_STATE, TIME_IDX)
+        CALL WRITE_OUTPUTS(PL_OUT, BOXM_OUT, PATCH_TABLE, PL_DS, BOXM_DS, PL_STATE, BOXM_STATE, PATCH_STATE, TIME_IDX)
     
     END DO
 
@@ -2543,6 +3490,65 @@ PROGRAM BOXM_RUN
     
 END PROGRAM BOXM_RUN
 
+
+! MODULE RUN_CHEM
+!     USE NETCDF
+!     IMPLICIT NONE
+
+!     INTEGER :: IOSTAT
+!     REAL :: PI, TIME1, DTS
+
+!     INTEGER :: NTS, NCELL, NS, NS_OUT
+!     INTEGER :: NTC, NPC, NPP, NFL, NEMI
+!     INTEGER :: S, CELL, TS
+!     INTEGER :: I, SPECIES_INDEX, JOBID 
+
+!     INTEGER :: NCID, DIMID_TIME, DIMID_CELL, DIMID_NS, DIMID_NEMI
+!     INTEGER, PRIVATE :: VARID_TIME, VARID_LEVEL, VARID_LON, VARID_LAT, VARID_PRESSURE, VARID_ALT
+!     INTEGER, PRIVATE :: VARID_SPECIES, VARID_EMI_SPECIES, VARID_BG_CHEM
+!     INTEGER, PRIVATE :: VARID_TEMP, VARID_M, VARID_H2O, VARID_O2, VARID_N2, VARID_SZA, VARID_EMI
+    
+!     INTEGER :: VARID_Y, VARID_J, VARID_DJ, VARID_RC, VARID_FL
+!     INTEGER, PRIVATE :: IERR
+
+!     CHARACTER(LEN=256) :: JOB_ID
+
+!     ! DEFINE BOXM INPUTS
+!     DOUBLE PRECISION, ALLOCATABLE :: TIME(:), LEVEL(:), LON(:), LAT(:), TEMP(:), PRESSURE(:), ALT(:)
+!     CHARACTER(LEN=80), ALLOCATABLE :: SPECIES(:), EMI_SPECIES(:)
+!     DOUBLE PRECISION, ALLOCATABLE :: EMI(:,:), EMIP(:,:), BG_CHEM(:,:)
+!     DOUBLE PRECISION, ALLOCATABLE :: M(:), H2O(:), O2(:), N2(:), SZA(:)
+
+!     DOUBLE PRECISION, ALLOCATABLE :: Y(:,:), YP(:,:), RC(:,:), J(:,:), DJ(:,:), FL(:,:)
+!     DOUBLE PRECISION, ALLOCATABLE :: SOA(:), MOM(:), BR01(:), RO2(:), P(:), L(:), Y_PPB(:,:), EMI_PPB(:,:)
+!     INTEGER, ALLOCATABLE :: SPECIES_OUT_NUM(:)
+
+!     ! CHEMCO
+!     ! SIMPLE RATE COEFFICIENT SCALARS
+!     DOUBLE PRECISION, PRIVATE :: KRO2NO3,KDEC
+
+!     ! COMPLEX RATE COEFFICIENT SCALARS
+!     DOUBLE PRECISION, PRIVATE :: FCC,FCD,FC1,K2I,FC2,FC7,FC8,K9I,FC9,FC10,KI,K13I
+!     DOUBLE PRECISION, PRIVATE :: FC13,FC14,FC15,FC16,FCX
+
+!     ! SIMPLE RATE COEFFICIENT CELLS
+!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: KRO2NO,KAPNO,KRO2HO2,KAPHO2,KNO3AL,KALKOXY
+!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: KALKPXY,KIN,KOUT2604,KOUT4608,KOUT2631
+!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: KOUT2635,KOUT4610,KOUT2605,KOUT2630,KOUT2629
+!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: KOUT2632,KOUT2637,KOUT3612,KOUT3613,KOUT3442
+
+!     ! COMPLEX RATE COEFFICIENT CELLS
+!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: KC0,KCI,KRC,FC,KFPAN,KD0,KDI,KRD,FD,KBPAN,K10
+!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: K1I,KR1,F1,KMT01,K20,KR2,Fa2,KMT02,K30,K3I
+!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: KR3,FC3,F3,KMT03,K40,K4I,KR4,FC4,Fa4,KMT04
+!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: KMT05,KMT06,K70,K7I,KR7,F7,KMT07,K80,K8I,KR8
+!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: F8,KMT08,K90,KR9,F9,KMT09,K100,K10I,KR10,F10
+!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: KMT10,K1,K3,K4,K2,KMT11,K0,F,KMT12,K130
+!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: KR13,F13,KMT13,K140,K14I,KR14,F14,KMT14,K150
+!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: K15I,KR15,F15,KMT15,K160,K16I,KR16,F16,KMT16
+!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: K170,K17I,KR17,FC17,F17,KMT17
+
+! CONTAINS 
 
 !     SUBROUTINE INIT_VARS
 !         IMPLICIT NONE
@@ -3043,267 +4049,6 @@ END PROGRAM BOXM_RUN
 !         END IF
     
 !     END SUBROUTINE INIT_VARS
-
-!     SUBROUTINE GET_VARIDS
-!         IMPLICIT NONE
-!         !!! PRE-INT !!!
-!         ! TIME
-!         IERR = NF90_INQ_VARID(NCID, 'time', VARID_TIME)
-!         CALL CHECK(IERR, 'ERROR: CANNOT GET TIME VARID')
-!         IF (.NOT. ALLOCATED(TIME)) THEN
-!             ALLOCATE(TIME(NTS))
-!         END IF
-!         ! LEVEL
-!         IERR = NF90_INQ_VARID(NCID, 'level', VARID_LEVEL)
-!         CALL CHECK(IERR, 'ERROR: CANNOT GET LEVEL VARID')
-!         IF (.NOT. ALLOCATED(LEVEL)) THEN
-!             ALLOCATE(LEVEL(NCELL))
-!         END IF
-!         ! LON
-!         IERR = NF90_INQ_VARID(NCID, 'longitude', VARID_LON)
-!         CALL CHECK(IERR, 'ERROR: CANNOT GET LON VARID')
-!         IF (.NOT. ALLOCATED(LON)) THEN
-!             ALLOCATE(LON(NCELL))
-!         END IF
-!         ! LAT
-!         IERR = NF90_INQ_VARID(NCID, 'latitude', VARID_LAT)
-!         CALL CHECK(IERR, 'ERROR: CANNOT GET LAT VARID')
-!         IF (.NOT. ALLOCATED(LAT)) THEN
-!             ALLOCATE(LAT(NCELL))
-!         END IF
-!         ! PRESSURE
-!         IERR = NF90_INQ_VARID(NCID, 'air_pressure', VARID_PRESSURE)
-!         CALL CHECK(IERR, 'ERROR: CANNOT GET PRESSURE VARID')
-!         IF (.NOT. ALLOCATED(PRESSURE)) THEN
-!             ALLOCATE(PRESSURE(NCELL))
-!         END IF
-!         ! ALTITUDE
-!         IERR = NF90_INQ_VARID(NCID, 'altitude', VARID_ALT)
-!         CALL CHECK(IERR, 'ERROR: CANNOT GET ALT VARID')
-!         IF (.NOT. ALLOCATED(ALT)) THEN
-!             ALLOCATE(ALT(NCELL))
-!         END IF
-!         ! BG_CHEM
-!         IERR = NF90_INQ_VARID(NCID, 'bg_chem', VARID_BG_CHEM)
-!         CALL CHECK(IERR, 'ERROR: CANNOT GET BG_CHEM VARID')
-!         IF (.NOT. ALLOCATED(BG_CHEM)) THEN
-!             ALLOCATE(BG_CHEM(NCELL,NS))
-!         END IF
-
-!         !!! INT !!!
-!         ! TEMP
-!         IERR = NF90_INQ_VARID(NCID, 'air_temperature', VARID_TEMP)
-!         CALL CHECK(IERR, 'ERROR: CANNOT GET TEMP VARID')
-!         IF (.NOT. ALLOCATED(TEMP)) THEN
-!             ALLOCATE(TEMP(NCELL))
-!         END IF
-!         ! M
-!         IERR = NF90_INQ_VARID(NCID, 'M', VARID_M)
-!         CALL CHECK(IERR, 'ERROR: CANNOT GET M VARID')
-!         IF (.NOT. ALLOCATED(M)) THEN
-!             ALLOCATE(M(NCELL))
-!         END IF
-!         ! H2O
-!         IERR = NF90_INQ_VARID(NCID, 'H2O', VARID_H2O)
-!         CALL CHECK(IERR, 'ERROR: CANNOT GET H2O VARID')
-!         IF (.NOT. ALLOCATED(H2O)) THEN
-!             ALLOCATE(H2O(NCELL))
-!         END IF
-!         ! O2
-!         IERR = NF90_INQ_VARID(NCID, 'O2', VARID_O2)
-!         CALL CHECK(IERR, 'ERROR: CANNOT GET O2 VARID')
-!         IF (.NOT. ALLOCATED(O2)) THEN
-!             ALLOCATE(O2(NCELL))
-!         END IF
-!         ! N2
-!         IERR = NF90_INQ_VARID(NCID, 'N2', VARID_N2)
-!         CALL CHECK(IERR, 'ERROR: CANNOT GET N2 VARID')
-!         IF (.NOT. ALLOCATED(N2)) THEN
-!             ALLOCATE(N2(NCELL))
-!         END IF
-!         ! SZA
-!         IERR = NF90_INQ_VARID(NCID, 'sza', VARID_SZA)
-!         CALL CHECK(IERR, 'ERROR: CANNOT GET SZA VARID')
-!         IF (.NOT. ALLOCATED(SZA)) THEN
-!             ALLOCATE(SZA(NCELL))
-!         END IF
-!         ! EMI
-!         IERR = NF90_INQ_VARID(NCID, 'emi', VARID_EMI)
-!         CALL CHECK(IERR, 'ERROR: CANNOT GET EMI VARID')
-!         IF (.NOT. ALLOCATED(EMI)) THEN
-!             ALLOCATE(EMI(NCELL,NEMI))
-!         END IF
-!         ! Y
-!         IERR = NF90_INQ_VARID(NCID, 'Y', VARID_Y)
-!         CALL CHECK(IERR, 'ERROR: CANNOT GET Y VARID')
-!         IF (.NOT. ALLOCATED(Y)) THEN
-!             ALLOCATE(Y(NCELL,NS))
-!         END IF
-!         ! J
-!         IERR = NF90_INQ_VARID(NCID, 'J', VARID_J)
-!         CALL CHECK(IERR, 'ERROR: CANNOT GET J VARID')
-!         IF (.NOT. ALLOCATED(J)) THEN
-!             ALLOCATE(J(NCELL,NPP))
-!         END IF
-!         ! DJ
-!         IERR = NF90_INQ_VARID(NCID, 'DJ', VARID_DJ)
-!         CALL CHECK(IERR, 'ERROR: CANNOT GET DJ VARID')
-!         IF (.NOT. ALLOCATED(DJ)) THEN
-!             ALLOCATE(DJ(NCELL,NPC))
-!         END IF
-!         ! RC
-!         IERR = NF90_INQ_VARID(NCID, 'RC', VARID_RC)
-!         CALL CHECK(IERR, 'ERROR: CANNOT GET RC VARID')
-!         IF (.NOT. ALLOCATED(RC)) THEN
-!             ALLOCATE(RC(NCELL,NTC))
-!         END IF
-!         ! FL
-!         ! IERR = NF90_INQ_VARID(NCID, 'FL', VARID_FL)
-!         ! CALL CHECK(IERR, 'ERROR: CANNOT GET FL VARID')
-!         ! IF (.NOT. ALLOCATED(FL)) THEN
-!         !     ALLOCATE(FL(NCELL,NFL))
-!         ! END IF
-
-!     END SUBROUTINE GET_VARIDS
-
-!     SUBROUTINE GET_PRE_INT_VARS
-!         IMPLICIT NONE
-!         ! ALLOCATE AND POPULATE CONSTANT INPUT VARIABLES
-        
-!         IERR = NF90_GET_VAR(NCID, VARID_TIME, TIME)
-!         CALL CHECK(IERR, 'ERROR: CANNOT GET TIME ARRAY')
-
-!         IERR = NF90_GET_VAR(NCID, VARID_LEVEL, LEVEL)
-!         CALL CHECK(IERR, 'ERROR: CANNOT GET LEVEL ARRAY')
-        
-!         IERR = NF90_GET_VAR(NCID, VARID_LON, LON)
-!         CALL CHECK(IERR, 'ERROR: CANNOT GET LON ARRAY')
-        
-!         IERR = NF90_GET_VAR(NCID, VARID_LAT, LAT)
-!         CALL CHECK(IERR, 'ERROR: CANNOT GET LAT ARRAY')
-        
-!         IERR = NF90_GET_VAR(NCID, VARID_PRESSURE, PRESSURE)
-!         CALL CHECK(IERR, 'ERROR: CANNOT GET PRESSURE ARRAY')
-        
-!         IERR = NF90_GET_VAR(NCID, VARID_ALT, ALT)
-!         CALL CHECK(IERR, 'ERROR: CANNOT GET ALT ARRAY')
-        
-!         IERR = NF90_GET_VAR(NCID, VARID_BG_CHEM, BG_CHEM, (/1, 1/), (/NCELL, NS/))
-!         CALL CHECK(IERR, 'ERROR: CANNOT GET BG_CHEM ARRAY')
-
-!     END SUBROUTINE GET_PRE_INT_VARS
-
-!     ! INTEGRATION
-!     SUBROUTINE GET_INT_VARS(TS)
-!         IMPLICIT NONE
-!         INTEGER :: TS
-!         ! ALLOCATE AND POPULATE TIME-DEPENDENT INPUT VARIABLES
-!         IERR = NF90_GET_VAR(NCID, VARID_TEMP, TEMP, (/1, TS/), (/NCELL, 1/))
-!         CALL CHECK(IERR, 'ERROR: CANNOT GET TEMP ARRAY')
-        
-!         IERR = NF90_GET_VAR(NCID, VARID_M, M, (/1, TS/), (/NCELL, 1/))
-!         CALL CHECK(IERR, 'ERROR: CANNOT GET M ARRAY')
-        
-!         IERR = NF90_GET_VAR(NCID, VARID_H2O, H2O, (/1, TS/), (/NCELL, 1/))
-!         CALL CHECK(IERR, 'ERROR: CANNOT GET H2O ARRAY')
-        
-!         IERR = NF90_GET_VAR(NCID, VARID_O2, O2, (/1, TS/), (/NCELL, 1/)) 
-!         CALL CHECK(IERR, 'ERROR: CANNOT GET O2 ARRAY')
-        
-!         IERR = NF90_GET_VAR(NCID, VARID_N2, N2, (/1, TS/), (/NCELL, 1/))
-!         CALL CHECK(IERR, 'ERROR: CANNOT GET N2 ARRAY')
-        
-!         IERR = NF90_GET_VAR(NCID, VARID_SZA, SZA, (/1, TS/), (/NCELL, 1/))
-!         CALL CHECK(IERR, 'ERROR: CANNOT GET SZA ARRAY')
-        
-!         ! ASSIGN BG_CHEM TO FIRST TIMESTEP OF Y
-!         IF (TS == 1) THEN
-!             Y(:,:) = BG_CHEM(:,:) 
-!             DO S = 1, NS
-!                 Y(:,S) = Y(:,S) * M(:)/1E+09 ! CONVERT FROM PPB TO MOL/CM3 FOR KINETICS
-!             END DO
-!         END IF
-
-!         ! SET PREVIOUS EMI TO EMIP
-!         EMIP(:,:) = EMI(:,:)
-!         IERR = NF90_GET_VAR(NCID, VARID_EMI, EMI, (/1, 1, TS/), (/NCELL, NEMI, 1/))
-!         CALL CHECK(IERR, 'ERROR: CANNOT GET EMI ARRAY')
-
-!     END SUBROUTINE GET_INT_VARS
-
-!     ! POST INTEGRATION
-!     SUBROUTINE DEALLOCATE
-!         IMPLICIT NONE
-        
-!         IERR = NF90_CLOSE(NCID)
-!         CALL CHECK(IERR, 'NCID CLOSE FAILED')
-
-!     END SUBROUTINE DEALLOCATE
-
-! END MODULE FILE_IO
-
-! MODULE PLUME_TO_GRID
-! CONTAINS
-! END MODULE PLUME_TO_GRID
-
-! MODULE RUN_CHEM
-!     USE NETCDF
-!     IMPLICIT NONE
-
-!     INTEGER :: IOSTAT
-!     REAL :: PI, TIME1, DTS
-
-!     INTEGER :: NTS, NCELL, NS, NS_OUT
-!     INTEGER :: NTC, NPC, NPP, NFL, NEMI
-!     INTEGER :: S, CELL, TS
-!     INTEGER :: I, SPECIES_INDEX, JOBID 
-
-!     INTEGER :: NCID, DIMID_TIME, DIMID_CELL, DIMID_NS, DIMID_NEMI
-!     INTEGER, PRIVATE :: VARID_TIME, VARID_LEVEL, VARID_LON, VARID_LAT, VARID_PRESSURE, VARID_ALT
-!     INTEGER, PRIVATE :: VARID_SPECIES, VARID_EMI_SPECIES, VARID_BG_CHEM
-!     INTEGER, PRIVATE :: VARID_TEMP, VARID_M, VARID_H2O, VARID_O2, VARID_N2, VARID_SZA, VARID_EMI
-    
-!     INTEGER :: VARID_Y, VARID_J, VARID_DJ, VARID_RC, VARID_FL
-!     INTEGER, PRIVATE :: IERR
-
-!     CHARACTER(LEN=256) :: JOB_ID
-
-!     ! DEFINE BOXM INPUTS
-!     DOUBLE PRECISION, ALLOCATABLE :: TIME(:), LEVEL(:), LON(:), LAT(:), TEMP(:), PRESSURE(:), ALT(:)
-!     CHARACTER(LEN=80), ALLOCATABLE :: SPECIES(:), EMI_SPECIES(:)
-!     DOUBLE PRECISION, ALLOCATABLE :: EMI(:,:), EMIP(:,:), BG_CHEM(:,:)
-!     DOUBLE PRECISION, ALLOCATABLE :: M(:), H2O(:), O2(:), N2(:), SZA(:)
-
-!     DOUBLE PRECISION, ALLOCATABLE :: Y(:,:), YP(:,:), RC(:,:), J(:,:), DJ(:,:), FL(:,:)
-!     DOUBLE PRECISION, ALLOCATABLE :: SOA(:), MOM(:), BR01(:), RO2(:), P(:), L(:), Y_PPB(:,:), EMI_PPB(:,:)
-!     INTEGER, ALLOCATABLE :: SPECIES_OUT_NUM(:)
-
-!     ! CHEMCO
-!     ! SIMPLE RATE COEFFICIENT SCALARS
-!     DOUBLE PRECISION, PRIVATE :: KRO2NO3,KDEC
-
-!     ! COMPLEX RATE COEFFICIENT SCALARS
-!     DOUBLE PRECISION, PRIVATE :: FCC,FCD,FC1,K2I,FC2,FC7,FC8,K9I,FC9,FC10,KI,K13I
-!     DOUBLE PRECISION, PRIVATE :: FC13,FC14,FC15,FC16,FCX
-
-!     ! SIMPLE RATE COEFFICIENT CELLS
-!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: KRO2NO,KAPNO,KRO2HO2,KAPHO2,KNO3AL,KALKOXY
-!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: KALKPXY,KIN,KOUT2604,KOUT4608,KOUT2631
-!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: KOUT2635,KOUT4610,KOUT2605,KOUT2630,KOUT2629
-!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: KOUT2632,KOUT2637,KOUT3612,KOUT3613,KOUT3442
-
-!     ! COMPLEX RATE COEFFICIENT CELLS
-!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: KC0,KCI,KRC,FC,KFPAN,KD0,KDI,KRD,FD,KBPAN,K10
-!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: K1I,KR1,F1,KMT01,K20,KR2,Fa2,KMT02,K30,K3I
-!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: KR3,FC3,F3,KMT03,K40,K4I,KR4,FC4,Fa4,KMT04
-!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: KMT05,KMT06,K70,K7I,KR7,F7,KMT07,K80,K8I,KR8
-!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: F8,KMT08,K90,KR9,F9,KMT09,K100,K10I,KR10,F10
-!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: KMT10,K1,K3,K4,K2,KMT11,K0,F,KMT12,K130
-!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: KR13,F13,KMT13,K140,K14I,KR14,F14,KMT14,K150
-!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: K15I,KR15,F15,KMT15,K160,K16I,KR16,F16,KMT16
-!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: K170,K17I,KR17,FC17,F17,KMT17
-
-! CONTAINS 
 
 !     SUBROUTINE CALC_AEROSOL
 !         IMPLICIT NONE
@@ -7813,7 +8558,6 @@ END PROGRAM BOXM_RUN
 !     END SUBROUTINE WRITE
     
 ! END MODULE RUN_CHEM
-
 
 
 ! PROGRAM BOXM_RUN

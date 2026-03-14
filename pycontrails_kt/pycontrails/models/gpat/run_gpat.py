@@ -5,8 +5,6 @@ from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from pycontrails.models.gpat.gpat import GPAT, SimParams, FlParams, PlParams, MetParams, ChemParams, dict_to_dataclass
 import os
 import holoviews as hv
-import hvplot.pandas
-import hvplot.xarray
 
 # global simulation parameters
 sim_params = {
@@ -19,7 +17,7 @@ sim_params = {
     "alt_bounds": (10000, 11000),  # alt bounds [m]
     "hres_sim_c": 0.05,  # coarse horizontal resolution [deg]
     "vres_sim_c": 500,  # coarse vertical resolution [m]
-    "hres_sim_f": 0.001,  # fine horizontal resolution [deg]
+    "hres_sim_f": 0.01,  # fine horizontal resolution [deg]
     "vres_sim_f": 100,  # fine vertical resolution [m]
 
     "run_path": "/home/ktait98/GPAT2026/pycontrails_kt/pycontrails/models/gpat/",

@@ -5,6 +5,7 @@ from dataclasses import asdict
 from pycontrails.models.gpat.pp_gpat import GPATPostProcessor
 import os
 import pyvista as pv
+np.set_printoptions(threshold=np.inf, linewidth=500)
 
 data_path = f"{os.getcwd()}/data/"
 
@@ -14,8 +15,28 @@ criteria = {
 
 pp_gpat = GPATPostProcessor(data_path=data_path, criteria=criteria)
 
+fl_ds = pp_gpat.fl_ds_dict[pp_gpat.job_ids[0]]
+pl_ds = pp_gpat.pl_out_dict[pp_gpat.job_ids[0]]
+boxm_ds = pp_gpat.boxm_out_dict[pp_gpat.job_ids[0]]
 
+pl_out = pp_gpat.pl_out_dict[pp_gpat.job_ids[0]]
+boxm_out = pp_gpat.boxm_out_dict[pp_gpat.job_ids[0]]
+patch_table = pp_gpat.patch_table_dict[pp_gpat.job_ids[0]]
 
-print(pp_gpat.job_ids)
+print(boxm_out)
 
-pp_gpat.plotting.plot_plumes_3d_pv(job_id=pp_gpat.job_ids[0], time_idx=280)              
+# da_nonzero = patch_table["Y_del_f"].where(patch_table["Y_del_f"] != 0, drop=True)
+# da_clean = patch_table["Y_del_f"].where(np.isfinite(patch_table["Y_del_f"]) & (patch_table["Y_del_f"] != 0), drop=True)
+# # print(da_nonzero.sel(species_out="NO").values)
+# print(da_clean.sel(species_out="NO").values)
+
+# pp_gpat.plotting.plot_plumes_3d_pv(job_id=pp_gpat.job_ids[0], 
+#                                     time_idx=280, overlay_patch=True)   
+#
+pp_gpat.plotting.plot_patch_heatmap_2d(
+    range(184, 200, 3),
+    job_id=None,
+    species="CO",
+    overlay_plume_centers=True,
+    overlay_trajectories=True,
+)

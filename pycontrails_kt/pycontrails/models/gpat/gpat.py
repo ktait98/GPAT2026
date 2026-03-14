@@ -12,6 +12,7 @@ import random
 import pathlib
 import shutil
 import subprocess
+import re
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from turtle import ht
 from typing import Literal, Optional
@@ -215,6 +216,11 @@ class GPAT(Model):
         )
 
         self.levels = units.m_to_pl(self.alts)
+
+        self.lons_m, self.lats_m = lonlat_to_m(self.lons, 
+                                               self.lats, 
+                                               self.lons.min(), 
+                                               self.lats.min())
 
         # Generate time vectors
         
@@ -621,7 +627,7 @@ class GPATSetup:
             # Iterate over the columns in the DataFrame
             for column in fl[i].dataframe.columns:
                 # Replace NaN values in the column with the value from the previous row
-                fl[i].dataframe[column] = fl[i].dataframe[column].fillna(method="ffill")
+                fl[i].dataframe[column] = fl[i].dataframe[column].ffill()
 
             # emission indices
             eis = {
@@ -684,7 +690,7 @@ class GPATSetup:
 
             for column in fl[i].columns:
                 # Replace NaN values in the column with the value from the previous row
-                fl[i][column] = fl[i][column].fillna(method="ffill")
+                fl[i][column] = fl[i][column].ffill()
 
             pl[i] = pl[i].dataframe
 
@@ -742,10 +748,12 @@ class GPATSetup:
             on=["flight_id", "waypoint"],
         ).sort_values(by=["time", "flight_id", "waypoint"])
 
-        pl["longitude_m"], pl["latitude_m"] = lonlat_to_m(pl["latitude"].values, 
-                                                        pl["longitude"].values, 
-                                                        self.gpat.lats.min(), 
-                                                        self.gpat.lons.min())
+        pl["longitude_m"], pl["latitude_m"] = lonlat_to_m(
+                                                pl["longitude"].values,
+                                                pl["latitude"].values,
+                                                self.gpat.lons.min(),
+                                                self.gpat.lats.min(),
+                                            )
  
         pl["sin_a"] = np.sin(np.radians(pl["heading"]))
         pl["cos_a"] = np.cos(np.radians(pl["heading"]))
@@ -909,9 +917,10 @@ class GPATSetup:
 
         self.gpat.pl_ds = self.gpat.pl_ds.drop_vars((*all_species_cols, "fuel_flow", "fuel_burn", "true_airspeed", "sin_a", "cos_a"))
 
-        # Convert timedelta to total seconds, handling NaT values
+        # Convert timedelta to total seconds, handling NaT values before casting to int.
         age_values = self.gpat.pl_ds["age"].values
-        age_seconds = np.where(np.isnat(age_values), 0, (age_values / np.timedelta64(1, 's')).astype(int))
+        age_clean = np.where(np.isnat(age_values), np.timedelta64(0, "s"), age_values)
+        age_seconds = age_clean.astype("timedelta64[s]").astype(np.int64)
         self.gpat.pl_ds["age_s"] = (("seg_id", "time"), age_seconds)
 
         active_mask = (self.gpat.pl_ds["age_s"] > 0) & (self.gpat.pl_ds["age_s"] <= sim_params.t_pl[2].total_seconds())
@@ -996,7 +1005,7 @@ class GPATSetup:
             vres_sim_c=sim_params.vres_sim_c,
             hres_sim_f=sim_params.hres_sim_f,
             vres_sim_f=sim_params.vres_sim_f,
-            
+
             # chem model params
             photol_params=57,
             photol_coeffs=96,
@@ -1018,11 +1027,77 @@ class GPATSetup:
             {"level": "level_c", "altitude": "altitude_c", "longitude": "longitude_c", "latitude": "latitude_c"}
         )
 
+        # Add coarse cell centres in metres
+        # Convert the latitude/longitude coordinates (in degrees) to meters
+        longitude_c_m, latitude_c_m = lonlat_to_m(
+            self.gpat.boxm_ds_stacked.longitude_c.values,
+            self.gpat.boxm_ds_stacked.latitude_c.values,
+            self.gpat.lons.min(),
+            self.gpat.lats.min()
+        )
+        
+        self.gpat.boxm_ds_stacked = self.gpat.boxm_ds_stacked.assign_coords(
+            longitude_c_m=("cell", longitude_c_m),
+            latitude_c_m=("cell", latitude_c_m)
+        )
+
         # Set bg_chem to y_bg_c for consistency with FORTRAN naming
         self.gpat.boxm_ds_stacked = self.gpat.boxm_ds_stacked.rename({"bg_chem": "Y_bg_c"})
 
         # Transpose so that cell is the fastest-varying dimension
         self.gpat.boxm_ds_stacked = self.gpat.boxm_ds_stacked.transpose("cell", "species_boxm", "time")
+
+        # Add mol_mass_c as coordinate for chemistry calculations.
+        # Use explicit mechanism aliases plus formula parsing for standard species.
+        species_boxm = self.gpat.boxm_ds_stacked["species_boxm"].values
+
+        atom_mass = {
+            "H": 1.00794,
+            "C": 12.0107,
+            "N": 14.0067,
+            "O": 15.9994,
+            "S": 32.065,
+        }
+        molar_mass_alias_g_per_mol = {
+            "O1D": atom_mass["O"],
+            "PAN": 121.05,        # C2H3NO5
+            "SA": 98.079,         # H2SO4 proxy
+            "NA": 63.01284,       # HNO3 proxy
+            "APINENE": 136.24,    # C10H16
+            "BPINENE": 136.24,    # C10H16
+            "TOLUENE": 92.14,     # C7H8
+            "BENZENE": 78.11,     # C6H6
+            "OXYL": 106.16,       # C8H10
+        }
+
+        def formula_mass_g_per_mol(species_name: str) -> float:
+            matches = re.findall(r"([A-Z][a-z]?)([0-9]*)", species_name)
+            if not matches:
+                return np.nan
+
+            rebuilt = "".join(elem + count for elem, count in matches)
+            if rebuilt != species_name:
+                return np.nan
+
+            total = 0.0
+            for elem, count in matches:
+                if elem not in atom_mass:
+                    return np.nan
+                n = int(count) if count else 1
+                total += atom_mass[elem] * n
+            return total
+
+        mol_mass_c = np.full(len(species_boxm), np.nan, dtype=float)
+        for i, s in enumerate(species_boxm):
+            s_key = (s.decode() if isinstance(s, bytes) else str(s)).strip().upper()
+            if s_key in molar_mass_alias_g_per_mol:
+                mol_mass_c[i] = molar_mass_alias_g_per_mol[s_key] * 1.0e-3
+            else:
+                mm = formula_mass_g_per_mol(s_key)
+                if np.isfinite(mm):
+                    mol_mass_c[i] = mm * 1.0e-3
+
+        self.gpat.boxm_ds_stacked = self.gpat.boxm_ds_stacked.assign_coords(mol_mass_c=("species_boxm", mol_mass_c))
 
         # Delete any existing NetCDF
         nc_path = pathlib.Path(f"{self.gpat.inputs_job}/boxm_ds.nc")
@@ -1233,12 +1308,13 @@ class GPATSetup:
             coords={
             
             "row": np.array([], dtype=int),   # 0-length row dimension
-            "patch_id":   ("row", np.array([], dtype="int64")),
             "species_out": np.array(species_out),
             "species_out_num": ("species_out", chem_params.species_out_num),
             "time":   ("row", np.array([], dtype="object")),
             "time_rel_s": ("row", np.array([], dtype="int64")),
             "time_idx": ("row", np.array([], dtype="int64")),
+            "row_cell_c": ("row", np.array([], dtype="int64")),
+            "row_cell_f": ("row", np.array([], dtype="int64")),
             "latitude_f":  ("row", np.array([], dtype="float64")),
             "longitude_f": ("row", np.array([], dtype="float64")),
             "altitude_f":  ("row", np.array([], dtype="float64")),
@@ -1258,7 +1334,7 @@ class GPATSetup:
             nc_path.unlink()
 
         # Save to NetCDF file
-        self.gpat.patch_table.to_netcdf(nc_path, mode="w")
+        self.gpat.patch_table.to_netcdf(nc_path, mode="w", unlimited_dims=["row"])
         print(f"Saved {nc_path}")
              
     # Helper functions used in GPAT Setup
