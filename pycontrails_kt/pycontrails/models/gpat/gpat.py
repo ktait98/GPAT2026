@@ -99,8 +99,15 @@ class FlParams:
 
     ac_type: Optional[str] = "A320"  # aircraft type
     fl0_speed: Optional[float] = 100.0  # m/s
+    fl0_rocd: Optional[float] = 0.0  # m/s
+    target_altitude: Optional[float] = None  # m, overrides fl0_rocd when set
     fl0_heading: Optional[float] = 0.0  # deg
     fl0_coords0: Optional[tuple[float, float, float]] = (0.1, 0.125, 12500)  # lat, lon, alt [deg, deg, m]
+    # Optional control points for a tactile route definition.
+    # Each tuple is (lat, lon, alt_m); times are spread uniformly over t_fl.
+    control_waypoints: Optional[list[tuple[float, float, float]]] = None
+    clip_to_domain: bool = True
+    domain_margin_deg: float = 0.01
     sep_dist: Optional[tuple[float, float, float]] = (5000, 2000, 0)  # dx, dy, dz [m]
     n_ac: Optional[int] = 1  # number of aircraft
 
@@ -217,10 +224,22 @@ class GPAT(Model):
 
         self.levels = units.m_to_pl(self.alts)
 
-        self.lons_m, self.lats_m = lonlat_to_m(self.lons, 
-                                               self.lats, 
-                                               self.lons.min(), 
-                                               self.lats.min())
+        # Convert 1D lon/lat axes to meter axes in a way that also works
+        # for rectangular grids where len(lons) != len(lats).
+        ref_lon = float(self.lons.min())
+        ref_lat = float(self.lats.min())
+        self.lons_m, _ = lonlat_to_m(
+            self.lons,
+            np.full_like(self.lons, ref_lat, dtype=float),
+            ref_lon,
+            ref_lat,
+        )
+        _, self.lats_m = lonlat_to_m(
+            np.full_like(self.lats, ref_lon, dtype=float),
+            self.lats,
+            ref_lon,
+            ref_lat,
+        )
 
         # Generate time vectors
         
@@ -363,21 +382,30 @@ class GPATSetup:
         fl_params = self.gpat.fl_params
         sim_params = self.gpat.sim_params
 
+        margin = float(getattr(fl_params, "domain_margin_deg", 0.01) or 0.0)
+        clip_to_domain = bool(getattr(fl_params, "clip_to_domain", True))
+
+        def _clip_flight_domain(flight: Flight) -> Flight:
+            """Optionally clip trajectory to simulation domain."""
+            if not clip_to_domain:
+                return flight
+            mask = (
+                (flight["latitude"] >= sim_params.lat_bounds[0] + margin)
+                & (flight["latitude"] <= sim_params.lat_bounds[1] - margin)
+                & (flight["longitude"] >= sim_params.lon_bounds[0] + margin)
+                & (flight["longitude"] <= sim_params.lon_bounds[1] - margin)
+                & (flight["altitude"] >= sim_params.alt_bounds[0])
+                & (flight["altitude"] <= sim_params.alt_bounds[1])
+            )
+            return flight.filter(mask)
+
         if fl_params.mode == "direct":
             # provide flight file - csv to convert to Flight object (Pd df)
             if fl_params.file is None:
                 raise ValueError("Flight file must be provided for direct mode.")
             fl = Flight.read_csv(fl_params.file)
             fl.attrs = {"flight_id": int(0), "aircraft_type": fl_params.ac_type}
-            mask = (
-                (fl["latitude"] > sim_params.lat_bounds[0] + 0.01)
-                & (fl["latitude"] < sim_params.lat_bounds[1] - 0.01)
-                & (fl["longitude"] > sim_params.lon_bounds[0] + 0.01)
-                & (fl["longitude"] < sim_params.lon_bounds[1] - 0.01)
-                & (fl["altitude"] > sim_params.alt_bounds[0])
-                & (fl["altitude"] < sim_params.alt_bounds[1])
-            )
-            fl = fl.filter(mask)
+            fl = _clip_flight_domain(fl)
             return [fl]
 
         # generate synthetic formation flight
@@ -399,33 +427,62 @@ class GPATSetup:
 
             lat0, lon0, alt0 = fl_params.fl0_coords0
             heading = fl_params.fl0_heading
-            dist = fl_params.fl0_speed * sim_params.t_fl[2].total_seconds()
+            flight_duration_s = sim_params.t_fl[2].total_seconds()
+            dist = fl_params.fl0_speed * flight_duration_s
+            if fl_params.target_altitude is not None:
+                alt1 = float(fl_params.target_altitude)
+                rocd_used = (alt1 - alt0) / flight_duration_s
+            else:
+                rocd_used = float(fl_params.fl0_rocd)
+                alt1 = alt0 + rocd_used * flight_duration_s
+
+            # Guard against synthetic trajectories that immediately leave the
+            # vertical simulation domain and collapse to 0-1 retained waypoints.
+            rocd_min = (sim_params.alt_bounds[0] - alt0) / flight_duration_s
+            rocd_max = (sim_params.alt_bounds[1] - alt0) / flight_duration_s
+            if not (rocd_min <= rocd_used <= rocd_max):
+                raise ValueError(
+                    "Synthetic trajectory exits alt_bounds over t_fl duration. "
+                    f"Computed alt1={alt1:.1f} m from alt0={alt0:.1f} m, "
+                    f"rocd={rocd_used:.4f} m/s, duration={flight_duration_s:.1f} s; "
+                    f"alt_bounds={sim_params.alt_bounds}. "
+                    f"Choose fl0_rocd within [{rocd_min:.4f}, {rocd_max:.4f}] m/s, "
+                    "or widen alt_bounds."
+                )
 
             # calculate the final coordinates
             geod = Geod(ellps="WGS84")
             lon1, lat1, _ = geod.fwd(lon0, lat0, heading, dist)
 
+            # Build leader route from either control waypoints or start/end pair.
+            control_waypoints = getattr(fl_params, "control_waypoints", None)
+            if control_waypoints is not None and len(control_waypoints) >= 2:
+                lat_points = [float(wp[0]) for wp in control_waypoints]
+                lon_points = [float(wp[1]) for wp in control_waypoints]
+                alt_points = [float(wp[2]) for wp in control_waypoints]
+            else:
+                lon_points = [lon0, lon1]
+                lat_points = [lat0, lat1]
+                alt_points = [alt0, alt1]
+
+            times = pd.date_range(
+                start=sim_params.t_fl[0],
+                end=sim_params.t_fl[0] + sim_params.t_fl[2],
+                periods=len(lat_points),
+            )
+
             # create flight object for leader flight and resample points according to ts_fl
             df = pd.DataFrame()
-            df["longitude"] = [lon0, lon1]
-            df["latitude"] = [lat0, lat1]
-            df["altitude"] = [alt0, alt0]
-            df["time"] = [sim_params.t_fl[0], (sim_params.t_fl[0] + sim_params.t_fl[2])]
+            df["longitude"] = lon_points
+            df["latitude"] = lat_points
+            df["altitude"] = alt_points
+            df["time"] = times
             ts_fl_min = int(sim_params.t_fl[1].total_seconds() / 60)
 
             fl0 = Flight(df).resample_and_fill(freq=f"{ts_fl_min}min")
             #fl0["time_rel_s"] = (fl0.dataframe["time"] - sim_params.t_sim[0]).dt.total_seconds()
             fl0.attrs = {"flight_id": int(0), "aircraft_type": fl_params.ac_type}
-            mask = (
-                (fl0["latitude"] > sim_params.lat_bounds[0] + 0.01)
-                & (fl0["latitude"] < sim_params.lat_bounds[1] - 0.01)
-                & (fl0["longitude"] > sim_params.lon_bounds[0] + 0.01)
-                & (fl0["longitude"] < sim_params.lon_bounds[1] - 0.01)
-                & (fl0["altitude"] > sim_params.alt_bounds[0])
-                & (fl0["altitude"] < sim_params.alt_bounds[1])
-            )
-
-            fl0 = fl0.filter(mask)
+            fl0 = _clip_flight_domain(fl0)
             fl.append(fl0)
 
             fli = fl0
@@ -453,15 +510,7 @@ class GPATSetup:
                     fli["altitude"] += dalt
                     fli.attrs = {"flight_id": int(i), "aircraft_type": fl_params.ac_type}
 
-                    mask = (
-                        (fli["latitude"] > sim_params.lat_bounds[0] + 0.01)
-                        & (fli["latitude"] < sim_params.lat_bounds[1] - 0.01)
-                        & (fli["longitude"] > sim_params.lon_bounds[0] + 0.01)
-                        & (fli["longitude"] < sim_params.lon_bounds[1] - 0.01)
-                        & (fli["altitude"] > sim_params.alt_bounds[0])
-                        & (fli["altitude"] < sim_params.alt_bounds[1])
-                    )
-                    fli = fli.filter(mask)
+                    fli = _clip_flight_domain(fli)
                     fl.append(fli)
 
                     # Update starting coordinates for next flight

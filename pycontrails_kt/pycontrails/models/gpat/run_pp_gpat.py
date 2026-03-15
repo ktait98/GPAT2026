@@ -31,12 +31,34 @@ print(boxm_out)
 # print(da_clean.sel(species_out="NO").values)
 
 # pp_gpat.plotting.plot_plumes_3d_pv(job_id=pp_gpat.job_ids[0], 
-#                                     time_idx=280, overlay_patch=True)   
-#
-pp_gpat.plotting.plot_patch_heatmap_2d(
-    range(184+3*15, 184+3*20, 3),
-    job_id=None,
-    species="NO",
-    overlay_plume_centers=True,
-    overlay_trajectories=True,
+#                                     time_idx=184+3*15, overlay_patch=True)   
+
+pl_time_idx = np.asarray(pp_gpat.pl_ds_dict[pp_gpat.job_ids[0]]["time_idx"].values, dtype=int)
+
+pp_gpat.plotting.animate_plumes_3d_plotly(
+    job_id=pp_gpat.job_ids[0],
+    time_idx_start=int(pl_time_idx.min()),
+    time_idx_end=int(pl_time_idx.max()),
+    frame_stride=3,           # every 3rd step — adjust for speed vs smoothness
+    output_path="plumes.html",
+    overlay_patch=True,
+    patch_species="NO",
 )
+
+# pp_gpat.plotting.plot_patch_heatmap_2d(
+#     range(184+3*15, 184+3*20, 3),
+#     job_id=None,
+#     species="NO",
+#     overlay_plume_centers=True,
+#     overlay_trajectories=True,
+# )
+
+# pp_gpat.plotting.plot_patch_heatmap_3d(
+#     time_idx=184,
+#     job_id=pp_gpat.job_ids[0],
+#     species="NO",
+#     opacity=0.4,
+#     show_edges=True,
+#     off_screen=True,
+#     screenshot_path="patch_3d_NO_time184.png",
+#     )
