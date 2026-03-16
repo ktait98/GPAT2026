@@ -850,6 +850,8 @@ class GPATSetup:
         else:
             df["waypoint"] = df.index + 1  # start waypoint from 1 (FORTRAN)
 
+        # BOXM expects FL and PL segment indexing to be identical.
+        # Restrict FL waypoints to the set present in PL inputs so seg_id ranges match.
         if hasattr(self.gpat, "pl") and self.gpat.pl is not None:
             pl_keys = self.gpat.pl[["flight_id", "waypoint"]].drop_duplicates()
             pl_keys["flight_id"] = pl_keys["flight_id"].astype(int) + 1

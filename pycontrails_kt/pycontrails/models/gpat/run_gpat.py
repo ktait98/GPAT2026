@@ -14,11 +14,11 @@ sim_params = {
     "t_out": (pd.to_datetime("2022-01-20 12:00:00"), pd.Timedelta(minutes=1), pd.Timedelta(hours=4)),# (start time, time step, run time)
     "lat_bounds": (0.0, 1.0),  # lat bounds [deg]
     "lon_bounds": (0.0, 1.0),  # lon bounds [deg]
-    "alt_bounds": (10000, 12000),  # alt bounds [m]
+    "alt_bounds": (10000, 13000),  # alt bounds [m]
     "hres_sim_c": 0.1,  # coarse horizontal resolution [deg]
     "vres_sim_c": 500,  # coarse vertical resolution [m]
     "hres_sim_f": 0.025,  # fine horizontal resolution [deg]
-    "vres_sim_f": 100,  # fine vertical resolution [m]
+    "vres_sim_f": 250,  # fine vertical resolution [m]
 
     "run_path": "/home/ktait98/GPAT2026/pycontrails_kt/pycontrails/models/gpat/",
     "data_path": "/home/ktait98/GPAT2026/pycontrails_kt/pycontrails/models/gpat/data/", # "/projects/Impact_of_aviation_on_climate
@@ -35,13 +35,14 @@ fl_params = {
     "fl0_rocd": 0.1,  # m/s (ignored when target_altitude is set)
     "fl0_heading": 45.0,  # deg
     "fl0_coords0": (0.1, 0.1, 10500),  # lat, lon, alt [deg, deg, m]
-    "target_altitude": 12000,  # m, reached at end of t_fl
+    "target_altitude": 11950,  # m, reached at end of t_fl
     "control_waypoints": [
         (0.10, 0.10, 10500),
         (0.25, 0.25, 10850),
         (0.45, 0.45, 11200),
         (0.65, 0.65, 11600),
-        (1.0, 1.0, 12000),
+        (0.95, 0.95, 11950),
+        (1.0, 1.0, 12000)
     ],
     "clip_to_domain": True,
     "domain_margin_deg": 0.005,
@@ -62,8 +63,8 @@ pl_params = {
 
 # meteorology parameters
 met_params = {
-    "eastward_wind": 4.0,  # m/s
-    "northward_wind": 5.0,  # m/s
+    "eastward_wind": 0.0,  # m/s
+    "northward_wind": 0.0,  # m/s
     "lagrangian_tendency_of_air_pressure": 0.0,  # m/s
 }
 

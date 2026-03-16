@@ -233,6 +233,71 @@ class GPATPlotting:
 
     def __init__(self, pp_gpat):
         self.pp_gpat = pp_gpat
+        self.patch_plot_min_value = None
+        self.patch_plot_max_log10_span = 3.0
+
+    def set_patch_plot_policy(self, min_value=None, max_log10_span=3.0):
+        """Configure the default fine-grid patch filtering used across plots.
+
+        Parameters
+        ----------
+        min_value : float or None, optional
+            Absolute lower bound in mol/m^3 for rendering patch cells.
+            ``None`` disables the absolute floor.
+        max_log10_span : float or None, default 3.0
+            Maximum number of log10 decades below the species peak to render.
+            For example, ``3.0`` keeps values down to ``peak * 1e-3``.
+            ``None`` disables the relative floor.
+        """
+        if min_value is not None:
+            min_value = float(min_value)
+            if min_value <= 0.0:
+                raise ValueError("min_value must be positive when provided.")
+
+        if max_log10_span is not None:
+            max_log10_span = float(max_log10_span)
+            if max_log10_span <= 0.0:
+                raise ValueError("max_log10_span must be positive when provided.")
+
+        self.patch_plot_min_value = min_value
+        self.patch_plot_max_log10_span = max_log10_span
+
+    def _resolve_patch_plot_floor(self, values, min_value=None, max_log10_span=None):
+        """Return the effective patch rendering floor for the provided values."""
+        vals = np.asarray(values, dtype=float)
+        pos = vals[np.isfinite(vals) & (vals > 0.0)]
+        if pos.size == 0:
+            return None
+
+        floor_candidates = []
+
+        min_value_use = self.patch_plot_min_value if min_value is None else min_value
+        if min_value_use is not None:
+            min_value_use = float(min_value_use)
+            if min_value_use > 0.0:
+                floor_candidates.append(min_value_use)
+
+        max_log10_span_use = (
+            self.patch_plot_max_log10_span if max_log10_span is None else max_log10_span
+        )
+        if max_log10_span_use is not None:
+            max_log10_span_use = float(max_log10_span_use)
+            if max_log10_span_use > 0.0:
+                floor_candidates.append(float(np.nanmax(pos)) * 10.0 ** (-max_log10_span_use))
+
+        if not floor_candidates:
+            return None
+
+        return max(floor_candidates)
+
+    def _patch_value_mask(self, values, min_value=None, max_log10_span=None):
+        """Return a finite positive mask filtered by the active patch plotting floor."""
+        vals = np.asarray(values, dtype=float)
+        mask = np.isfinite(vals) & (vals > 0.0)
+        floor = self._resolve_patch_plot_floor(vals, min_value=min_value, max_log10_span=max_log10_span)
+        if floor is not None:
+            mask &= vals >= floor
+        return mask, floor
 
     def plot_patch_heatmap_2d(
         self,
@@ -279,7 +344,7 @@ class GPATPlotting:
                     vals_t = np.asarray(
                         patch_table["Y_del_f"].isel(row=row_sel).sel(species_out=species).values
                     )
-                    vals_t = vals_t[np.isfinite(vals_t) & (vals_t != 0.0)]
+                    vals_t = vals_t[self._patch_value_mask(vals_t)[0]]
                     if vals_t.size > 0:
                         vmax = max(vmax, float(np.nanmax(vals_t)))
 
@@ -426,11 +491,11 @@ class GPATPlotting:
         patch_t = patch_table.isel(row=row_sel)
 
         vals = np.asarray(patch_t["Y_del_f"].sel(species_out=species).values)
-        mask = np.isfinite(vals) & (vals != 0.0)
+        mask, plot_floor = self._patch_value_mask(vals)
 
         if not np.any(mask):
             raise ValueError(
-                f"No nonzero patch_table values found for species={species} at time_idx={time_idx}."
+                f"No patch_table values found for species={species} at time_idx={time_idx} above the active plotting threshold."
             )
 
         if {"latitude_f", "longitude_f"}.issubset(set(patch_t.variables) | set(patch_t.coords)):
@@ -514,7 +579,10 @@ class GPATPlotting:
             vmin=vmin,
             vmax=vmax,
         )
-        fig.colorbar(mesh, ax=ax, label=f"{species} Y_del_f")
+        cbar_label = f"{species} Y_del_f"
+        if plot_floor is not None:
+            cbar_label += f"\n(filtered: >= {plot_floor:.1e} mol/m^3)"
+        fig.colorbar(mesh, ax=ax, label=cbar_label)
 
         if overlay_plume_centers or overlay_trajectories:
             pl_ds = self.pp_gpat.pl_ds_dict.get(job_id)
@@ -701,10 +769,10 @@ class GPATPlotting:
 
         patch_t = patch_table.isel(row=row_sel)
         vals = np.asarray(patch_t["Y_del_f"].sel(species_out=species).values, dtype=float)
-        mask = np.isfinite(vals) & (vals != 0.0)
+        mask, plot_floor = self._patch_value_mask(vals)
         if not np.any(mask):
             raise ValueError(
-                f"No nonzero patch_table values found for species={species} at time_idx={time_idx}."
+                f"No patch_table values found for species={species} at time_idx={time_idx} above the active plotting threshold."
             )
 
         required_fine = {"latitude_f", "longitude_f", "altitude_f"}
@@ -836,7 +904,13 @@ class GPATPlotting:
                 clim=[vmin, vmax],
                 show_edges=show_edges,
                 show_scalar_bar=True,
-                scalar_bar_args={"title": f"{species} Y_del_f"},
+                scalar_bar_args={
+                    "title": (
+                        f"{species} Y_del_f"
+                        if plot_floor is None
+                        else f"{species} Y_del_f\n>= {plot_floor:.1e} mol/m^3"
+                    )
+                },
             )
             plotter.camera_position = "iso"
 
@@ -1040,12 +1114,13 @@ class GPATPlotting:
                         lat_f = patch_t["latitude_f"].values
                         alt_f = patch_t["altitude_f"].values
 
+                        value_mask, plot_floor = self._patch_value_mask(patch_vals)
                         valid = (
                             np.isfinite(patch_vals)
                             & np.isfinite(lon_f)
                             & np.isfinite(lat_f)
                             & np.isfinite(alt_f)
-                            & (patch_vals > 0.0)
+                            & value_mask
                         )
                     else:
                         patch_vals = np.array([], dtype=float)
@@ -1072,15 +1147,16 @@ class GPATPlotting:
                             lon_f = patch_t["longitude_f"].values
                             lat_f = patch_t["latitude_f"].values
                             alt_f = patch_t["altitude_f"].values
+                            value_mask, plot_floor = self._patch_value_mask(patch_vals)
                             valid = (
                                 np.isfinite(patch_vals)
                                 & np.isfinite(lon_f)
                                 & np.isfinite(lat_f)
                                 & np.isfinite(alt_f)
-                                & (patch_vals > 0.0)
+                                & value_mask
                             )
                             print(
-                                f"No nonzero patch_table values for {patch_species} at time_idx={time_idx}; "
+                                f"No patch_table values for {patch_species} at time_idx={time_idx} above the active plotting threshold; "
                                 f"using nearest available patch timestep time_idx={patch_time_used}."
                             )
 
@@ -1103,14 +1179,18 @@ class GPATPlotting:
                                 clim=clim,
                                 show_scalar_bar=True,
                                 scalar_bar_args={
-                                    "title": f"Y_del_f {patch_species}",
+                                    "title": (
+                                        f"Y_del_f {patch_species}"
+                                        if plot_floor is None
+                                        else f"Y_del_f {patch_species}\n>= {plot_floor:.1e} mol/m^3"
+                                    ),
                                     "fmt": "%.1e",
                                     "n_labels": 5,
                                 },
                             )
                     else:
                         print(
-                            f"No nonzero patch_table values found for {patch_species} in this dataset."
+                            f"No patch_table values found for {patch_species} in this dataset above the active plotting threshold."
                         )
                 else:
                     print(f"Species {patch_species} is unavailable in patch_table species_out.")
@@ -1438,7 +1518,7 @@ class GPATPlotting:
                     patch_table["Y_del_f"].sel(species_out=patch_species).values,
                     dtype=float,
                 )
-                finite_pos = all_patch_vals[np.isfinite(all_patch_vals) & (all_patch_vals > 0.0)]
+                finite_pos = all_patch_vals[self._patch_value_mask(all_patch_vals)[0]]
                 if finite_pos.size > 0:
                     global_patch_clim = (float(finite_pos.min()), float(finite_pos.max()))
                     print(f"Global patch clim for {patch_species}: {global_patch_clim[0]:.3e} – {global_patch_clim[1]:.3e}")
@@ -1533,10 +1613,11 @@ class GPATPlotting:
                         lon_f  = patch_t["longitude_f"].values
                         lat_f  = patch_t["latitude_f"].values
                         alt_f  = patch_t["altitude_f"].values
+                        value_mask, plot_floor = self._patch_value_mask(patch_vals)
                         valid  = (
                             np.isfinite(patch_vals) & np.isfinite(lon_f)
                             & np.isfinite(lat_f) & np.isfinite(alt_f)
-                            & (patch_vals > 0.0)
+                            & value_mask
                         )
                         if np.any(valid):
                             lon_m_f, lat_m_f = _to_plot_m(lon_f[valid], lat_f[valid])
@@ -1562,7 +1643,11 @@ class GPATPlotting:
                                     clim=clim,
                                     show_scalar_bar=True,
                                     scalar_bar_args={
-                                        "title": f"Y_del_f {patch_species}",
+                                        "title": (
+                                            f"Y_del_f {patch_species}"
+                                            if plot_floor is None
+                                            else f"Y_del_f {patch_species}\n>= {plot_floor:.1e} mol/m^3"
+                                        ),
                                         "fmt": "%.1e",
                                         "n_labels": 5,
                                     },
@@ -1926,7 +2011,7 @@ class GPATPlotting:
                 all_pv = np.asarray(
                     patch_table["Y_del_f"].sel(species_out=patch_species).values, dtype=float
                 )
-                pos = all_pv[np.isfinite(all_pv) & (all_pv > 0.0)]
+                pos = all_pv[self._patch_value_mask(all_pv)[0]]
                 if pos.size > 0:
                     if patch_clim is not None:
                         log_clim = (np.log10(float(patch_clim[0])), np.log10(float(patch_clim[1])))
@@ -2104,7 +2189,8 @@ class GPATPlotting:
                 if pt.sizes.get("row", 0) > 0:
                     pv_vals = pt["Y_del_f"].sel(species_out=patch_species).values
                     lf = pt["longitude_f"].values; ltf = pt["latitude_f"].values; af = pt["altitude_f"].values
-                    valid = np.isfinite(pv_vals) & np.isfinite(lf) & np.isfinite(ltf) & np.isfinite(af) & (pv_vals > 0.0)
+                    value_mask, plot_floor = self._patch_value_mask(pv_vals)
+                    valid = np.isfinite(pv_vals) & np.isfinite(lf) & np.isfinite(ltf) & np.isfinite(af) & value_mask
                     if np.any(valid):
                         lm, latm = _to_plot_m(lf[valid], ltf[valid])
                         dx_f, dy_f, dz_f = _fine_lengths_m(ltf[valid])
@@ -2160,7 +2246,19 @@ class GPATPlotting:
                 colorscale=patch_cmap,
                 cmin=log_clim[0] if log_clim else None,
                 cmax=log_clim[1] if log_clim else None,
-                colorbar=dict(title=f"log10 Y_del_f<br>{patch_species} (mol/m^3)"),
+                colorbar=dict(
+                    title=(
+                        f"log10 Y_del_f<br>{patch_species} (mol/m^3)"
+                        if self._resolve_patch_plot_floor(
+                            patch_table["Y_del_f"].sel(species_out=patch_species).values
+                        ) is None
+                        else (
+                            "log10 Y_del_f<br>"
+                            f"{patch_species} (mol/m^3)<br>"
+                            f">= {self._resolve_patch_plot_floor(patch_table['Y_del_f'].sel(species_out=patch_species).values):.1e}"
+                        )
+                    )
+                ),
                 opacity=0.22,
                 name=f"patch {patch_species}",
                 showlegend=True,
