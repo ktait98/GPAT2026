@@ -46,7 +46,7 @@ fl_params = {
     ],
     "clip_to_domain": True,
     "domain_margin_deg": 0.005,
-    "sep_dist": (10000, 5000, 0),  # dx, dy, dz [m]
+    "sep_dist": (1000, 0, 0),  # dx, dy, dz [m]
     "n_ac": 1,  # number of aircraft
 }
 
@@ -63,8 +63,8 @@ pl_params = {
 
 # meteorology parameters
 met_params = {
-    "eastward_wind": 0.0,  # m/s
-    "northward_wind": 0.0,  # m/s
+    "eastward_wind": -5.0,  # m/s
+    "northward_wind": 03.0,  # m/s
     "lagrangian_tendency_of_air_pressure": 0.0,  # m/s
 }
 

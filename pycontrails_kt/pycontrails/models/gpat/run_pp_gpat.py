@@ -23,42 +23,44 @@ pl_out = pp_gpat.pl_out_dict[pp_gpat.job_ids[0]]
 boxm_out = pp_gpat.boxm_out_dict[pp_gpat.job_ids[0]]
 patch_table = pp_gpat.patch_table_dict[pp_gpat.job_ids[0]]
 
-print(boxm_out)
+print(boxm_out["Y_bg_c"].sel(species_out="NO").values)
 
 # da_nonzero = patch_table["Y_del_f"].where(patch_table["Y_del_f"] != 0, drop=True)
 # da_clean = patch_table["Y_del_f"].where(np.isfinite(patch_table["Y_del_f"]) & (patch_table["Y_del_f"] != 0), drop=True)
 # # print(da_nonzero.sel(species_out="NO").values)
 # print(da_clean.sel(species_out="NO").values)
 
-# pp_gpat.plotting.plot_plumes_3d_pv(job_id=pp_gpat.job_ids[0], 
-#                                     time_idx=184+3*15, overlay_patch=True)   
 
 pl_time_idx = np.asarray(pp_gpat.pl_ds_dict[pp_gpat.job_ids[0]]["time_idx"].values, dtype=int)
 
-pp_gpat.plotting.animate_plumes_3d_plotly(
-    job_id=pp_gpat.job_ids[0],
-    time_idx_start=int(pl_time_idx.min()),
-    time_idx_end=int(pl_time_idx.max()),
-    frame_stride=3,           # every 3rd step — adjust for speed vs smoothness
-    output_path="plumes.html",
-    overlay_patch=True,
-    patch_species="NO",
-)
+# Check available time indices
+patch_time_idx = np.asarray(patch_table["time_idx"].values, dtype=int)
+print(f"Available time_idx in patch_table: {np.min(patch_time_idx)} to {np.max(patch_time_idx)}")
+print(f"Available time_idx in pl_ds: {np.min(pl_time_idx)} to {np.max(pl_time_idx)}")
 
+# Plot specific variables with trajectories
 # pp_gpat.plotting.plot_patch_heatmap_2d(
-#     range(184+3*15, 184+3*20, 3),
-#     job_id=None,
-#     species="NO",
-#     overlay_plume_centers=True,
+#     time_idx=184+3*60,
+#     level=11000,  # Use middle altitude
+#     job_id=pp_gpat.job_ids[0],
+#     species="NO", 
+#     data_vars=["Y_bg_c"],
+#     overlay_trajectories=True
+# )
+
+# pp_gpat.plotting.plot_patch_heatmap_2d_with_slider(
+#     time_indices=patch_time_idx,
+#     level=11000,  # Use middle altitude
+#     job_id=pp_gpat.job_ids[0],
+#     species="NO", 
+#     data_vars=["Y_bg_c"],
 #     overlay_trajectories=True,
 # )
 
-# pp_gpat.plotting.plot_patch_heatmap_3d(
-#     time_idx=184,
+# pp_gpat.plotting.animate_plumes_3d_plotly(
 #     job_id=pp_gpat.job_ids[0],
-#     species="NO",
-#     opacity=0.4,
-#     show_edges=True,
-#     off_screen=True,
-#     screenshot_path="patch_3d_NO_time184.png",
-#     )
+#     patch_species="NO",
+#     overlay_patch=True,
+#     time_idx_start=184,
+#     time_idx_end=184+3*180,
+# )

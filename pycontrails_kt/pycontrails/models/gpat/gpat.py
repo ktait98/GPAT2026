@@ -607,7 +607,7 @@ class GPATSetup:
         # # add time relative to simulation start time
         # time_rel_s = (met["time"].values - np.datetime64(self.gpat.times_sim[0])).astype("timedelta64[s]").astype(float)
         # met.data = met.data.assign_coords({
-        #     "time_rel_s": (("time"), time_rel_s)
+        #     "time_rel_s": (("time"), time_rel_s)  
         # })
 
         return met
