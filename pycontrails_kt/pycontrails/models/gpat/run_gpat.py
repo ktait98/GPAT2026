@@ -47,7 +47,7 @@ fl_params = {
     "clip_to_domain": True,
     "domain_margin_deg": 0.005,
     "sep_dist": (1000, 0, 0),  # dx, dy, dz [m]
-    "n_ac": 1,  # number of aircraft
+    "n_ac": 0,  # number of aircraft
 }
 
 # plume dispersion parameters

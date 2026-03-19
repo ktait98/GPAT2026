@@ -214,8 +214,6 @@ CONTAINS
         
         MOM(:) = Y(:,218) + BGOAM + SOA(:)
 
-        
-
     END SUBROUTINE CALC_AEROSOL
 
     SUBROUTINE CHEM_ALLOC(NCELL, NSBOXM, NPP, NPC, NTC, NFL)
@@ -509,10 +507,12 @@ CONTAINS
     END SUBROUTINE CHEM_ALLOC
 
     SUBROUTINE CHEMCO(TEMP, N2, O2, M, RC)
+        
         IMPLICIT NONE
         DOUBLE PRECISION, INTENT(IN)  :: TEMP(:), N2(:), O2(:), M(:)
         DOUBLE PRECISION, INTENT(OUT) :: RC(:,:)
         DOUBLE PRECISION :: R
+        INTEGER :: I
 
         ! K-array workspace accessed from module-level (allocated in CHEM_ALLOC)
         ! All rate coefficients available via host association
@@ -547,6 +547,7 @@ CONTAINS
         KOUT3613(:) = 4.34*EXP(-11003/(R*TEMP(:)))
         KOUT3442(:) = 4.34*EXP(-12763/(R*TEMP(:)))
 
+            
         !    COMPLEX RATE COEFFICIENTS                    
                                                                      
         !    KFPAN                                                          
@@ -2233,6 +2234,21 @@ CONTAINS
 
         ! Reaction (510) P3442 = ANHY                                                       
         RC(:,510) = KOUT3442(:)
+
+        ! --- RC Diagnostics ---
+        DO I = 1, SIZE(RC,2)
+            PRINT *, 'RC(:,', I, '): min=', MINVAL(RC(:,I)), 'max=', MAXVAL(RC(:,I)), 'mean=', SUM(RC(:,I))/SIZE(RC(:,I))
+            PRINT *, 'RC(:,', I, '): NaN count=', COUNT(RC(:,I) /= RC(:,I)), 'Inf count=', COUNT(ABS(RC(:,I)) > 1.0D+30)
+        END DO
+        ! ! Map RC indices to species names (partial example)
+        ! PRINT *, 'RC index mapping:'
+        ! PRINT *, '1: O = O3'
+        ! PRINT *, '2: O = O3'
+        ! PRINT *, '3: O + O3 ='
+        ! PRINT *, '4: O + NO = NO2'
+        ! PRINT *, '5: O + NO2 = NO'
+        ! PRINT *, '...'
+        ! PRINT *, '510: P3442 = ANHY'
 
     END SUBROUTINE CHEMCO
 
@@ -4906,6 +4922,83 @@ CONTAINS
 
     END SUBROUTINE DERIV
 
+    SUBROUTINE CHEM_SANITY_CHECK(Y, J, DJ, RC, NCELL, NSPEC_Y, NSPEC_J, NSPEC_DJ, NSPEC_RC)
+        IMPLICIT NONE
+        DOUBLE PRECISION, INTENT(IN) :: Y(:,:), J(:,:), DJ(:,:), RC(:,:)
+        INTEGER, INTENT(IN) :: NCELL, NSPEC_Y, NSPEC_J, NSPEC_DJ, NSPEC_RC
+        INTEGER :: i, s
+        DOUBLE PRECISION :: minV, maxV, meanV, sumV
+        LOGICAL :: hasNaN, hasInf
+        ! Y
+        DO s = 1, NSPEC_Y
+            minV = Y(s,1)
+            maxV = Y(s,1)
+            sumV = 0.0D0
+            hasNaN = .FALSE.
+            hasInf = .FALSE.
+            DO i = 1, SIZE(Y,2)
+                minV = MIN(minV, Y(s,i))
+                maxV = MAX(maxV, Y(s,i))
+                sumV = sumV + Y(s,i)
+                IF (Y(s,i) /= Y(s,i)) hasNaN = .TRUE.
+                IF (ABS(Y(s,i)) > 1.0D300) hasInf = .TRUE.
+            END DO
+            meanV = sumV / SIZE(Y,2)
+            PRINT *, 'Y species', s, ': min=', minV, 'max=', maxV, 'mean=', meanV, 'NaN=', hasNaN, 'Inf=', hasInf
+        END DO
+        ! J
+        DO s = 1, NSPEC_J
+            minV = J(s,1)
+            maxV = J(s,1)
+            sumV = 0.0D0
+            hasNaN = .FALSE.
+            hasInf = .FALSE.
+            DO i = 1, SIZE(J,2)
+                minV = MIN(minV, J(s,i))
+                maxV = MAX(maxV, J(s,i))
+                sumV = sumV + J(s,i)
+                IF (J(s,i) /= J(s,i)) hasNaN = .TRUE.
+                IF (ABS(J(s,i)) > 1.0D300) hasInf = .TRUE.
+            END DO
+            meanV = sumV / SIZE(J,2)
+            PRINT *, 'J species', s, ': min=', minV, 'max=', maxV, 'mean=', meanV, 'NaN=', hasNaN, 'Inf=', hasInf
+        END DO
+        ! DJ
+        DO s = 1, NSPEC_DJ
+            minV = DJ(s,1)
+            maxV = DJ(s,1)
+            sumV = 0.0D0
+            hasNaN = .FALSE.
+            hasInf = .FALSE.
+            DO i = 1, SIZE(DJ,2)
+                minV = MIN(minV, DJ(s,i))
+                maxV = MAX(maxV, DJ(s,i))
+                sumV = sumV + DJ(s,i)
+                IF (DJ(s,i) /= DJ(s,i)) hasNaN = .TRUE.
+                IF (ABS(DJ(s,i)) > 1.0D300) hasInf = .TRUE.
+            END DO
+            meanV = sumV / SIZE(DJ,2)
+            PRINT *, 'DJ species', s, ': min=', minV, 'max=', maxV, 'mean=', meanV, 'NaN=', hasNaN, 'Inf=', hasInf
+        END DO
+        ! RC
+        DO s = 1, NSPEC_RC
+            minV = RC(s,1)
+            maxV = RC(s,1)
+            sumV = 0.0D0
+            hasNaN = .FALSE.
+            hasInf = .FALSE.
+            DO i = 1, SIZE(RC,2)
+                minV = MIN(minV, RC(s,i))
+                maxV = MAX(maxV, RC(s,i))
+                sumV = sumV + RC(s,i)
+                IF (RC(s,i) /= RC(s,i)) hasNaN = .TRUE.
+                IF (ABS(RC(s,i)) > 1.0D300) hasInf = .TRUE.
+            END DO
+            meanV = sumV / SIZE(RC,2)
+            PRINT *, 'RC species', s, ': min=', minV, 'max=', maxV, 'mean=', meanV, 'NaN=', hasNaN, 'Inf=', hasInf
+        END DO
+    END SUBROUTINE CHEM_SANITY_CHECK
+
     SUBROUTINE RUN_LEGACY_CHEM(Y, TEMP, H2O, O2, N2, M, SZA, DTS, NCELL, NSBOXM, NPP, NPC, NTC, NFL)
         IMPLICIT NONE
         
@@ -4915,21 +5008,18 @@ CONTAINS
         INTEGER, INTENT(IN) :: DTS, NCELL, NSBOXM, NPP, NPC, NTC, NFL
         
         CALL CHEM_ALLOC(NCELL, NSBOXM, NPP, NPC, NTC, NFL)
-                
         ! Step 1: Compute aerosol properties (SOA, MOM)
         CALL CALC_AEROSOL(Y, SOA, MOM)
-        
         ! Step 2: Compute rate coefficients
         CALL CHEMCO(TEMP, N2, O2, M, RC)
-        
         ! Step 3: Compute photolysis rates (J) - takes REAL SZA, outputs REAL J
         CALL CALC_J(NCELL, SZA, J)
-        
         ! Step 4: Compute photolysis derivatives (DJ) from J
         CALL PHOTOL(NCELL, J, DJ)
-        
         ! Step 5: Integrate chemistry (compute Y changes and accumulate FL)
         CALL DERIV(Y, DJ, RC, FL, DTS)
+        ! Step 6: Chemistry sanity check
+        ! CALL CHEM_SANITY_CHECK(Y, J, DJ, RC, NCELL, SIZE(Y,1), SIZE(J,1), SIZE(DJ,1), SIZE(RC,1))
         
     END SUBROUTINE RUN_LEGACY_CHEM
 
@@ -5143,6 +5233,8 @@ MODULE DEFINE_INPUT_TYPES
         INTEGER :: NPC ! PHOTOL COEFFS
         INTEGER :: NTC ! THERMAL COEFFS
         INTEGER :: NFL ! FLUXES
+
+        INTEGER :: N_AC
 
         ! ---------- PRIVATE NETCDF PLUMBING ----------
 
@@ -5554,8 +5646,6 @@ CONTAINS
         PL_DS%ACTIVE_SEG_FLAG = TRANSPOSE(ACTIVE_SEG_FLAG_TMP)
         DEALLOCATE(ACTIVE_SEG_FLAG_TMP)
 
-        PRINT *, "ACTIVE_SEG_FLAG: ", PL_DS%ACTIVE_SEG_FLAG(1,:)
-
         IF (.NOT. ALLOCATED(AGE_S_TMP)) ALLOCATE(AGE_S_TMP(PL_DS%NTPL, PL_DS%NSEG))
         STATUS = NF90_GET_VAR(PL_DS%PL_NCID, PL_DS%VARID_AGE_S, AGE_S_TMP, &
             START=[1, 1], COUNT=[PL_DS%NTPL, PL_DS%NSEG])
@@ -5835,7 +5925,9 @@ CONTAINS
 
     SUBROUTINE BOXM_READ_STATIC(BOXM_DS)
         CLASS(BOXM_DS_TYPE), INTENT(INOUT) :: BOXM_DS
-        INTEGER :: STATUS
+        INTEGER :: STATUS, I
+
+        REAL(DP), ALLOCATABLE :: Y_BG_C_TMP(:,:)
 
         IF (.NOT. BOXM_DS%IS_OPEN) STOP "BOXM_READ_STATIC: FILE NOT OPEN (CALL INIT FIRST)"
         IF (BOXM_DS%NCELL <= 0) STOP "BOXM_READ_STATIC: NCELL NOT SET"
@@ -5898,6 +5990,12 @@ CONTAINS
         CALL NC_CHECK(STATUS, "NF90_GET_ATT(therm_coeffs)")
 
         STATUS = NF90_GET_ATT(BOXM_DS%BOXM_NCID, NF90_GLOBAL, "flux_species", BOXM_DS%NFL)
+        CALL NC_CHECK(STATUS, "NF90_GET_ATT(flux_species)")
+
+        STATUS = NF90_GET_ATT(BOXM_DS%BOXM_NCID, NF90_GLOBAL, "n_ac", BOXM_DS%N_AC)
+        CALL NC_CHECK(STATUS, "NF90_GET_ATT(n_ac)")
+
+        PRINT *, BOXM_DS%N_AC
 
         ! BOXM COORDS
         STATUS = NF90_GET_VAR(BOXM_DS%BOXM_NCID, BOXM_DS%VARID_TIME_REL_S, BOXM_DS%TIME_REL_S)
@@ -5952,12 +6050,16 @@ CONTAINS
                               START=[1, 1], COUNT=[BOXM_DS%NTBOXM, BOXM_DS%NCELL])
         CALL NC_CHECK(STATUS, "NF90_GET_VAR(sza)")
 
-        STATUS = NF90_GET_VAR(BOXM_DS%BOXM_NCID, BOXM_DS%VARID_Y_BG_C, BOXM_DS%Y_BG_C, &
-                      START=[1, 1], COUNT=[BOXM_DS%NSBOXM, BOXM_DS%NCELL])
+        ALLOCATE(Y_BG_C_TMP(BOXM_DS%NSBOXM, BOXM_DS%NCELL))
+        STATUS = NF90_GET_VAR(BOXM_DS%BOXM_NCID, BOXM_DS%VARID_Y_BG_C, Y_BG_C_TMP, &
+                    START=[1, 1], COUNT=[BOXM_DS%NSBOXM, BOXM_DS%NCELL])
         CALL NC_CHECK(STATUS, "NF90_GET_VAR(Y_bg_c)")
+        BOXM_DS%Y_BG_C(:,:) = TRANSPOSE(Y_BG_C_TMP(:,:))
+        DEALLOCATE(Y_BG_C_TMP)
 
         STATUS = NF90_GET_VAR(BOXM_DS%BOXM_NCID, BOXM_DS%VARID_MOL_MASS_C, BOXM_DS%MOL_MASS_C)
         CALL NC_CHECK(STATUS, "NF90_GET_VAR(mol_mass_c)")
+
     END SUBROUTINE BOXM_READ_STATIC
 
     SUBROUTINE BOXM_SUMMARY(BOXM_DS)
@@ -7207,14 +7309,11 @@ CONTAINS
         BOXM_STATE%O2(:) = BOXM_DS%O2(:,1)
         BOXM_STATE%N2(:) = BOXM_DS%N2(:,1)
         BOXM_STATE%SZA(:) = BOXM_DS%SZA(:,1)
-        PRINT *, 'Shape BOXM_DS%Y_BG_C:', SHAPE(BOXM_DS%Y_BG_C)
-        PRINT *, 'Shape BOXM_STATE%Y_BG_C:', SHAPE(BOXM_STATE%Y_BG_C)
-        PRINT *, 'Min/Max BOXM_DS%Y_BG_C:', MINVAL(BOXM_DS%Y_BG_C), MAXVAL(BOXM_DS%Y_BG_C)
-        PRINT *, 'Min/Max BOXM_STATE%Y_BG_C (before):', MINVAL(BOXM_STATE%Y_BG_C), MAXVAL(BOXM_STATE%Y_BG_C)
         BOXM_STATE%Y_BG_C(:,:) = BOXM_DS%Y_BG_C(:,:)
-        PRINT *, 'Min/Max BOXM_STATE%Y_BG_C (after):', MINVAL(BOXM_STATE%Y_BG_C), MAXVAL(BOXM_STATE%Y_BG_C)
         BOXM_STATE%Y_DEL_C(:,:) = 0.0_DP
         BOXM_STATE%ACTIVE_FLAG(:) = .FALSE.
+
+        PRINT *, BOXM_STATE%Y_BG_C(1, 8)
 
     END SUBROUTINE BOXM_STATE_INIT_FROM_BOXM_DS
 
@@ -7681,13 +7780,8 @@ CONTAINS
 
         INTEGER  :: STATUS
 
+        IF (PL_OUT%IS_OPEN) THEN
             STATUS = NF90_CLOSE(PL_OUT%PL_OUT_NCID)
-            ! Fix dimension ordering: NetCDF [cell, species] -> Fortran (NCELL, NSBOXM)
-            STATUS = NF90_GET_VAR(BOXM_DS%BOXM_NCID, BOXM_DS%VARID_Y_BG_C, BOXM_DS%Y_BG_C, &
-                      START=[1, 1], COUNT=[BOXM_DS%NCELL, BOXM_DS%NSBOXM])
-            CALL NC_CHECK(STATUS, "NF90_GET_VAR(Y_bg_c)")
-            ! If NetCDF is [species, cell], uncomment below:
-            ! BOXM_DS%Y_BG_C(:,:) = TRANSPOSE(BOXM_DS%Y_BG_C(:,:))
             CALL NC_CHECK(STATUS, "NF90_CLOSE(PL_OUT) IN PL_OUT_INIT")
         END IF
 
@@ -8037,10 +8131,12 @@ CONTAINS
         CLASS(BOXM_STATE_TYPE), INTENT(IN)  :: BOXM_STATE
 
         INTEGER, INTENT(IN) :: TIME_IDX
-        INTEGER :: STATUS, OUT_I, S_OUT, BOXM_ID_S
-        REAL(DP), ALLOCATABLE :: Y_BG_C_TMP(:,:,:), Y_DEL_C_TMP(:,:,:)
+        INTEGER :: STATUS, OUT_I, I, SPECIES_ID, BOXM_ID_S
         INTEGER, ALLOCATABLE :: ACTIVE_FLAG_TMP(:,:)
 
+        ! Allocate temporary arrays for output
+        REAL(DP), ALLOCATABLE :: Y_BG_C_OUT(:), Y_DEL_C_OUT(:)
+        
         IF (.NOT. BOXM_OUT%IS_OPEN) STOP "BOXM_OUT_WRITE: FILE NOT OPEN (CALL INIT FIRST)"
         IF (BOXM_OUT%NCELL <= 0) STOP "BOXM_OUT_WRITE: NCELL NOT SET"
         IF (BOXM_OUT%NSOUT <= 0) STOP "BOXM_OUT_WRITE: NSOUT NOT SET"
@@ -8052,66 +8148,70 @@ CONTAINS
         IF (.NOT. ALLOCATED(BOXM_STATE%Y_DEL_C)) STOP "BOXM_OUT_WRITE: BOXM_STATE%Y_DEL_C NOT ALLOCATED"
         IF (.NOT. ALLOCATED(BOXM_STATE%ACTIVE_FLAG)) STOP "BOXM_OUT_WRITE: BOXM_STATE%ACTIVE_FLAG NOT ALLOCATED"
 
-        OUT_I = MINLOC(ABS(BOXM_OUT%TIME_IDX - TIME_IDX),1)
 
-        IF (BOXM_OUT%TIME_IDX(OUT_I) == TIME_IDX) THEN
-
-            ! Build explicit temporary arrays using the exact netCDF variable
-            ! ordering used in START/COUNT: (time, species_out, cell).
-            ALLOCATE(Y_BG_C_TMP(BOXM_OUT%NCELL, BOXM_OUT%NSOUT, 1))
-            ALLOCATE(Y_DEL_C_TMP(BOXM_OUT%NCELL, BOXM_OUT%NSOUT, 1))
-            ALLOCATE(ACTIVE_FLAG_TMP(BOXM_OUT%NCELL, 1))
-
-            PRINT *, 'DEBUG: SHAPE of BOXM_STATE%Y_BG_C:', SHAPE(BOXM_STATE%Y_BG_C)
-            PRINT *, 'DEBUG: SHAPE of Y_BG_C_TMP before assignment:', SHAPE(Y_BG_C_TMP)
-
-            Y_BG_C_TMP(:,:,:) = 0.0_DP
-            Y_DEL_C_TMP(:,:,:) = 0.0_DP
-
-            PRINT *, 'DEBUG: SPECIES_OUT_NUM mapping:'
-            IF (ALLOCATED(BOXM_OUT%SPECIES_OUT_NUM)) THEN
-                PRINT *, BOXM_OUT%SPECIES_OUT_NUM(1:BOXM_OUT%NSOUT)
-            ELSE
-                PRINT *, 'No SPECIES_OUT_NUM array, using S_OUT directly.'
+        ! Find output index that matches TIME_IDX exactly (like PL_OUT_WRITE)
+        OUT_I = 0
+        DO I = 1, BOXM_OUT%NTOUT
+            IF (BOXM_OUT%TIME_IDX(I) == TIME_IDX) THEN
+                OUT_I = I
+                EXIT
             END IF
+        END DO
 
-            DO S_OUT = 1, BOXM_OUT%NSOUT
-                IF (ALLOCATED(BOXM_OUT%SPECIES_OUT_NUM)) THEN
-                    BOXM_ID_S = BOXM_OUT%SPECIES_OUT_NUM(S_OUT)
-                ELSE
-                    BOXM_ID_S = S_OUT
-                END IF
-
-                IF (BOXM_ID_S >= 1 .AND. BOXM_ID_S <= BOXM_STATE%NSBOXM) THEN
-                    Y_BG_C_TMP(:, S_OUT, 1) = BOXM_STATE%Y_BG_C(:, BOXM_ID_S)
-                    Y_DEL_C_TMP(:, S_OUT, 1) = BOXM_STATE%Y_DEL_C(:, BOXM_ID_S)
-                    PRINT *, 'DEBUG: S_OUT=', S_OUT, 'BOXM_ID_S=', BOXM_ID_S
-                    PRINT *, 'DEBUG: BOXM_STATE%Y_BG_C(1:5, BOXM_ID_S):', BOXM_STATE%Y_BG_C(1:5, BOXM_ID_S)
-                    PRINT *, 'DEBUG: Y_BG_C_TMP(1:5, S_OUT, 1):', Y_BG_C_TMP(1:5, S_OUT, 1)
-                END IF
-            END DO
-
-            PRINT *, 'DEBUG: SHAPE of Y_BG_C_TMP after assignment:', SHAPE(Y_BG_C_TMP)
-
-            STATUS = NF90_PUT_VAR(BOXM_OUT%BOXM_OUT_NCID, BOXM_OUT%VARID_Y_BG_C, Y_BG_C_TMP, &
-                            START=[OUT_I, 1, 1], COUNT=[1, BOXM_OUT%NSOUT, BOXM_OUT%NCELL])
-            CALL NC_CHECK(STATUS, "NF90_PUT_VAR(Y_bg_c)")
-
-            STATUS = NF90_PUT_VAR(BOXM_OUT%BOXM_OUT_NCID, BOXM_OUT%VARID_Y_DEL_C, Y_DEL_C_TMP, &
-                            START=[OUT_I, 1, 1], COUNT=[1, BOXM_OUT%NSOUT, BOXM_OUT%NCELL])
-            CALL NC_CHECK(STATUS, "NF90_PUT_VAR(Y_del_c)")
-
-            ACTIVE_FLAG_TMP(:, 1) = MERGE(1, 0, BOXM_STATE%ACTIVE_FLAG)
-
-            STATUS = NF90_PUT_VAR(BOXM_OUT%BOXM_OUT_NCID, BOXM_OUT%VARID_ACTIVE_FLAG, ACTIVE_FLAG_TMP, &
-                                START=[OUT_I, 1], COUNT=[1, BOXM_OUT%NCELL])
-            CALL NC_CHECK(STATUS, "NF90_PUT_VAR(active_flag)")
-
-            DEALLOCATE(Y_BG_C_TMP)
-            DEALLOCATE(Y_DEL_C_TMP)
-            DEALLOCATE(ACTIVE_FLAG_TMP)
-
+        IF (OUT_I == 0) THEN
+            RETURN
         END IF
+
+        ! Print summary for all species
+        DO SPECIES_ID = 1, BOXM_OUT%NSOUT
+            IF (ALLOCATED(BOXM_OUT%SPECIES_OUT_NUM)) THEN
+                BOXM_ID_S = BOXM_OUT%SPECIES_OUT_NUM(SPECIES_ID)
+            ELSE
+                BOXM_ID_S = SPECIES_ID
+            END IF
+            ! IF (BOXM_ID_S >= 1 .AND. BOXM_ID_S <= BOXM_STATE%NSBOXM) THEN
+            !     PRINT *, 'Species', SPECIES_ID, 'min/max/mean:', &
+            !     "species_num =", BOXM_ID_S, &
+            !     MINVAL(BOXM_STATE%Y_BG_C(:,BOXM_ID_S)), MAXVAL(BOXM_STATE%Y_BG_C(:,BOXM_ID_S)), &
+            !     SUM(BOXM_STATE%Y_BG_C(:,BOXM_ID_S))/REAL(SIZE(BOXM_STATE%Y_BG_C(:,BOXM_ID_S)))
+            ! END IF
+        END DO
+
+        BOXM_OUT%ACTIVE_FLAG(:, OUT_I) = MERGE(1, 0, BOXM_STATE%ACTIVE_FLAG)
+
+        ALLOCATE(Y_BG_C_OUT(BOXM_OUT%NCELL))
+        ALLOCATE(Y_DEL_C_OUT(BOXM_OUT%NCELL))
+        DO SPECIES_ID = 1, BOXM_OUT%NSOUT
+            IF (ALLOCATED(BOXM_OUT%SPECIES_OUT_NUM)) THEN
+                BOXM_ID_S = BOXM_OUT%SPECIES_OUT_NUM(SPECIES_ID)
+            ELSE
+                BOXM_ID_S = SPECIES_ID
+            END IF
+            IF (BOXM_ID_S >= 1 .AND. BOXM_ID_S <= BOXM_STATE%NSBOXM) THEN
+                Y_BG_C_OUT(:) = BOXM_STATE%Y_BG_C(:, BOXM_ID_S)
+                Y_DEL_C_OUT(:) = BOXM_STATE%Y_DEL_C(:, BOXM_ID_S)
+            ELSE
+                Y_BG_C_OUT(:) = 0.0_DP
+                Y_DEL_C_OUT(:) = 0.0_DP
+            END IF
+            STATUS = NF90_PUT_VAR(BOXM_OUT%BOXM_OUT_NCID, BOXM_OUT%VARID_Y_BG_C, Y_BG_C_OUT, &
+                START=[OUT_I, SPECIES_ID, 1], COUNT=[1, 1, BOXM_OUT%NCELL])
+            CALL NC_CHECK(STATUS, "NF90_PUT_VAR(Y_bg_c)")
+            STATUS = NF90_PUT_VAR(BOXM_OUT%BOXM_OUT_NCID, BOXM_OUT%VARID_Y_DEL_C, Y_DEL_C_OUT, &
+                START=[OUT_I, SPECIES_ID, 1], COUNT=[1, 1, BOXM_OUT%NCELL])
+            CALL NC_CHECK(STATUS, "NF90_PUT_VAR(Y_del_c)")
+        END DO
+        DEALLOCATE(Y_BG_C_OUT)
+        DEALLOCATE(Y_DEL_C_OUT)
+        
+        ALLOCATE(ACTIVE_FLAG_TMP(BOXM_OUT%NCELL, 1))
+        ACTIVE_FLAG_TMP(:, 1) = MERGE(1, 0, BOXM_STATE%ACTIVE_FLAG)
+
+        STATUS = NF90_PUT_VAR(BOXM_OUT%BOXM_OUT_NCID, BOXM_OUT%VARID_ACTIVE_FLAG, ACTIVE_FLAG_TMP, &
+                            START=[OUT_I, 1], COUNT=[1, BOXM_OUT%NCELL])
+        CALL NC_CHECK(STATUS, "NF90_PUT_VAR(active_flag)")
+        DEALLOCATE(ACTIVE_FLAG_TMP)
+
     END SUBROUTINE BOXM_OUT_WRITE
 
     SUBROUTINE BOXM_OUT_CLOSE(BOXM_OUT)
@@ -8235,7 +8335,7 @@ CONTAINS
         INTEGER, INTENT(IN) :: TIME_IDX
         INTEGER :: STATUS, OUT_I, I, ROW_IDX, CELL_C, CELL_F
         INTEGER :: NX_F, NY_F, NZ_F, IX_F, IY_F, IZ_F, REM_F
-        INTEGER :: S_OUT, BOXM_ID_S
+        INTEGER :: SPECIES_ID, BOXM_ID_S
         INTEGER, ALLOCATABLE :: ROW_IDS(:)
         INTEGER, ALLOCATABLE :: TIME_IDX_ROWS(:)
         REAL(DP), ALLOCATABLE :: LAT_ROWS(:), LON_ROWS(:), ALT_ROWS(:)
@@ -8324,10 +8424,10 @@ CONTAINS
         ALLOCATE(Y_DEL_F_OUT(PATCH_TABLE%NSOUT, PATCH_STATE%NROWS))
         Y_DEL_F_OUT(:,:) = 0.0_DP
         IF (ALLOCATED(PATCH_TABLE%SPECIES_OUT_NUM)) THEN
-            DO S_OUT = 1, PATCH_TABLE%NSOUT
-                BOXM_ID_S = PATCH_TABLE%SPECIES_OUT_NUM(S_OUT)
+            DO SPECIES_ID = 1, PATCH_TABLE%NSOUT
+                BOXM_ID_S = PATCH_TABLE%SPECIES_OUT_NUM(SPECIES_ID)
                 IF (BOXM_ID_S >= 1 .AND. BOXM_ID_S <= PATCH_STATE%NSBOXM) THEN
-                    Y_DEL_F_OUT(S_OUT, :) = PATCH_STATE%Y_DEL_F(:, BOXM_ID_S)
+                    Y_DEL_F_OUT(SPECIES_ID, :) = PATCH_STATE%Y_DEL_F(:, BOXM_ID_S)
                 END IF
             END DO
         END IF
@@ -8397,44 +8497,49 @@ CONTAINS
         INTEGER :: SEG_ID
 
         ! INITIALIZE AND READ INPUT DATASETS
-        CALL FL_DS%INIT(TRIM(DATA_PATH)//'inputs/'//TRIM(JOB_ID)//'/fl_ds.nc')
-        CALL FL_DS%READ_STATIC()
-        CALL FL_DS%SUMMARY()
-
-        CALL PL_DS%INIT(TRIM(DATA_PATH)//'inputs/'//TRIM(JOB_ID)//'/pl_ds.nc')
-        CALL PL_DS%READ_STATIC()
-        CALL PL_DS%SUMMARY()
-
         CALL BOXM_DS%INIT(TRIM(DATA_PATH)//'inputs/'//TRIM(JOB_ID)//'/boxm_ds.nc')
         CALL BOXM_DS%READ_STATIC()
         CALL BOXM_DS%SUMMARY()
+        
+        IF (BOXM_DS%N_AC > 0) THEN
+            CALL FL_DS%INIT(TRIM(DATA_PATH)//'inputs/'//TRIM(JOB_ID)//'/fl_ds.nc')
+            CALL FL_DS%READ_STATIC()
+            CALL FL_DS%SUMMARY()
 
-        ! STATE TYPE INITIALIZATION FROM INPUT DATASETS
-        CALL PL_STATE%INIT_FROM_PL_DS(PL_DS)
-        CALL PL_STATE%INIT_FROM_PL_OUT(PL_DS, SEG_ID=1)
+            CALL PL_DS%INIT(TRIM(DATA_PATH)//'inputs/'//TRIM(JOB_ID)//'/pl_ds.nc')
+            CALL PL_DS%READ_STATIC()
+            CALL PL_DS%SUMMARY()
+        END IF
 
+        IF (BOXM_DS%N_AC > 0) THEN
+            ! STATE TYPE INITIALIZATION FROM INPUT DATASETS
+            CALL PL_STATE%INIT_FROM_PL_DS(PL_DS)
+            CALL PL_STATE%INIT_FROM_PL_OUT(PL_DS, SEG_ID=1)
+            CALL PATCH_STATE%INIT_FROM_BOXM_DS(BOXM_DS)
+        END IF
         CALL BOXM_STATE%INIT_FROM_BOXM_DS(BOXM_DS)
-        CALL PATCH_STATE%INIT_FROM_BOXM_DS(BOXM_DS)
+        
+        IF (BOXM_DS%N_AC > 0) THEN
+            ! INITIALISE OUTPUT DATASETS
+            CALL PL_OUT%INIT(PL_DS, TRIM(DATA_PATH)//'outputs/'//TRIM(JOB_ID)//'/pl_out.nc')
+            CALL PL_OUT%READ_STATIC(PL_DS)
 
-        ! INITIALISE OUTPUT DATASETS
-        CALL PL_OUT%INIT(PL_DS, TRIM(DATA_PATH)//'outputs/'//TRIM(JOB_ID)//'/pl_out.nc')
-        CALL PL_OUT%READ_STATIC(PL_DS)
+            ! Align plume state species with PL_OUT species list
+            PL_STATE%NSPL = PL_OUT%NSPL
+            IF (ALLOCATED(PL_STATE%SPECIES_PL_NUM)) DEALLOCATE(PL_STATE%SPECIES_PL_NUM)
+            ALLOCATE(PL_STATE%SPECIES_PL_NUM(PL_STATE%NSPL))
+            PL_STATE%SPECIES_PL_NUM = PL_OUT%SPECIES_PL_NUM
 
-        ! Align plume state species with PL_OUT species list
-        PL_STATE%NSPL = PL_OUT%NSPL
-        IF (ALLOCATED(PL_STATE%SPECIES_PL_NUM)) DEALLOCATE(PL_STATE%SPECIES_PL_NUM)
-        ALLOCATE(PL_STATE%SPECIES_PL_NUM(PL_STATE%NSPL))
-        PL_STATE%SPECIES_PL_NUM = PL_OUT%SPECIES_PL_NUM
+            IF (ALLOCATED(PL_STATE%PL_MASS)) DEALLOCATE(PL_STATE%PL_MASS)
+            ALLOCATE(PL_STATE%PL_MASS(PL_STATE%NSEG, PL_STATE%NSPL))
+            PL_STATE%PL_MASS(:,:) = 0.0_DP
 
-        IF (ALLOCATED(PL_STATE%PL_MASS)) DEALLOCATE(PL_STATE%PL_MASS)
-        ALLOCATE(PL_STATE%PL_MASS(PL_STATE%NSEG, PL_STATE%NSPL))
-        PL_STATE%PL_MASS(:,:) = 0.0_DP
+            CALL PATCH_TABLE%INIT(TRIM(DATA_PATH)//'outputs/'//TRIM(JOB_ID)//'/patch_table.nc')
+            CALL PATCH_TABLE%READ_STATIC()
+        END IF
 
         CALL BOXM_OUT%INIT(TRIM(DATA_PATH)//'outputs/'//TRIM(JOB_ID)//'/boxm_out.nc')
         CALL BOXM_OUT%READ_STATIC()
-
-        CALL PATCH_TABLE%INIT(TRIM(DATA_PATH)//'outputs/'//TRIM(JOB_ID)//'/patch_table.nc')
-        CALL PATCH_TABLE%READ_STATIC()
 
         CALL CHEM_ALLOC(BOXM_DS%NCELL, BOXM_DS%NSBOXM, BOXM_DS%NPP, BOXM_DS%NPC, BOXM_DS%NTC, BOXM_DS%NFL)
 
@@ -8485,11 +8590,14 @@ CONTAINS
         ! === LEGACY BACKGROUND CHEMISTRY ===
         CALL BOXM_STATE%RUN_COARSE_BG_CHEM(BOXM_DS)
         
-        ! === FINE DELTA CHEMISTRY ===
-        CALL PATCH_STATE%RUN_FINE_DELTA_CHEM(BOXM_DS, BOXM_STATE)
+        IF (BOXM_DS%N_AC > 0) THEN
+            ! === FINE DELTA CHEMISTRY ===
+            CALL PATCH_STATE%RUN_FINE_DELTA_CHEM(BOXM_DS, BOXM_STATE)
         
-        ! === COARSE DELTA CHEMISTRY ===
-        CALL BOXM_STATE%RUN_COARSE_DELTA_CHEM(BOXM_DS, PATCH_STATE)
+            ! === COARSE DELTA CHEMISTRY ===
+            CALL BOXM_STATE%RUN_COARSE_DELTA_CHEM(BOXM_DS, PATCH_STATE)
+        END IF
+        
 
     END SUBROUTINE RUN_CHEM
 
@@ -8529,10 +8637,12 @@ CONTAINS
         CLASS(PATCH_STATE_TYPE), INTENT(INOUT) :: PATCH_STATE
 
         INTEGER, INTENT(IN) :: TIME_IDX
-
-        CALL PL_OUT%WRITE(PL_STATE, PL_DS, TIME_IDX)
+        
         CALL BOXM_OUT%WRITE(BOXM_STATE, TIME_IDX)
-        CALL PATCH_TABLE%WRITE(PATCH_STATE, BOXM_DS, BOXM_STATE, TIME_IDX)
+        IF (BOXM_DS%N_AC > 0) THEN
+            CALL PL_OUT%WRITE(PL_STATE, PL_DS, TIME_IDX)
+            CALL PATCH_TABLE%WRITE(PATCH_STATE, BOXM_DS, BOXM_STATE, TIME_IDX)
+        END IF
 
     END SUBROUTINE WRITE_OUTPUTS
 
@@ -8596,13 +8706,17 @@ CONTAINS
         CLASS(BOXM_OUT_TYPE),    INTENT(INOUT) :: BOXM_OUT
         CLASS(PATCH_TABLE_TYPE), INTENT(INOUT) :: PATCH_TABLE
 
-        CALL FL_DS%CLOSE()
-        CALL PL_DS%CLOSE()
         CALL BOXM_DS%CLOSE()
-
-        CALL PL_OUT%CLOSE()
+        IF (BOXM_DS%N_AC > 0) THEN
+            CALL FL_DS%CLOSE()
+            CALL PL_DS%CLOSE()
+        END IF
+        
         CALL BOXM_OUT%CLOSE()
-        CALL PATCH_TABLE%CLOSE()
+        IF (BOXM_DS%N_AC > 0) THEN
+            CALL PL_OUT%CLOSE()
+            CALL PATCH_TABLE%CLOSE()
+        END IF
 
     END SUBROUTINE CLOSE_DATASETS
 
@@ -8648,810 +8762,25 @@ PROGRAM BOXM_RUN
 
         CALL RESET_STATES(PL_STATE, BOXM_STATE, PATCH_STATE)
 
-        ! PROJECT_PLUMES_TO_GRID
-        CALL PROJECT_PLUMES_TO_GRID(FL_DS, PL_DS, BOXM_DS, PL_STATE, BOXM_STATE, PATCH_STATE, TIME_IDX)
+        IF (BOXM_DS%N_AC > 0) THEN
+            ! PROJECT_PLUMES_TO_GRID
+            CALL PROJECT_PLUMES_TO_GRID(FL_DS, PL_DS, BOXM_DS, PL_STATE, BOXM_STATE, PATCH_STATE, TIME_IDX)
 
-        ! UPDATE_CHEMISTRY
-        CALL RUN_CHEM(BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
+            ! UPDATE_CHEMISTRY
+            CALL RUN_CHEM(BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
 
-        ! BACKPROJECT_GRID_TO_PLUMES
-        CALL BACKPROJECT_GRID_TO_PLUMES(PL_DS, BOXM_DS, PL_STATE, BOXM_STATE, PATCH_STATE, TIME_IDX)
-
-        ! WRITE OUTPUTS
+            ! BACKPROJECT_GRID_TO_PLUMES
+            CALL BACKPROJECT_GRID_TO_PLUMES(PL_DS, BOXM_DS, PL_STATE, BOXM_STATE, PATCH_STATE, TIME_IDX)
+        ELSE
+            ! UPDATE_CHEMISTRY
+            CALL RUN_CHEM(BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
+        END IF
+        
+        ! WRITE BACK TO OUTPUT DATASETS
         CALL WRITE_OUTPUTS(PL_OUT, BOXM_OUT, PATCH_TABLE, PL_DS, BOXM_DS, PL_STATE, BOXM_STATE, PATCH_STATE, TIME_IDX)
-    
+
     END DO
 
     CALL CLOSE_DATASETS(FL_DS, PL_DS, BOXM_DS, PL_OUT, BOXM_OUT, PATCH_TABLE)
     
 END PROGRAM BOXM_RUN
-
-
-! MODULE RUN_CHEM
-!     USE NETCDF
-!     IMPLICIT NONE
-
-!     INTEGER :: IOSTAT
-!     REAL :: PI, TIME1, DTS
-
-!     INTEGER :: NTS, NCELL, NS, NS_OUT
-!     INTEGER :: NTC, NPC, NPP, NFL, NEMI
-!     INTEGER :: S, CELL, TS
-!     INTEGER :: I, SPECIES_INDEX, JOBID 
-
-!     INTEGER :: NCID, DIMID_TIME, DIMID_CELL, DIMID_NS, DIMID_NEMI
-!     INTEGER, PRIVATE :: VARID_TIME, VARID_LEVEL, VARID_LON, VARID_LAT, VARID_PRESSURE, VARID_ALT
-!     INTEGER, PRIVATE :: VARID_SPECIES, VARID_EMI_SPECIES, VARID_BG_CHEM
-!     INTEGER, PRIVATE :: VARID_TEMP, VARID_M, VARID_H2O, VARID_O2, VARID_N2, VARID_SZA, VARID_EMI
-    
-!     INTEGER :: VARID_Y, VARID_J, VARID_DJ, VARID_RC, VARID_FL
-!     INTEGER, PRIVATE :: IERR
-
-!     CHARACTER(LEN=256) :: JOB_ID
-
-!     ! DEFINE BOXM INPUTS
-!     DOUBLE PRECISION, ALLOCATABLE :: TIME(:), LEVEL(:), LON(:), LAT(:), TEMP(:), PRESSURE(:), ALT(:)
-!     CHARACTER(LEN=80), ALLOCATABLE :: SPECIES(:), EMI_SPECIES(:)
-!     DOUBLE PRECISION, ALLOCATABLE :: EMI(:,:), EMIP(:,:), BG_CHEM(:,:)
-!     DOUBLE PRECISION, ALLOCATABLE :: M(:), H2O(:), O2(:), N2(:), SZA(:)
-
-!     DOUBLE PRECISION, ALLOCATABLE :: Y(:,:), YP(:,:), RC(:,:), J(:,:), DJ(:,:), FL(:,:)
-!     DOUBLE PRECISION, ALLOCATABLE :: SOA(:), MOM(:), BR01(:), RO2(:), P(:), L(:), Y_PPB(:,:), EMI_PPB(:,:)
-!     INTEGER, ALLOCATABLE :: SPECIES_OUT_NUM(:)
-
-!     ! CHEMCO
-!     ! SIMPLE RATE COEFFICIENT SCALARS
-!     DOUBLE PRECISION, PRIVATE :: KRO2NO3,KDEC
-
-!     ! COMPLEX RATE COEFFICIENT SCALARS
-!     DOUBLE PRECISION, PRIVATE :: FCC,FCD,FC1,K2I,FC2,FC7,FC8,K9I,FC9,FC10,KI,K13I
-!     DOUBLE PRECISION, PRIVATE :: FC13,FC14,FC15,FC16,FCX
-
-!     ! SIMPLE RATE COEFFICIENT CELLS
-!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: KRO2NO,KAPNO,KRO2HO2,KAPHO2,KNO3AL,KALKOXY
-!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: KALKPXY,KIN,KOUT2604,KOUT4608,KOUT2631
-!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: KOUT2635,KOUT4610,KOUT2605,KOUT2630,KOUT2629
-!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: KOUT2632,KOUT2637,KOUT3612,KOUT3613,KOUT3442
-
-!     ! COMPLEX RATE COEFFICIENT CELLS
-!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: KC0,KCI,KRC,FC,KFPAN,KD0,KDI,KRD,FD,KBPAN,K10
-!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: K1I,KR1,F1,KMT01,K20,KR2,Fa2,KMT02,K30,K3I
-!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: KR3,FC3,F3,KMT03,K40,K4I,KR4,FC4,Fa4,KMT04
-!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: KMT05,KMT06,K70,K7I,KR7,F7,KMT07,K80,K8I,KR8
-!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: F8,KMT08,K90,KR9,F9,KMT09,K100,K10I,KR10,F10
-!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: KMT10,K1,K3,K4,K2,KMT11,K0,F,KMT12,K130
-!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: KR13,F13,KMT13,K140,K14I,KR14,F14,KMT14,K150
-!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: K15I,KR15,F15,KMT15,K160,K16I,KR16,F16,KMT16
-!     DOUBLE PRECISION, ALLOCATABLE, DIMENSION(:), PRIVATE :: K170,K17I,KR17,FC17,F17,KMT17
-
-! CONTAINS 
-
-!     SUBROUTINE INIT_VARS
-!         IMPLICIT NONE
-!         ! ALLOCATE CHEM DATA STRUCTURE
-!         IF (.NOT. ALLOCATED(Y)) THEN
-!             ALLOCATE(Y(NCELL,NS))
-!             Y(:,:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(YP)) THEN
-!             ALLOCATE(YP(NCELL,NS))
-!             YP(:,:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(Y_PPB)) THEN
-!             ALLOCATE(Y_PPB(NCELL,NS))
-!             Y_PPB(:,:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(SPECIES_OUT_NUM)) THEN
-!             ALLOCATE(SPECIES_OUT_NUM(NS_OUT))
-!             SPECIES_OUT_NUM(:) = 0
-!         END IF
-!         IF (.NOT. ALLOCATED(RC)) THEN
-!             ALLOCATE(RC(NCELL,NTC))
-!             RC(:,:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(J)) THEN
-!             ALLOCATE(J(NCELL,NPP))
-!             J(:,:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(DJ)) THEN
-!             ALLOCATE(DJ(NCELL,NPC))
-!             DJ(:,:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(FL)) THEN
-!             ALLOCATE(FL(NCELL,NFL))
-!             FL(:,:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(EMI)) THEN
-!             ALLOCATE(EMI(NCELL,NEMI))
-!             EMI(:,:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(EMIP)) THEN
-!             ALLOCATE(EMIP(NCELL,NEMI))
-!             EMIP(:,:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(EMI_PPB)) THEN
-!             ALLOCATE(EMI_PPB(NCELL,NEMI))
-!             EMI_PPB(:,:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(SOA)) THEN
-!             ALLOCATE(SOA(NCELL))
-!             SOA(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(MOM)) THEN
-!             ALLOCATE(MOM(NCELL))
-!             MOM(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(BR01)) THEN
-!             ALLOCATE(BR01(NCELL))
-!             BR01(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(RO2)) THEN
-!             ALLOCATE(RO2(NCELL))
-!             RO2(:) = 0.0
-!         END IF
-
-!         IF (.NOT. ALLOCATED(P)) THEN
-!             ALLOCATE(P(NCELL))
-!             P(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(L)) THEN
-!             ALLOCATE(L(NCELL))
-!             L(:) = 0.0
-!         END IF
-                
-!         IF (.NOT. ALLOCATED(KRO2NO)) THEN
-!             ALLOCATE(KRO2NO(NCELL))
-!             KRO2NO(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KAPNO)) THEN
-!             ALLOCATE(KAPNO(NCELL))
-!             KAPNO(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KRO2HO2)) THEN
-!             ALLOCATE(KRO2HO2(NCELL))
-!             KRO2HO2(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KAPHO2)) THEN
-!             ALLOCATE(KAPHO2(NCELL))
-!             KAPHO2(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KNO3AL)) THEN
-!             ALLOCATE(KNO3AL(NCELL))
-!             KNO3AL(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KALKOXY)) THEN
-!             ALLOCATE(KALKOXY(NCELL))
-!             KALKOXY(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KALKPXY)) THEN
-!             ALLOCATE(KALKPXY(NCELL))
-!             KALKPXY(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KIN)) THEN
-!             ALLOCATE(KIN(NCELL))
-!             KIN(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KOUT2604)) THEN
-!             ALLOCATE(KOUT2604(NCELL))
-!             KOUT2604(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KOUT4608)) THEN
-!             ALLOCATE(KOUT4608(NCELL))
-!             KOUT4608(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KOUT2631)) THEN
-!             ALLOCATE(KOUT2631(NCELL))
-!             KOUT2631(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KOUT2635)) THEN
-!             ALLOCATE(KOUT2635(NCELL))
-!             KOUT2635(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KOUT4610)) THEN
-!             ALLOCATE(KOUT4610(NCELL))
-!             KOUT4610(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KOUT2605)) THEN
-!             ALLOCATE(KOUT2605(NCELL))
-!             KOUT2605(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KOUT2630)) THEN
-!             ALLOCATE(KOUT2630(NCELL))
-!             KOUT2630(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KOUT2629)) THEN
-!             ALLOCATE(KOUT2629(NCELL))
-!             KOUT2629(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KOUT2632)) THEN
-!             ALLOCATE(KOUT2632(NCELL))
-!             KOUT2632(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KOUT2637)) THEN
-!             ALLOCATE(KOUT2637(NCELL))
-!             KOUT2637(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KOUT3612)) THEN
-!             ALLOCATE(KOUT3612(NCELL))
-!             KOUT3612(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KOUT3613)) THEN
-!             ALLOCATE(KOUT3613(NCELL))
-!             KOUT3613(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KOUT3442)) THEN
-!             ALLOCATE(KOUT3442(NCELL))
-!             KOUT3442(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KC0)) THEN
-!             ALLOCATE(KC0(NCELL))
-!             KC0(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KCI)) THEN
-!             ALLOCATE(KCI(NCELL))
-!             KCI(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KRC)) THEN
-!             ALLOCATE(KRC(NCELL))
-!             KRC(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(FC)) THEN
-!             ALLOCATE(FC(NCELL))
-!             FC(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KFPAN)) THEN
-!             ALLOCATE(KFPAN(NCELL))
-!             KFPAN(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KD0)) THEN
-!             ALLOCATE(KD0(NCELL))
-!             KD0(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KDI)) THEN
-!             ALLOCATE(KDI(NCELL))
-!             KDI(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KRD)) THEN
-!             ALLOCATE(KRD(NCELL))
-!             KRD(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(FD)) THEN
-!             ALLOCATE(FD(NCELL))
-!             FD(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KBPAN)) THEN
-!             ALLOCATE(KBPAN(NCELL))
-!             KBPAN(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(K10)) THEN
-!             ALLOCATE(K10(NCELL))
-!             K10(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(K1I)) THEN
-!             ALLOCATE(K1I(NCELL))
-!             K1I(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KR1)) THEN
-!             ALLOCATE(KR1(NCELL))
-!             KR1(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(F1)) THEN
-!             ALLOCATE(F1(NCELL))
-!             F1(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KMT01)) THEN
-!             ALLOCATE(KMT01(NCELL))
-!             KMT01(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(K20)) THEN
-!             ALLOCATE(K20(NCELL))
-!             K20(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KR2)) THEN
-!             ALLOCATE(KR2(NCELL))
-!             KR2(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(Fa2)) THEN
-!             ALLOCATE(Fa2(NCELL))
-!             Fa2(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KMT02)) THEN
-!             ALLOCATE(KMT02(NCELL))
-!             KMT02(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(K30)) THEN
-!             ALLOCATE(K30(NCELL))
-!             K30(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(K3I)) THEN
-!             ALLOCATE(K3I(NCELL))
-!             K3I(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KR3)) THEN
-!             ALLOCATE(KR3(NCELL))
-!             KR3(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(FC3)) THEN
-!             ALLOCATE(FC3(NCELL))
-!             FC3(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(F3)) THEN
-!             ALLOCATE(F3(NCELL))
-!             F3(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KMT03)) THEN
-!             ALLOCATE(KMT03(NCELL))
-!             KMT03(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(K40)) THEN
-!             ALLOCATE(K40(NCELL))
-!             K40(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(K4I)) THEN
-!             ALLOCATE(K4I(NCELL))
-!             K4I(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KR4)) THEN
-!             ALLOCATE(KR4(NCELL))
-!             KR4(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(FC4)) THEN
-!             ALLOCATE(FC4(NCELL))
-!             FC4(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(Fa4)) THEN
-!             ALLOCATE(Fa4(NCELL))
-!             Fa4(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KMT04)) THEN
-!             ALLOCATE(KMT04(NCELL))
-!             KMT04(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KMT05)) THEN
-!             ALLOCATE(KMT05(NCELL))
-!             KMT05(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KMT06)) THEN
-!             ALLOCATE(KMT06(NCELL))
-!             KMT06(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(K70)) THEN
-!             ALLOCATE(K70(NCELL))
-!             K70(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(K7I)) THEN
-!             ALLOCATE(K7I(NCELL))
-!             K7I(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KR7)) THEN
-!             ALLOCATE(KR7(NCELL))
-!             KR7(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(F7)) THEN
-!             ALLOCATE(F7(NCELL))
-!             F7(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KMT07)) THEN
-!             ALLOCATE(KMT07(NCELL))
-!             KMT07(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(K80)) THEN
-!             ALLOCATE(K80(NCELL))
-!             K80(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(K8I)) THEN
-!             ALLOCATE(K8I(NCELL))
-!             K8I(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KR8)) THEN
-!             ALLOCATE(KR8(NCELL))
-!             KR8(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(F8)) THEN
-!             ALLOCATE(F8(NCELL))
-!             F8(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KMT08)) THEN
-!             ALLOCATE(KMT08(NCELL))
-!             KMT08(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(K90)) THEN
-!             ALLOCATE(K90(NCELL))
-!             K90(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KR9)) THEN
-!             ALLOCATE(KR9(NCELL))
-!             KR9(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(F9)) THEN
-!             ALLOCATE(F9(NCELL))
-!             F9(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KMT09)) THEN
-!             ALLOCATE(KMT09(NCELL))
-!             KMT09(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(K100)) THEN
-!             ALLOCATE(K100(NCELL))
-!             K100(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(K10I)) THEN
-!             ALLOCATE(K10I(NCELL))
-!             K10I(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KR10)) THEN
-!             ALLOCATE(KR10(NCELL))
-!             KR10(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(F10)) THEN
-!             ALLOCATE(F10(NCELL))
-!             F10(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KMT10)) THEN
-!             ALLOCATE(KMT10(NCELL))
-!             KMT10(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(K1)) THEN
-!             ALLOCATE(K1(NCELL))
-!             K1(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(K3)) THEN
-!             ALLOCATE(K3(NCELL))
-!             K3(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(K4)) THEN
-!             ALLOCATE(K4(NCELL))
-!             K4(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(K2)) THEN
-!             ALLOCATE(K2(NCELL))
-!             K2(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KMT11)) THEN
-!             ALLOCATE(KMT11(NCELL))
-!             KMT11(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(K0)) THEN
-!             ALLOCATE(K0(NCELL))
-!             K0(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(F)) THEN
-!             ALLOCATE(F(NCELL))
-!             F(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KMT12)) THEN
-!             ALLOCATE(KMT12(NCELL))
-!             KMT12(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(K130)) THEN
-!             ALLOCATE(K130(NCELL))
-!             K130(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KR13)) THEN
-!             ALLOCATE(KR13(NCELL))
-!             KR13(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(F13)) THEN
-!             ALLOCATE(F13(NCELL))
-!             F13(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KMT13)) THEN
-!             ALLOCATE(KMT13(NCELL))
-!             KMT13(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(K140)) THEN
-!             ALLOCATE(K140(NCELL))
-!             K140(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(K14I)) THEN
-!             ALLOCATE(K14I(NCELL))
-!             K14I(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KR14)) THEN
-!             ALLOCATE(KR14(NCELL))
-!             KR14(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(F14)) THEN
-!             ALLOCATE(F14(NCELL))
-!             F14(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KMT14)) THEN
-!             ALLOCATE(KMT14(NCELL))
-!             KMT14(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(K150)) THEN
-!             ALLOCATE(K150(NCELL))
-!             K150(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(K15I)) THEN
-!             ALLOCATE(K15I(NCELL))
-!             K15I(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KR15)) THEN
-!             ALLOCATE(KR15(NCELL))
-!             KR15(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(F15)) THEN
-!             ALLOCATE(F15(NCELL))
-!             F15(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KMT15)) THEN
-!             ALLOCATE(KMT15(NCELL))
-!             KMT15(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(K160)) THEN
-!             ALLOCATE(K160(NCELL))
-!             K160(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(K16I)) THEN
-!             ALLOCATE(K16I(NCELL))
-!             K16I(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KR16)) THEN
-!             ALLOCATE(KR16(NCELL))
-!             KR16(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(F16)) THEN
-!             ALLOCATE(F16(NCELL))
-!             F16(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KMT16)) THEN
-!             ALLOCATE(KMT16(NCELL))
-!             KMT16(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(K170)) THEN
-!             ALLOCATE(K170(NCELL))
-!             K170(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(K17I)) THEN
-!             ALLOCATE(K17I(NCELL))
-!             K17I(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KR17)) THEN
-!             ALLOCATE(KR17(NCELL))
-!             KR17(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(FC17)) THEN
-!             ALLOCATE(FC17(NCELL))
-!             FC17(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(F17)) THEN
-!             ALLOCATE(F17(NCELL))
-!             F17(:) = 0.0
-!         END IF
-!         IF (.NOT. ALLOCATED(KMT17)) THEN
-!             ALLOCATE(KMT17(NCELL))
-!             KMT17(:) = 0.0
-!         END IF
-    
-!     END SUBROUTINE INIT_VARS
-
-    
-
-    
-
-    
-!     SUBROUTINE WRITE(DTS)
-!         IMPLICIT NONE
-!         REAL :: DTS
-!         ! INTEGER :: TS, NCELL, PP, PC, TC, S
-
-!         PI = 4.0*ATAN(1.0)
-!         DO S = 1,NS
-!             Y_PPB(:,S) = Y(:,S) * 1.0E+9 / M(:) 
-!         END DO
-
-!         DO S = 1,NEMI
-!             EMI_PPB(:,S) = EMI(:,S) * 1.0E+9 / M(:)
-!         END DO
-
-!         IERR = NF90_PUT_VAR(NCID, VARID_LEVEL, LEVEL(:), START=[1], COUNT=[NCELL])
-!         IERR = NF90_PUT_VAR(NCID, VARID_LON, LON(:), START=[1], COUNT=[NCELL])
-!         IERR = NF90_PUT_VAR(NCID, VARID_LAT, LAT(:), START=[1], COUNT=[NCELL])
-       
-
-!         ! Loop through the species_out array and write each species individually
-!         DO I = 1, NS_OUT
-!             SPECIES_INDEX = SPECIES_OUT_NUM(I)
-!             IERR = NF90_PUT_VAR(NCID, VARID_Y, Y_PPB(:, SPECIES_INDEX), START=[1, I, TS], COUNT=[NCELL, 1, 1])
-!             IF (IERR /= NF90_NOERR) THEN
-!                 PRINT *, NF90_STRERROR(IERR)
-!             END IF
-!             ! Y write completed
-!         END DO      
-
-!         ! IERR = NF90_PUT_VAR(NCID, VARID_Y, Y_PPB(:, :), START=[1, 1, TS], COUNT=[NCELL, NS, 1])
-!         ! CALL CHECK(IERR, 'Y WRITE FAILED')
-!         IERR = NF90_PUT_VAR(NCID_BOXM, VARID_SZA, SZA(:), START=[1, TS], COUNT=[NCELL, 1])
-!         IERR = NF90_PUT_VAR(NCID_BOXM, VARID_J, J(:, :), START=[1, 1, TS], COUNT=[NCELL, 5, 1])
-!         IERR = NF90_PUT_VAR(NCID_BOXM, VARID_DJ, DJ(:, :), START=[1, 1, TS], COUNT=[NCELL, 5, 1])
-!         IERR = NF90_PUT_VAR(NCID_BOXM, VARID_RC, RC(:, :), START=[1, 1, TS], COUNT=[NCELL, 5, 1])
-!         IERR = NF90_PUT_VAR(NCID_BOXM, VARID_EMI, EMI_PPB(:, :), START=[1, 1, TS], COUNT=[NCELL, NEMI, 1])
-
-!     END SUBROUTINE WRITE
-    
-! END MODULE RUN_CHEM
-
-
-! PROGRAM BOXM_RUN
-!     !--------------------------------------------------------------------
-!     ! BOXM_RUN – Main driver for the Box Model plume/grid coupling cycle
-!     ! 
-!     ! Controls dispersion, chemistry, and background coupling through 
-!     ! nested timesteps: dispersion → chemistry substeps → backprojection.
-!     !
-!     ! TIME advances in dispersion increments (DT_DISP), and each dispersion
-!     ! step can have multiple embedded chemistry substeps (DT_CHEM).
-!     !--------------------------------------------------------------------
-
-!     TIME = 0.0D0
-!     DO IDISP = 1, NDISP_STEPS
-
-!         ! ================================================================
-!         ! 1. UPDATE PLUME GEOMETRY (DISPERSION)
-!         ! ================================================================
-!         !
-!         ! Each plume segment’s position and shape evolve according to the 
-!         ! dispersion model (wind, turbulence, shear, etc.).
-!         ! After updating geometry, spatial overlap weights with the grid 
-!         ! cells must be recomputed to reflect the new footprint.
-!         !
-!         ! UPDATE_PLUME_GEOMETRY → updates centroid, σx, σy, σz, etc.
-!         ! COMPUTE_WEIGHTS        → builds or updates the weight list
-!         !                          for mapping between plume and fine grid.
-!         !---------------------------------------------------------------
-!         DO SEG = 1, NSEG
-!             IF (.NOT. ACTIVE_SEG(SEG,TIME)) CYCLE
-!             CALL UPDATE_PLUME_GEOMETRY(PLUME_SEG(SEG), DT_DISP)
-!             CALL COMPUTE_WEIGHTS(PLUME_SEG(SEG), GRID)
-!         END DO
-
-
-!         ! ================================================================
-!         ! 2. CHEMISTRY SUBSTEPS
-!         ! ================================================================
-!         !
-!         ! Within each dispersion step, perform multiple smaller chemistry
-!         ! timesteps. This ensures the chemistry sees quasi-steady geometry.
-!         !
-!         ! The fine grid represents the local “mixing field” where overlapping
-!         ! plumes interact chemically before results are mapped back.
-!         !---------------------------------------------------------------
-!         DO ICHEM = 1, N_CHEM_SUB
-
-!             ! Reset fine grid concentrations and active flags each substep
-!             FINE_MASS = 0.0D0
-!             ACTIVE_FINE = .FALSE.
-
-!             ! ------------------------------------------------------------
-!             ! 2a. PROJECT PLUMES → FINE GRID
-!             ! ------------------------------------------------------------
-!             !
-!             ! For each active plume segment, distribute its current species
-!             ! mass or concentration to the fine grid using the precomputed
-!             ! weight list (horizontal × vertical overlap fractions).
-!             !
-!             ! This aggregates all overlapping plumes into the fine grid field.
-!             ! FINE_MASS(i, sp) accumulates Σ_j [ W(i,j) * PLUME_MASS(sp,j) ]
-!             !------------------------------------------------------------
-!             DO SEG = 1, NSEG
-!                 IF (.NOT. ACTIVE_SEG(SEG,TIME)) CYCLE
-!                 CALL PROJECT_PLUME_TO_GRID(PLUME_SEG(SEG), PLUME_MASS(:,SEG), FINE_MASS)
-!             END DO
-
-
-!             ! ------------------------------------------------------------
-!             ! 2b. RUN CHEMISTRY ON FINE GRID
-!             ! ------------------------------------------------------------
-!             !
-!             ! Solve the chemical system (gas-phase, aqueous, etc.) on the fine
-!             ! grid, which now contains contributions from all plumes.
-!             ! Chemistry can be non-linear, so this step produces the combined
-!             ! “chemical tendency” including cross-plume interactions.
-!             !
-!             ! RUN_CHEMISTRY should update FINE_MASS(i,sp) in place over DT_CHEM.
-!             ! ACTIVE_FINE mask identifies which fine cells contain active plumes.
-!             !------------------------------------------------------------
-!             CALL RUN_CHEM(FINE_MASS, ACTIVE_FINE, DT_CHEM)
-
-
-!             ! ------------------------------------------------------------
-!             ! 2c. BACKPROJECT FINE GRID → PLUMES
-!             ! ------------------------------------------------------------
-!             !
-!             ! Using the same weight matrix (or its normalized transpose),
-!             ! redistribute the updated fine grid fields back to each plume.
-!             !
-!             ! This step “harvests” the chemistry results from the grid and
-!             ! embeds them back into each plume’s own concentration vector.
-!             !
-!             ! Ensures that each plume segment inherits the correct chemically
-!             ! modified composition consistent with its overlap footprint.
-!             !------------------------------------------------------------
-!             DO SEG = 1, NSEG
-!                 IF (.NOT. ACTIVE_SEG(SEG,TIME)) CYCLE
-!                 CALL BACKPROJECT_GRID_TO_PLUME(PLUME_SEG(SEG), PLUME_MASS(:,SEG), FINE_MASS)
-!             END DO
-
-
-!             ! ------------------------------------------------------------
-!             ! 2d. UPDATE COARSE BACKGROUND FIELD
-!             ! ------------------------------------------------------------
-!             !
-!             ! Coarse background grid represents the larger-scale chemical field.
-!             ! After chemistry and plume updates, reconcile the fine grid’s 
-!             ! concentrations into the coarse background to capture long-term
-!             ! mass conservation and slow background evolution.
-!             !
-!             ! This may involve:
-!             !   - Averaging fine → coarse grid,
-!             !   - Adding residual fine grid chemistry deltas,
-!             !   - Maintaining mass closure.
-!             !------------------------------------------------------------
-!             CALL UPDATE_COARSE_BG(COARSE_MASS, FINE_MASS)
-
-!             ! Advance chemistry time counter
-!             TIME = TIME + DT_CHEM
-!         END DO
-
-
-!         ! ================================================================
-!         ! 3. DEACTIVATE EXPIRED SEGMENTS
-!         ! ================================================================
-!         !
-!         ! Once a plume segment has dispersed below significance or advected
-!         ! outside the domain, it should be deactivated to save computation.
-!         ! This routine clears its mass or marks it inactive in ACTIVE_SEG.
-!         !---------------------------------------------------------------
-!         CALL DEACTIVATE_OLD_SEGMENTS(PLUME_SEG, PLUME_MASS, TIME)
-
-
-!         ! ================================================================
-!         ! 4. OUTPUT AT REGULAR INTERVALS
-!         ! ================================================================
-!         !
-!         ! Write the coarse background or diagnostic data to file for analysis.
-!         ! Output frequency controlled by OUTPUT_EVERY (in dispersion steps).
-!         !---------------------------------------------------------------
-!         IF (MOD(IDISP, OUTPUT_EVERY) == 0) CALL WRITE_OUTPUT(COARSE_MASS, TIME)
-
-!     END DO
-
-! END PROGRAM BOXM_RUN
-
-! PROGRAM BOXM_RUN
-!     USE BOXM
-!     IMPLICIT NONE
-
-!     ! Retrieve the job_id from the command line
-!     CALL getarg(1, JOB_ID)
-
-!     ! Call the subroutine to open the file with the job_id
-!     CALL OPEN_NC(JOB_ID)
-
-!     ! PRE-INTEGRATION
-!     CALL GET_DIMS()
-!     CALL INIT_VARS()
-!     CALL GET_VARIDS()
-!     CALL GET_PRE_INT_VARS()
-!     CALL GET_PRE_INT_ATTS()
-
-!     ! INTEGRATION
-!     DO TS = 1, NTS
-!         IF (MOD(REAL(TS), 3600 / DTS) == 0) THEN
-!             PRINT *, 'TS = ', TS, ' (Hour = ', TS * DTS / 3600, ')'
-!         END IF
-!         CALL GET_INT_VARS(TS)
-!         CALL CALC_AEROSOL()
-!         CALL CHEMCO()
-!         CALL CALC_J()
-!         CALL PHOTOL()
-!         IF (TS /= 1) THEN
-!             CALL DERIV(DTS)
-!         END IF
-!         CALL WRITE(DTS)
-!     END DO
-
-!     ! CALL DEALLOCATE()
-
-! END PROGRAM BOXM_RUN

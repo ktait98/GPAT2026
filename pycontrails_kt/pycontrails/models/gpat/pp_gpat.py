@@ -81,7 +81,7 @@ class GPATPostProcessor:
                         if data_dict.get("n_ac", 0) > 0:
                             output_files = ["boxm_out.nc", "patch_table.nc", "pl_out.nc"]
                         else:
-                            output_files = ["boxm_out.nc", "patch_table.nc"]
+                            output_files = ["boxm_out.nc"]
                         output_dir = os.path.join(self.outputs, job_id)
                         if all(os.path.isfile(os.path.join(output_dir, file)) for file in output_files):
                             jobs.append(data_dict)
@@ -138,14 +138,16 @@ class GPATAnalysis:
     # Loading data methods
     def load_input_datasets(self, job_id):
         self.pp_gpat.params_dict[job_id] = json.load(open(f"{self.pp_gpat.inputs}{job_id}/params.json"))
-        self.pp_gpat.fl_ds_dict[job_id] = xr.open_dataset(f"{self.pp_gpat.inputs}{job_id}/fl_ds.nc")
-        self.pp_gpat.pl_ds_dict[job_id] = xr.open_dataset(f"{self.pp_gpat.inputs}{job_id}/pl_ds.nc")
+        if self.pp_gpat.params_dict[job_id].get("n_ac", 0) > 0:
+            self.pp_gpat.fl_ds_dict[job_id] = xr.open_dataset(f"{self.pp_gpat.inputs}{job_id}/fl_ds.nc")
+            self.pp_gpat.pl_ds_dict[job_id] = xr.open_dataset(f"{self.pp_gpat.inputs}{job_id}/pl_ds.nc")
         self.pp_gpat.boxm_ds_dict[job_id] = xr.open_dataset(f"{self.pp_gpat.inputs}{job_id}/boxm_ds.nc")
 
     def load_output_datasets(self, job_id):
         self.pp_gpat.boxm_out_dict[job_id] = xr.open_dataset(f"{self.pp_gpat.outputs}{job_id}/boxm_out.nc")
-        self.pp_gpat.patch_table_dict[job_id] = xr.open_dataset(f"{self.pp_gpat.outputs}{job_id}/patch_table.nc")
-        self.pp_gpat.pl_out_dict[job_id] = xr.open_dataset(f"{self.pp_gpat.outputs}{job_id}/pl_out.nc")
+        if self.pp_gpat.params_dict[job_id].get("n_ac", 0) > 0:
+            self.pp_gpat.patch_table_dict[job_id] = xr.open_dataset(f"{self.pp_gpat.outputs}{job_id}/patch_table.nc")
+            self.pp_gpat.pl_out_dict[job_id] = xr.open_dataset(f"{self.pp_gpat.outputs}{job_id}/pl_out.nc")
 
     def unstack_boxm_out(self, job_id):
         """Unstack the box model coarse output dataset."""
@@ -237,6 +239,149 @@ class GPATPlotting:
         self.pp_gpat = pp_gpat
         self.patch_plot_min_value = None
         self.patch_plot_max_log10_span = 3.0
+
+    # Time series line plotting
+    def plot_time_series(self, job_id, species="NO", level=None, lat=None, lon=None, data_var="Y_bg_c", avg_over_domain=False):
+        boxm_out = self.pp_gpat.boxm_out_dict[job_id]
+        da = boxm_out[data_var]
+        # Sort relevant coordinates to ensure monotonicity for .sel(method="nearest")
+        for coord in ["species_out", "level_c", "latitude_c", "longitude_c"]:
+            if coord in da.coords:
+                da = da.sortby(coord)
+        # Select species_out directly (no method), others with method="nearest"
+        da = da.sel(species_out=species)
+        da = da.sel(level_c=level, latitude_c=lat, longitude_c=lon, method="nearest")
+        fig, ax = plt.subplots()
+        da.plot.line(x="time", ax=ax)
+        ax.set_facecolor('white')
+        # Reduce x-tick density
+        import matplotlib.ticker as ticker
+        ax.xaxis.set_major_locator(ticker.MaxNLocator(nbins=8))
+        # Rotate x-tick labels for readability
+        for label in ax.get_xticklabels():
+            label.set_rotation(45)
+            label.set_horizontalalignment('right')
+        ax.set_title(f"Time series of {data_var} for {species} at level={level}, lat={lat}, lon={lon}")
+        ax.set_xlabel("Time")
+        ax.set_ylabel(f"{data_var} (mol/m^3)")
+        ax.grid(True)
+        plt.tight_layout()
+        plt.show()
+    
+    def plot_boxm_background_slider(self, 
+                                    job_id, 
+                                    species="NO", 
+                                    level=None, 
+                                    time_indices=None,
+                                    ):                
+        import matplotlib.pyplot as plt
+        from matplotlib.widgets import Slider
+        boxm_out = self.pp_gpat.boxm_out_dict[job_id]
+        all_time_indices = np.asarray(boxm_out["time_idx"].values, dtype=int)
+        if time_indices is None:
+            time_indices = all_time_indices
+        else:
+            time_indices = np.asarray(time_indices, dtype=int)
+
+        # Print available time indices and levels
+        available_time_indices = np.asarray(boxm_out["time_idx"].values, dtype=int)
+        print(f"Available time indices: {available_time_indices}")
+        if "level_c" in boxm_out.dims:
+            available_levels = np.asarray(boxm_out["level_c"].values)
+            print(f"Available levels in level_c: {available_levels}")
+        elif "altitude_c" in boxm_out.dims:
+            available_levels = np.asarray(boxm_out["altitude_c"].values)
+            print(f"Available altitudes in altitude_c: {available_levels}")
+        else:
+            available_levels = None
+
+        # Restrict slider to valid time indices
+        if time_indices is None:
+            time_indices = available_time_indices
+        else:
+            time_indices = np.asarray(time_indices, dtype=int)
+            time_indices = np.intersect1d(time_indices, available_time_indices)
+            print(f"Using intersected time indices: {time_indices}")
+
+        # Restrict level to valid value
+        if level is not None and available_levels is not None:
+            # Use np.isclose to find the closest available level
+            idx = np.argmin(np.abs(available_levels - float(level)))
+            level = available_levels[idx]
+            print(f"Using closest available level: {level}")
+
+        vmin = float(boxm_out["Y_bg_c"].sel(species_out=species, level_c=level).min().compute().item())
+        vmax = float(boxm_out["Y_bg_c"].sel(species_out=species, level_c=level).max().compute().item())
+
+        fig, ax = plt.subplots()
+        plt.subplots_adjust(bottom=0.2)
+        slider_ax = fig.add_axes([0.15, 0.05, 0.7, 0.05])
+        slider = Slider(slider_ax, 'Time Index', int(time_indices.min()), int(time_indices.max()), valinit=int(time_indices[0]), valstep=1)
+
+        def plot_for_time(t_idx):
+            idx = np.argmin(np.abs(time_indices - t_idx))
+            t_idx_actual = time_indices[idx]
+            print(f"Requested t_idx={t_idx}, using closest available t_idx={t_idx_actual}")
+            _t_sel = np.flatnonzero(all_time_indices == t_idx_actual)
+            if _t_sel.size == 0:
+                print(f"No matching time index for t_idx_actual={t_idx_actual}")
+                return None
+            _b_t = boxm_out.isel(time=_t_sel).squeeze("time")
+            # Slice by altitude/level if provided
+            if level is not None:
+                if "level_c" in _b_t.dims:
+                    level_arr = np.asarray(_b_t["level_c"].values)
+                    idx = np.argmin(np.abs(level_arr - float(level)))
+                    level_actual = level_arr[idx]
+                    print(f"Requested level={level}, using closest available level={level_actual}")
+                    _b_t = _b_t.isel(level_c=idx)
+                elif "altitude_c" in _b_t.dims:
+                    alt_arr = np.asarray(_b_t["altitude_c"].values)
+                    idx = np.argmin(np.abs(alt_arr - float(level)))
+                    alt_actual = alt_arr[idx]
+                    print(f"Requested altitude={level}, using closest available altitude={alt_actual}")
+                    _b_t = _b_t.isel(altitude_c=idx)
+            vals = np.asarray(_b_t["Y_bg_c"].sel(species_out=species).values)
+            lat = np.asarray(_b_t["latitude_c"].values)
+            lon = np.asarray(_b_t["longitude_c"].values)
+            if vals.size > 0:
+                print(f"Frame max: {np.nanmax(vals)}, min: {np.nanmin(vals)}")
+            
+            if vals.size == 0 or np.all(~np.isfinite(vals)):
+                ax.set_title("No valid data to plot")
+                print("No valid data to plot for this slice.")
+                return None
+            if vals.ndim == 1 and lat.ndim == 1 and lon.ndim == 1:
+                print("Plotting as scatter for diagnostic.")
+                sc = ax.scatter(lon, lat, c=vals, cmap="viridis", vmin=vmin, vmax=vmax)
+                return sc
+            elif vals.ndim == 2 and lat.ndim == 1 and lon.ndim == 1:
+                print("Plotting as pcolormesh.")
+                mesh = ax.pcolormesh(lon, lat, vals, shading="auto", cmap="viridis", vmin=vmin, vmax=vmax)
+                return mesh
+            else:
+                ax.set_title("Unsupported array shape for plotting")
+                print("Unsupported array shape for plotting.")
+                return None
+
+        mesh = plot_for_time(int(slider.val))
+        cbar = fig.colorbar(mesh, ax=ax)
+        ax.set_title(f"Y_bg_c {species}, time_idx={slider.val}, level={level}")
+
+        def slider_update(val):
+            # Only update the data array, not axes or colorbar
+            mesh = plot_for_time(int(val))
+            if mesh is not None:
+                # Update mesh data
+                if hasattr(mesh, 'set_array'):
+                    mesh.set_array(mesh.get_array())
+                # Update title
+                ax.set_title(f"Y_bg_c {species}, time_idx={val}, level={level}")
+            fig.canvas.draw_idle()
+
+        slider.on_changed(slider_update)
+        plt.show()
+    
 
     def set_patch_plot_policy(self, min_value=None, max_log10_span=3.0):
         """Configure the default fine-grid patch filtering used across plots.
@@ -386,15 +531,70 @@ class GPATPlotting:
                     zorder=5,
                 )
 
+    def plot_heatmap_slider(self, job_id, data_var, species="NO", level=None, time_indices=None):
+        import matplotlib.pyplot as plt
+        from matplotlib.widgets import Slider
+        boxm_out = self.pp_gpat.boxm_out_dict[job_id]
+        all_time_indices = np.asarray(boxm_out["time_idx"].values, dtype=int)
+        if time_indices is None:
+            time_indices = all_time_indices
+        else:
+            time_indices = np.asarray(time_indices, dtype=int)
+        vmin = float(boxm_out[data_var].sel(species_out=species).min().compute().item())
+        vmax = float(boxm_out[data_var].sel(species_out=species).max().compute().item())
+
+        fig, ax = plt.subplots()
+        plt.subplots_adjust(bottom=0.2)
+        slider_ax = fig.add_axes([0.15, 0.05, 0.7, 0.05])
+        slider = Slider(slider_ax, 'Time Index', int(time_indices.min()), int(time_indices.max()), valinit=int(time_indices[0]), valstep=1)
+
+        def plot_for_time(t_idx):
+            _t_sel = np.flatnonzero(time_indices == t_idx)
+            if _t_sel.size == 0:
+                return
+            _b_t = boxm_out.isel(time=_t_sel).squeeze("time")
+            # Slice by altitude level if provided
+            if level is not None:
+                if "level_c" in _b_t.dims:
+                    level_arr = np.asarray(_b_t["level_c"].values)
+                    level_mask = level_arr == int(level)
+                    if not np.any(level_mask):
+                        ax.set_title(f"No data for level={level}")
+                        return
+                    _b_t = _b_t.isel(level_c=level_mask)
+                elif "altitude_c" in _b_t.dims:
+                    alt_arr = np.asarray(_b_t["altitude_c"].values)
+                    alt_mask = np.isclose(alt_arr, float(level), atol=1.0)
+                    if not np.any(alt_mask):
+                        ax.set_title(f"No data for altitude={level}")
+                        return
+                    _b_t = _b_t.isel(altitude_c=alt_mask)
+            vals = np.asarray(_b_t[data_var].sel(species_out=species).values)
+            lat = np.asarray(_b_t["latitude_c"].values)
+            lon = np.asarray(_b_t["longitude_c"].values)
+            mesh = ax.pcolormesh(lon, lat, vals, shading="auto", cmap="viridis", vmin=vmin, vmax=vmax)
+            return mesh
+
+        mesh = plot_for_time(int(slider.val))
+        cbar = fig.colorbar(mesh, ax=ax)
+        ax.set_title(f"{data_var} {species}, time_idx={slider.val}, level={level}")
+
+        def slider_update(val):
+            ax.clear()
+            mesh = plot_for_time(int(val))
+            fig.colorbar(mesh, ax=ax)
+            ax.set_title(f"{data_var} {species}, time_idx={val}, level={level}")
+            fig.canvas.draw_idle()
+
+        slider.on_changed(slider_update)
+        plt.show()
+
     def plot_patch_heatmap_2d(
         self,
         time_idx,
         level=None,
-        job_id=None,
         species="NO",
-        data_vars=None,
         shared_color_scale=True,
-        color_scale=None,
         overlay_plume_centers=False,
         overlay_trajectories=False,
         flight_ids=None,
@@ -440,7 +640,7 @@ class GPATPlotting:
             if shared_color_scale and color_scale is None:
                 # Build a shared scale from timestep-local rows to avoid loading all rows at once.
                 time_rows_all = np.asarray(patch_table["time_idx"].values, dtype=int)
-                vmax = 0.0
+                all_vals = []
                 for t_idx in time_indices:
                     row_sel = np.flatnonzero(time_rows_all == int(t_idx))
                     if row_sel.size == 0:
@@ -464,10 +664,14 @@ class GPATPlotting:
                                 ).ravel()
                         vals_t = vals_t[self._patch_value_mask(vals_t)[0]]
                         if vals_t.size > 0:
-                            vmax = max(vmax, float(np.nanmax(vals_t)))
+                            all_vals.append(vals_t)
 
-                if vmax > 0.0:
-                    color_scale_use = (0.0, vmax)
+                if all_vals:
+                    all_vals_flat = np.concatenate([v.flatten() for v in all_vals])
+                    finite_vals = all_vals_flat[np.isfinite(all_vals_flat)]
+                    if finite_vals.size > 0:
+                        vmax = float(np.nanmax(finite_vals))
+                        color_scale_use = (0.0, vmax)
 
             ncols = max(1, min(int(subplot_ncols), len(time_indices) * len(data_vars_to_plot)))
             nrows = int(np.ceil((len(time_indices) * len(data_vars_to_plot)) / ncols))
@@ -890,10 +1094,13 @@ class GPATPlotting:
             ax = _ax
             fig = ax.figure
 
-        if color_scale is None:
-            vmin, vmax = None, None
-        else:
+        # Always use global color_scale_use if available
+        if color_scale is not None:
             vmin, vmax = float(color_scale[0]), float(color_scale[1])
+        elif 'color_scale_use' in locals() and color_scale_use is not None:
+            vmin, vmax = float(color_scale_use[0]), float(color_scale_use[1])
+        else:
+            vmin, vmax = None, None
 
         mesh = ax.pcolormesh(
             lon_edges,
@@ -901,8 +1108,8 @@ class GPATPlotting:
             da_plot.values,
             shading="auto",
             cmap="viridis",
-            vmin=vmin,
-            vmax=vmax,
+            vmin=color_scale[0],
+            vmax=color_scale[1],
         )
         cbar_label = f"{species} {var_name}"
         if plot_floor is not None:
@@ -935,7 +1142,7 @@ class GPATPlotting:
 
         return da_plot
 
-    def plot_patch_heatmap_2d_with_slider(self, time_indices, level=None, job_id=None, species="NO", data_vars="[Y_bg_c]", **kwargs):
+    def plot_patch_heatmap_2d_with_slider(self, time_indices, level=None, job_id=None, species="NO", color_scale=(None, None), data_vars="[Y_bg_c]", **kwargs):
         """Interactive time slider for 2D heatmap plots using matplotlib widgets (for scripts, not notebooks)."""
         import matplotlib.pyplot as plt
         from matplotlib.widgets import Slider
@@ -964,9 +1171,7 @@ class GPATPlotting:
 
         slider_ax = fig.add_axes([0.15, 0.05, 0.7, 0.05])
         slider = Slider(slider_ax, 'Time Index', int(min(time_indices)), int(max(time_indices)), valinit=int(time_indices[0]), valstep=1)
-
-        # Initial plot
-
+        
         # Initial plot
         da_plot = self.plot_patch_heatmap_2d(
             time_idx=int(slider.val),
@@ -976,6 +1181,7 @@ class GPATPlotting:
             data_vars=[data_var],
             _ax=None,
             _show=False,
+            color_scale=color_scale,
             **kwargs
         )
         lat_edges = da_plot["latitude_f"].values
@@ -985,12 +1191,15 @@ class GPATPlotting:
             lat_edges,
             da_plot.values,
             shading="auto",
-            cmap="viridis"
+            cmap="viridis",
+            vmin=color_scale[0],
+            vmax=color_scale[1]
         )
         cbar = fig.colorbar(mesh, ax=ax, label=f"{species} {data_var}")
         ax.set_xlabel("Longitude")
         ax.set_ylabel("Latitude")
         ax.set_title(f"Patch plot: {data_var} {species}, time_idx={slider.val}")
+
 
         def slider_update(val):
             try:
@@ -1002,6 +1211,7 @@ class GPATPlotting:
                     data_vars=[data_var],
                     _ax=None,
                     _show=False,
+                    color_scale=color_scale,
                     **kwargs
                 )
                 # Update mesh data (pcolormesh expects flattened array)

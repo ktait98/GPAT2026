@@ -335,7 +335,8 @@ class GPAT(Model):
     def preprocess_gpat(self):
         """Preprocess inputs for GPAT FORTRAN implementation (BOXM and CONTRAIL in future)."""
         # Generate flight trajectory points
-        self.fl = self.setup.traj_gen()
+        if self.fl_params.n_ac > 0:
+            self.fl = self.setup.traj_gen()
         
         # Generate meteorological data
         self.met = self.setup.gen_met()
@@ -343,14 +344,16 @@ class GPAT(Model):
         # Generate background chemistry data
         self.bg_chem = self.setup.gen_bg_chem()
 
+        
         # Calculate aircraft performance using PS Model
-        self.fl = self.setup.ac_perf()
+        if self.fl_params.n_ac > 0:
+            self.fl = self.setup.ac_perf()
 
-        # Estimate emissions using Pycontrails Emissions Model
-        self.fl = self.setup.emissions()
+            # Estimate emissions using Pycontrails Emissions Model
+            self.fl = self.setup.emissions()
 
-        # Simulate plume dispersion/advection using Pycontrails Dry Advection Model
-        self.fl, self.pl = self.setup.sim_plumes()
+            # Simulate plume dispersion/advection using Pycontrails Dry Advection Model
+            self.fl, self.pl = self.setup.sim_plumes()
 
         # Generate input NetCDF datasets and output templates for FORTRAN
         self.setup.gen_inputs()
@@ -815,10 +818,11 @@ class GPATSetup:
         """Generate BOXM inputs."""
         # Initialise parameters dataset
         self.init_params()
-        # Initialise flight dataset
-        self.init_fl_ds_nc()
-        #Initialise plume dataset
-        self.init_pl_ds_nc()
+        if self.gpat.fl_params.n_ac > 0:
+            # Initialise flight dataset
+            self.init_fl_ds_nc()
+            #Initialise plume dataset
+            self.init_pl_ds_nc()
         # Initialize the box model dataset
         self.init_boxm_ds_nc()
 
@@ -826,10 +830,12 @@ class GPATSetup:
         """Generate BOXM output templates."""
         # Initialise boxm coarse output dataset
         self.init_boxm_out_nc()
-        # Initialise patch table output dataset
-        self.init_patch_table_nc()
-        # Initialise plume output dataset
-        self.init_pl_out_nc()  
+        
+        if self.gpat.fl_params.n_ac > 0:
+            # Initialise patch table output dataset
+            self.init_patch_table_nc()
+            # Initialise plume output dataset
+            self.init_pl_out_nc()  
 
     # --- Input dataset initialization methods ---
     def init_params(self):
@@ -1062,6 +1068,8 @@ class GPATSetup:
             photol_coeffs=96,
             therm_coeffs=512,
             flux_species=130,
+
+            n_ac=self.gpat.fl_params.n_ac,
 
             description="BOXM coarse-grid meteorology and background chemistry fields",
             note="Emissions and plume segments handled separately via PL_DS.NC and FL_DS.NC",
