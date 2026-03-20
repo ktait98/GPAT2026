@@ -8,7 +8,7 @@ MODULE HELPERS
     LOGICAL, PARAMETER, PUBLIC :: USE_SLICE_BRIDGES = .TRUE.                  ! include prev/next segment bridge shapes
     LOGICAL, PARAMETER, PUBLIC :: USE_ACTIVE_MASK_IN_PROJECTION = .FALSE.     ! if true, restrict projection candidates to ACTIVE_FLAG cells
     LOGICAL, PARAMETER, PUBLIC :: USE_BBOX_PREFILTER_IN_PROJECTION = .FALSE.  ! if true, apply fast axis-aligned prefilter before overlap kernel
-    LOGICAL, PARAMETER, PUBLIC :: ENABLE_BACKPROJECTION = .FALSE.             ! keep false until fine-grid chemistry updates are implemented
+    LOGICAL, PARAMETER, PUBLIC :: ENABLE_BACKPROJECTION = .TRUE.             ! keep false until fine-grid chemistry updates are implemented
     LOGICAL, PARAMETER, PUBLIC :: DEBUG_PROJECTION = .FALSE.
     PUBLIC :: NC_CHECK, ERFINV, OVERLAP_1D, DEG_TO_M_DX, DEG_TO_M_DY, RECT_SLICE_RAW_OVERLAP
 
@@ -2234,21 +2234,6 @@ CONTAINS
 
         ! Reaction (510) P3442 = ANHY                                                       
         RC(:,510) = KOUT3442(:)
-
-        ! --- RC Diagnostics ---
-        DO I = 1, SIZE(RC,2)
-            PRINT *, 'RC(:,', I, '): min=', MINVAL(RC(:,I)), 'max=', MAXVAL(RC(:,I)), 'mean=', SUM(RC(:,I))/SIZE(RC(:,I))
-            PRINT *, 'RC(:,', I, '): NaN count=', COUNT(RC(:,I) /= RC(:,I)), 'Inf count=', COUNT(ABS(RC(:,I)) > 1.0D+30)
-        END DO
-        ! ! Map RC indices to species names (partial example)
-        ! PRINT *, 'RC index mapping:'
-        ! PRINT *, '1: O = O3'
-        ! PRINT *, '2: O = O3'
-        ! PRINT *, '3: O + O3 ='
-        ! PRINT *, '4: O + NO = NO2'
-        ! PRINT *, '5: O + NO2 = NO'
-        ! PRINT *, '...'
-        ! PRINT *, '510: P3442 = ANHY'
 
     END SUBROUTINE CHEMCO
 
@@ -5925,8 +5910,9 @@ CONTAINS
 
     SUBROUTINE BOXM_READ_STATIC(BOXM_DS)
         CLASS(BOXM_DS_TYPE), INTENT(INOUT) :: BOXM_DS
-        INTEGER :: STATUS, I
+        INTEGER :: STATUS, I, SPECIES_ID
 
+        REAL(DP), ALLOCATABLE :: TEMP_TMP(:,:), H2O_TMP(:,:), M_TMP(:,:), O2_TMP(:,:), N2_TMP(:,:), SZA_TMP(:,:)
         REAL(DP), ALLOCATABLE :: Y_BG_C_TMP(:,:)
 
         IF (.NOT. BOXM_DS%IS_OPEN) STOP "BOXM_READ_STATIC: FILE NOT OPEN (CALL INIT FIRST)"
@@ -6026,29 +6012,47 @@ CONTAINS
         CALL NC_CHECK(STATUS, "NF90_GET_VAR(level_c)")
 
         ! BOXM VARS
-        STATUS = NF90_GET_VAR(BOXM_DS%BOXM_NCID, BOXM_DS%VARID_TEMP, BOXM_DS%TEMP, &
+        ALLOCATE(TEMP_TMP(BOXM_DS%NTBOXM, BOXM_DS%NCELL))
+        STATUS = NF90_GET_VAR(BOXM_DS%BOXM_NCID, BOXM_DS%VARID_TEMP, TEMP_TMP, &
                               START=[1, 1], COUNT=[BOXM_DS%NTBOXM, BOXM_DS%NCELL])
         CALL NC_CHECK(STATUS, "NF90_GET_VAR(air_temperature)")
+        BOXM_DS%TEMP(:,:) = TRANSPOSE(TEMP_TMP(:,:))
+        DEALLOCATE(TEMP_TMP)
 
-        STATUS = NF90_GET_VAR(BOXM_DS%BOXM_NCID, BOXM_DS%VARID_H2O, BOXM_DS%H2O, &
+        ALLOCATE(H2O_TMP(BOXM_DS%NTBOXM, BOXM_DS%NCELL))
+        STATUS = NF90_GET_VAR(BOXM_DS%BOXM_NCID, BOXM_DS%VARID_H2O, H2O_TMP, &
                               START=[1, 1], COUNT=[BOXM_DS%NTBOXM, BOXM_DS%NCELL])
         CALL NC_CHECK(STATUS, "NF90_GET_VAR(H2O)")
+        BOXM_DS%H2O(:,:) = TRANSPOSE(H2O_TMP(:,:))
+        DEALLOCATE(H2O_TMP)
 
-        STATUS = NF90_GET_VAR(BOXM_DS%BOXM_NCID, BOXM_DS%VARID_M, BOXM_DS%M, &
+        ALLOCATE(M_TMP(BOXM_DS%NTBOXM, BOXM_DS%NCELL))
+        STATUS = NF90_GET_VAR(BOXM_DS%BOXM_NCID, BOXM_DS%VARID_M, M_TMP, &
                               START=[1, 1], COUNT=[BOXM_DS%NTBOXM, BOXM_DS%NCELL])
         CALL NC_CHECK(STATUS, "NF90_GET_VAR(M)")
+        BOXM_DS%M(:,:) = TRANSPOSE(M_TMP(:,:))
+        DEALLOCATE(M_TMP)
 
-        STATUS = NF90_GET_VAR(BOXM_DS%BOXM_NCID, BOXM_DS%VARID_O2, BOXM_DS%O2, &
+        ALLOCATE(O2_TMP(BOXM_DS%NTBOXM, BOXM_DS%NCELL))
+        STATUS = NF90_GET_VAR(BOXM_DS%BOXM_NCID, BOXM_DS%VARID_O2, O2_TMP, &
                               START=[1, 1], COUNT=[BOXM_DS%NTBOXM, BOXM_DS%NCELL])
         CALL NC_CHECK(STATUS, "NF90_GET_VAR(O2)")
-
-        STATUS = NF90_GET_VAR(BOXM_DS%BOXM_NCID, BOXM_DS%VARID_N2, BOXM_DS%N2, &
+        BOXM_DS%O2(:,:) = TRANSPOSE(O2_TMP(:,:))
+        DEALLOCATE(O2_TMP)
+        
+        ALLOCATE(N2_TMP(BOXM_DS%NTBOXM, BOXM_DS%NCELL))
+        STATUS = NF90_GET_VAR(BOXM_DS%BOXM_NCID, BOXM_DS%VARID_N2, N2_TMP, &
                               START=[1, 1], COUNT=[BOXM_DS%NTBOXM, BOXM_DS%NCELL])
         CALL NC_CHECK(STATUS, "NF90_GET_VAR(N2)")
+        BOXM_DS%N2(:,:) = TRANSPOSE(N2_TMP(:,:))
+        DEALLOCATE(N2_TMP)
 
-        STATUS = NF90_GET_VAR(BOXM_DS%BOXM_NCID, BOXM_DS%VARID_SZA, BOXM_DS%SZA, &
+        ALLOCATE(SZA_TMP(BOXM_DS%NTBOXM, BOXM_DS%NCELL))
+        STATUS = NF90_GET_VAR(BOXM_DS%BOXM_NCID, BOXM_DS%VARID_SZA, SZA_TMP, &
                               START=[1, 1], COUNT=[BOXM_DS%NTBOXM, BOXM_DS%NCELL])
         CALL NC_CHECK(STATUS, "NF90_GET_VAR(sza)")
+        BOXM_DS%SZA(:,:) = TRANSPOSE(SZA_TMP(:,:))
+        DEALLOCATE(SZA_TMP)
 
         ALLOCATE(Y_BG_C_TMP(BOXM_DS%NSBOXM, BOXM_DS%NCELL))
         STATUS = NF90_GET_VAR(BOXM_DS%BOXM_NCID, BOXM_DS%VARID_Y_BG_C, Y_BG_C_TMP, &
@@ -6056,6 +6060,11 @@ CONTAINS
         CALL NC_CHECK(STATUS, "NF90_GET_VAR(Y_bg_c)")
         BOXM_DS%Y_BG_C(:,:) = TRANSPOSE(Y_BG_C_TMP(:,:))
         DEALLOCATE(Y_BG_C_TMP)
+
+        ! CONVERT TO MOL/CM^3 FROM MIXING RATIO
+        DO SPECIES_ID = 1, BOXM_DS%NSBOXM
+            BOXM_DS%Y_BG_C(:,SPECIES_ID) = BOXM_DS%Y_BG_C(:,SPECIES_ID) * BOXM_DS%M(:,1) / 1.0E+09
+        END DO
 
         STATUS = NF90_GET_VAR(BOXM_DS%BOXM_NCID, BOXM_DS%VARID_MOL_MASS_C, BOXM_DS%MOL_MASS_C)
         CALL NC_CHECK(STATUS, "NF90_GET_VAR(mol_mass_c)")
@@ -6225,8 +6234,6 @@ MODULE DEFINE_STATE_TYPES
         REAL(DP), ALLOCATABLE :: DX_C_M(:)           ! (NCELL) coarse-cell width in projected x [m]
         REAL(DP), ALLOCATABLE :: DY_C_M(:)           ! (NCELL) coarse-cell width in projected y [m]
 
-
-        ! Met used for post conversion to ppb (store for analysis, not required for solver)
         REAL(DP), ALLOCATABLE :: TEMP(:)      ! (NCELL) K
         REAL(DP), ALLOCATABLE :: H2O(:)       ! (NCELL) WV CONCS mol/m3
         REAL(DP), ALLOCATABLE :: M(:)  ! (NCELL) NUMBER DENSITY mol/m3
@@ -6246,9 +6253,6 @@ MODULE DEFINE_STATE_TYPES
         PROCEDURE, PASS :: ADVANCE_MET => BOXM_STATE_ADVANCE_MET
         PROCEDURE, PASS :: RUN_COARSE_BG_CHEM => BOXM_STATE_RUN_COARSE_BG_CHEM
         PROCEDURE, PASS :: RUN_COARSE_DELTA_CHEM => BOXM_STATE_RUN_COARSE_DELTA_CHEM
-        ! PROCEDURE, PASS :: RESET_DELTAS      => BOXM_STATE_RESET_DELTAS
-        ! PROCEDURE, PASS :: SET_ACTIVE        => BOXM_STATE_SET_ACTIVE
-        ! PROCEDURE, PASS :: ACCUM_DELTA       => BOXM_STATE_ACCUM_DELTA
 
     END TYPE BOXM_STATE_TYPE
 
@@ -6508,47 +6512,6 @@ CONTAINS
             END DO
         END DO
     END SUBROUTINE PL_STATE_ADVANCE_GEOM
-
-    SUBROUTINE PL_STATE_ADVANCE_MASS(PL_STATE, FL_DS, PL_DS, TIME_IDX)
-        CLASS(PL_STATE_TYPE),    INTENT(INOUT) :: PL_STATE
-        CLASS(FL_DS_TYPE),       INTENT(IN)    :: FL_DS
-        CLASS(PL_DS_TYPE),       INTENT(IN)    :: PL_DS
-
-        INTEGER :: SEG_ID, SLICE_ID, SPECIES_ID, TIME_IDX, I, STATE_I, EMI_ID, PL_ID
-        REAL(DP) :: MASS_SEG
-
-        INTEGER, ALLOCATABLE :: SEG_IDS(:)
-        LOGICAL, ALLOCATABLE :: MASK(:)
-
-        IF (.NOT. ALLOCATED(PL_STATE%PL_MASS)) THEN
-            ALLOCATE(PL_STATE%PL_MASS(PL_STATE%NSEG, PL_STATE%NSPL))
-        END IF
-
-        ! BEFORE PLUME TIME, ZERO OUT MASS
-        IF (TIME_IDX < PL_DS%TIME_IDX(1)) THEN
-            PL_STATE%PL_MASS(:,:) = 0.0_DP
-        END IF
-
-        IF ( (TIME_IDX >= PL_DS%TIME_IDX(1)) .AND. (TIME_IDX <= PL_DS%TIME_IDX(PL_DS%NTPL)) ) THEN
-            
-            MASK = (FL_DS%TIME_IDX == TIME_IDX)
-            SEG_IDS = PACK([(I, I=1, SIZE(FL_DS%TIME_IDX))], MASK)
-
-            DO I = 1, SIZE(SEG_IDS)
-                SEG_ID = SEG_IDS(I)
-                PL_STATE%PL_MASS(SEG_ID,:) = 0.0_DP
-                
-                DO EMI_ID = 1, PL_DS%NSEMI
-                    DO PL_ID = 1, PL_STATE%NSPL
-                        IF (PL_STATE%SPECIES_PL_NUM(PL_ID) == PL_DS%SPECIES_EMI_NUM(EMI_ID)) THEN
-                            PL_STATE%PL_MASS(SEG_ID, PL_ID) = PL_DS%EMI_PL_MASS(SEG_ID, EMI_ID)
-                            EXIT
-                        END IF
-                    END DO
-                END DO
-            END DO
-        END IF
-    END SUBROUTINE PL_STATE_ADVANCE_MASS
 
     SUBROUTINE PL_STATE_BUILD_ACTIVE(PL_STATE, BOXM_DS, BOXM_STATE)
         CLASS(PL_STATE_TYPE),    INTENT(INOUT) :: PL_STATE
@@ -7250,11 +7213,60 @@ CONTAINS
                 IF (PL_ID > SIZE(PL_STATE%PL_MASS, 2)) CYCLE
 
                 PL_STATE%PL_MASS(SEG_ID, PL_ID) = PL_STATE%PL_MASS(SEG_ID, PL_ID) + &
-                    PL_STATE%MAP_W(K) * PATCH_STATE%Y_DEL_F(ROW_IDX, B) * BOXM_STATE%MOL_MASS_C(B) * VOL_F
+                    PL_STATE%MAP_W(K) * PATCH_STATE%Y_DEL_F(ROW_IDX, B) * BOXM_STATE%MOL_MASS_C(B) * VOL_F * 1.0E6_DP
             END DO
         END DO
 
     END SUBROUTINE PL_STATE_BACKPROJECT_FROM_GRID
+
+    SUBROUTINE PL_STATE_ADVANCE_MASS(PL_STATE, FL_DS, PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
+        CLASS(PL_STATE_TYPE),    INTENT(INOUT) :: PL_STATE
+        CLASS(FL_DS_TYPE),       INTENT(IN)    :: FL_DS
+        CLASS(PL_DS_TYPE),       INTENT(IN)    :: PL_DS
+        CLASS(BOXM_DS_TYPE),     INTENT(IN)    :: BOXM_DS
+        CLASS(BOXM_STATE_TYPE),  INTENT(IN)    :: BOXM_STATE
+        CLASS(PATCH_STATE_TYPE), INTENT(IN)    :: PATCH_STATE
+        INTEGER :: SEG_ID, SLICE_ID, SPECIES_ID, TIME_IDX, I, STATE_I, EMI_ID, PL_ID
+        REAL(DP) :: MASS_SEG
+
+        INTEGER, ALLOCATABLE :: EMI_SEG_IDS(:)
+        LOGICAL, ALLOCATABLE :: MASK(:)
+
+
+        IF (.NOT. ALLOCATED(PL_STATE%PL_MASS)) THEN
+            ALLOCATE(PL_STATE%PL_MASS(PL_STATE%NSEG, PL_STATE%NSPL))
+        END IF
+
+        ! BEFORE PLUME TIME, ZERO OUT MASS
+        IF (TIME_IDX < PL_DS%TIME_IDX(1)) THEN
+            PL_STATE%PL_MASS(:,:) = 0.0_DP
+        END IF
+
+        IF ( (TIME_IDX >= PL_DS%TIME_IDX(1)) .AND. (TIME_IDX <= PL_DS%TIME_IDX(PL_DS%NTPL)) ) THEN
+            
+            ! IF EMISSION HAPPENED AT THIS TIMESTEP, SET DATA TO PL MASS
+            MASK = (FL_DS%TIME_IDX == TIME_IDX)
+            EMI_SEG_IDS = PACK([(I, I=1, SIZE(FL_DS%TIME_IDX))], MASK)
+
+            DO I = 1, SIZE(EMI_SEG_IDS)
+                SEG_ID = EMI_SEG_IDS(I)
+                PL_STATE%PL_MASS(SEG_ID,:) = 0.0_DP
+                
+                DO EMI_ID = 1, PL_DS%NSEMI
+                    DO PL_ID = 1, PL_STATE%NSPL
+                        IF (PL_STATE%SPECIES_PL_NUM(PL_ID) == PL_DS%SPECIES_EMI_NUM(EMI_ID)) THEN
+                            PL_STATE%PL_MASS(SEG_ID, PL_ID) = PL_DS%EMI_PL_MASS(SEG_ID, EMI_ID)
+                            EXIT
+                        END IF
+                    END DO
+                END DO
+            END DO
+
+            CALL PL_STATE%BACKPROJECT_FROM_GRID(PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
+
+        END IF
+        IF (ALLOCATED(EMI_SEG_IDS)) DEALLOCATE(EMI_SEG_IDS)
+    END SUBROUTINE PL_STATE_ADVANCE_MASS
 
     ! ---------- BOXM STATE METHODS ----------
     SUBROUTINE BOXM_STATE_INIT_FROM_BOXM_DS(BOXM_STATE, BOXM_DS)
@@ -7536,6 +7548,7 @@ CONTAINS
     END SUBROUTINE PATCH_STATE_BUILD_ROWS_FROM_W
 
     SUBROUTINE PATCH_STATE_ACCUM_DELTAS_FROM_W(PATCH_STATE, PL_STATE, BOXM_DS, BOXM_STATE)
+        IMPLICIT NONE
         CLASS(PATCH_STATE_TYPE), INTENT(INOUT) :: PATCH_STATE
         CLASS(PL_STATE_TYPE),    INTENT(IN)    :: PL_STATE
         CLASS(BOXM_DS_TYPE),     INTENT(IN)    :: BOXM_DS
@@ -7582,7 +7595,7 @@ CONTAINS
                 IF (BOXM_ID < 1 .OR. BOXM_ID > PATCH_STATE%NSBOXM) CYCLE
                 IF (BOXM_STATE%MOL_MASS_C(BOXM_ID) <= 0.0_DP) CYCLE
                 PATCH_STATE%Y_DEL_F(ROW_IDX, BOXM_ID) = PATCH_STATE%Y_DEL_F(ROW_IDX, BOXM_ID) + &
-                    W * PL_STATE%PL_MASS(SEG_ID, PL_ID) / (BOXM_STATE%MOL_MASS_C(BOXM_ID) * VOL_F)
+                    W * PL_STATE%PL_MASS(SEG_ID, PL_ID) / (BOXM_STATE%MOL_MASS_C(BOXM_ID) * VOL_F) / 1.0E6_DP
             END DO
         END DO
     END SUBROUTINE PATCH_STATE_ACCUM_DELTAS_FROM_W
@@ -7592,9 +7605,77 @@ CONTAINS
         CLASS(BOXM_DS_TYPE),     INTENT(IN)    :: BOXM_DS
         CLASS(BOXM_STATE_TYPE),  INTENT(IN)    :: BOXM_STATE
 
+        INTEGER :: CELL_C, I, J, ROW_IDX
+        INTEGER :: NX_F, NY_F, NFINE_XY, NFINE_Z, NFINE_CELL
+        INTEGER, ALLOCATABLE :: ROWS_CELL(:)
+        REAL(DP), ALLOCATABLE :: Y_DEL_F_CELL(:,:)
+
+        REAL(DP), ALLOCATABLE :: TEMP_CELL(:), H2O_CELL(:), O2_CELL(:), N2_CELL(:), M_CELL(:), SZA_CELL(:)
+        LOGICAL :: FOUND
+
+        ! Compute fine-grid subdivision factors once.
+
+        NFINE_XY = MAX(1, NINT(BOXM_DS%HRES_SIM_C / BOXM_DS%HRES_SIM_F))
+        NFINE_Z = MAX(1, NINT(BOXM_DS%VRES_SIM_C / BOXM_DS%VRES_SIM_F))
+        NFINE_CELL = NFINE_XY * NFINE_XY * NFINE_Z
+
         ! Placeholder until row-wise chemistry update is implemented.
         IF (PATCH_STATE%NROWS <= 0) RETURN
 
+        DO CELL_C = 1, BOXM_STATE%NCELL
+            IF (.NOT. BOXM_STATE%ACTIVE_FLAG(CELL_C)) CYCLE
+
+            ! FIND ALL RELEVANT ROWS TO THIS COARSE CELL
+            ROWS_CELL = PACK((/(I, I=1,PATCH_STATE%NROWS)/), PATCH_STATE%ROW_CELL_C(:) == CELL_C)
+
+            ALLOCATE(Y_DEL_F_CELL(NFINE_CELL, PATCH_STATE%NSBOXM))
+            Y_DEL_F_CELL(:,:) = 0.0_DP
+            DO I = 1, NFINE_CELL
+                FOUND = .FALSE.
+                DO J = 1, SIZE(ROWS_CELL)
+                    ROW_IDX = ROWS_CELL(J)
+                    IF (PATCH_STATE%ROW_CELL_F(ROW_IDX) == I) THEN
+                        Y_DEL_F_CELL(I,:) = PATCH_STATE%Y_DEL_F(ROW_IDX,:)
+                        FOUND = .TRUE.
+                        EXIT
+                    END IF
+                END DO
+                ! If not found, Y_DEL_F_CELL(I,:) remains zero
+            END DO
+            
+            ALLOCATE(TEMP_CELL(NFINE_CELL), H2O_CELL(NFINE_CELL), O2_CELL(NFINE_CELL), &
+                     N2_CELL(NFINE_CELL), M_CELL(NFINE_CELL), SZA_CELL(NFINE_CELL))
+
+            TEMP_CELL(:) = BOXM_STATE%TEMP(CELL_C)
+            H2O_CELL(:) = BOXM_STATE%H2O(CELL_C)
+            O2_CELL(:) = BOXM_STATE%O2(CELL_C)
+            N2_CELL(:) = BOXM_STATE%N2(CELL_C)
+            M_CELL(:) = BOXM_STATE%M(CELL_C)
+            SZA_CELL(:) = BOXM_STATE%SZA(CELL_C)
+            
+            ! ACCESS Y_DEL_F_CELL(I, :) FOR CHEMISTRY UPDATE
+            CALL RUN_LEGACY_CHEM(Y_DEL_F_CELL, TEMP_CELL, H2O_CELL, O2_CELL, N2_CELL, M_CELL, &
+                            SZA_CELL, BOXM_STATE%DTS, NFINE_CELL, BOXM_DS%NSBOXM, BOXM_DS%NPP, &
+                            BOXM_DS%NPC, BOXM_DS%NTC, BOXM_DS%NFL)
+
+            ! WRITE BACK RESULTS TO PATCH_STATE%Y_DEL_F
+            DO I = 1, NFINE_CELL
+                FOUND = .FALSE.
+                DO J = 1, SIZE(ROWS_CELL)
+                    ROW_IDX = ROWS_CELL(J)
+                    IF (PATCH_STATE%ROW_CELL_F(ROW_IDX) == I) THEN
+                        PATCH_STATE%Y_DEL_F(ROW_IDX,:) = Y_DEL_F_CELL(I,:)
+                        FOUND = .TRUE.
+                        EXIT
+                    END IF
+                END DO
+                ! If not found, this would be unexpected since we are iterating over rows for this cell, 
+                ! but we can choose to ignore or log as needed.
+            END DO
+            DEALLOCATE(Y_DEL_F_CELL)
+            DEALLOCATE(ROWS_CELL)
+            DEALLOCATE(TEMP_CELL, H2O_CELL, O2_CELL, N2_CELL, M_CELL, SZA_CELL)
+        END DO
     END SUBROUTINE PATCH_STATE_RUN_FINE_DELTA_CHEM
 
 END MODULE DEFINE_STATE_TYPES
@@ -8169,12 +8250,7 @@ CONTAINS
             ELSE
                 BOXM_ID_S = SPECIES_ID
             END IF
-            ! IF (BOXM_ID_S >= 1 .AND. BOXM_ID_S <= BOXM_STATE%NSBOXM) THEN
-            !     PRINT *, 'Species', SPECIES_ID, 'min/max/mean:', &
-            !     "species_num =", BOXM_ID_S, &
-            !     MINVAL(BOXM_STATE%Y_BG_C(:,BOXM_ID_S)), MAXVAL(BOXM_STATE%Y_BG_C(:,BOXM_ID_S)), &
-            !     SUM(BOXM_STATE%Y_BG_C(:,BOXM_ID_S))/REAL(SIZE(BOXM_STATE%Y_BG_C(:,BOXM_ID_S)))
-            ! END IF
+        
         END DO
 
         BOXM_OUT%ACTIVE_FLAG(:, OUT_I) = MERGE(1, 0, BOXM_STATE%ACTIVE_FLAG)
@@ -8188,8 +8264,8 @@ CONTAINS
                 BOXM_ID_S = SPECIES_ID
             END IF
             IF (BOXM_ID_S >= 1 .AND. BOXM_ID_S <= BOXM_STATE%NSBOXM) THEN
-                Y_BG_C_OUT(:) = BOXM_STATE%Y_BG_C(:, BOXM_ID_S)
-                Y_DEL_C_OUT(:) = BOXM_STATE%Y_DEL_C(:, BOXM_ID_S)
+                Y_BG_C_OUT(:) = BOXM_STATE%Y_BG_C(:, BOXM_ID_S) * 1.0E+09 / BOXM_STATE%M(:) ! Convert from MOL/CM3 to ppb
+                Y_DEL_C_OUT(:) = BOXM_STATE%Y_DEL_C(:, BOXM_ID_S) * 1.0E+09 / BOXM_STATE%M(:) ! Convert from MOL/CM3 to ppb
             ELSE
                 Y_BG_C_OUT(:) = 0.0_DP
                 Y_DEL_C_OUT(:) = 0.0_DP
@@ -8427,7 +8503,8 @@ CONTAINS
             DO SPECIES_ID = 1, PATCH_TABLE%NSOUT
                 BOXM_ID_S = PATCH_TABLE%SPECIES_OUT_NUM(SPECIES_ID)
                 IF (BOXM_ID_S >= 1 .AND. BOXM_ID_S <= PATCH_STATE%NSBOXM) THEN
-                    Y_DEL_F_OUT(SPECIES_ID, :) = PATCH_STATE%Y_DEL_F(:, BOXM_ID_S)
+                    Y_DEL_F_OUT(SPECIES_ID, :) = PATCH_STATE%Y_DEL_F(:, BOXM_ID_S) * &
+                    1.0E+09 / BOXM_STATE%M(PATCH_STATE%ROW_CELL_C(:))   ! Convert from MOL/CM3 to ppb
                 END IF
             END DO
         END IF
@@ -8472,7 +8549,7 @@ MODULE BOXM_RUN_UTILS
     
 CONTAINS
     SUBROUTINE BOXM_RUN_INIT(FL_DS, PL_DS, BOXM_DS, PL_STATE, BOXM_STATE, PATCH_STATE, &
-                                PL_OUT, BOXM_OUT, PATCH_TABLE, JOB_ID, DATA_PATH)
+                            PL_OUT, BOXM_OUT, PATCH_TABLE, JOB_ID, DATA_PATH)
         USE HELPERS
         USE RUN_CHEM_UTILS
         USE DEFINE_INPUT_TYPES
@@ -8560,7 +8637,6 @@ CONTAINS
 
         INTEGER, INTENT(IN) :: TIME_IDX
         CALL PL_STATE%ADVANCE_GEOM(PL_DS, BOXM_DS, TIME_IDX)
-        CALL PL_STATE%ADVANCE_MASS(FL_DS, PL_DS, TIME_IDX)
         CALL PL_STATE%BUILD_ACTIVE(BOXM_DS, BOXM_STATE)
         CALL PL_STATE%PROJECT_TO_GRID(PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE)
 
@@ -8598,14 +8674,14 @@ CONTAINS
             CALL BOXM_STATE%RUN_COARSE_DELTA_CHEM(BOXM_DS, PATCH_STATE)
         END IF
         
-
     END SUBROUTINE RUN_CHEM
 
-    SUBROUTINE BACKPROJECT_GRID_TO_PLUMES(PL_DS, BOXM_DS, PL_STATE, BOXM_STATE, PATCH_STATE, TIME_IDX)
+    SUBROUTINE BACKPROJECT_GRID_TO_PLUMES(FL_DS, PL_DS, BOXM_DS, PL_STATE, BOXM_STATE, PATCH_STATE, TIME_IDX)
         USE DEFINE_INPUT_TYPES
         USE DEFINE_STATE_TYPES
         IMPLICIT NONE
 
+        CLASS(FL_DS_TYPE),       INTENT(IN)    :: FL_DS
         CLASS(PL_DS_TYPE),       INTENT(IN)    :: PL_DS
         CLASS(BOXM_DS_TYPE),     INTENT(IN)    :: BOXM_DS
 
@@ -8615,7 +8691,7 @@ CONTAINS
 
         INTEGER, INTENT(IN) :: TIME_IDX
 
-        CALL PL_STATE%BACKPROJECT_FROM_GRID(PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
+        CALL PL_STATE%ADVANCE_MASS(FL_DS, PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
 
     END SUBROUTINE BACKPROJECT_GRID_TO_PLUMES
 
@@ -8770,7 +8846,7 @@ PROGRAM BOXM_RUN
             CALL RUN_CHEM(BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
 
             ! BACKPROJECT_GRID_TO_PLUMES
-            CALL BACKPROJECT_GRID_TO_PLUMES(PL_DS, BOXM_DS, PL_STATE, BOXM_STATE, PATCH_STATE, TIME_IDX)
+            CALL BACKPROJECT_GRID_TO_PLUMES(FL_DS, PL_DS, BOXM_DS, PL_STATE, BOXM_STATE, PATCH_STATE, TIME_IDX)
         ELSE
             ! UPDATE_CHEMISTRY
             CALL RUN_CHEM(BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)

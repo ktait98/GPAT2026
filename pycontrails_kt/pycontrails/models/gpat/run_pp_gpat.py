@@ -10,7 +10,7 @@ np.set_printoptions(threshold=np.inf, linewidth=500)
 data_path = f"{os.getcwd()}/data/"
 
 criteria = {
-    "job_id": "GPAT_Feb_2026_test_2_ac",
+    "job_id": "test",
 }
 
 pp_gpat = GPATPostProcessor(data_path=data_path, criteria=criteria)
@@ -47,11 +47,13 @@ if pp_gpat.params_dict[pp_gpat.job_ids[0]].get("n_ac", 0) > 0:
 #     overlay_trajectories=True
 # )
 
-color_scale = (boxm_out["Y_bg_c"].sel(species_out="NO").min(), boxm_out["Y_bg_c"].sel(species_out="NO").max())
+# color_scale = (boxm_out["Y_bg_c"].sel(species_out="NO").min(), boxm_out["Y_bg_c"].sel(species_out="NO").max())
 
-pp_gpat.plotting.plot_time_series(pp_gpat.job_ids[0], species="NO", level=217, lat=0.5, lon=0.5, data_var="Y_bg_c")
+# boxm_out["Y_bg_c"] = boxm_out["Y_bg_c"] * 1e9 / 5.9e+18  # Convert from kg/kg to ppb
 
-pp_gpat.plotting.plot_boxm_background_slider(pp_gpat.job_ids[0], species="NO", level=217.56859635, time_indices=None)
+pp_gpat.plotting.plot_time_series(pp_gpat.job_ids[0], species="NO", level=217, lat=0.5, lon=0.5, data_var="Y_del_c")
+
+pp_gpat.plotting.plot_boxm_background_slider(pp_gpat.job_ids[0], species="OH", level=217.56859635, time_indices=None)
 
 # pp_gpat.plotting.plot_patch_heatmap_2d_with_slider(
 #     time_indices=patch_time_idx,
@@ -65,10 +67,10 @@ pp_gpat.plotting.plot_boxm_background_slider(pp_gpat.job_ids[0], species="NO", l
 
 # pp_gpat.plotting.plot_heatmap_slider(job_id=pp_gpat.job_ids[0], species="NO", data_var="Y_bg_c", level=11000)
 
-# pp_gpat.plotting.animate_plumes_3d_plotly(
-#     job_id=pp_gpat.job_ids[0],
-#     patch_species="NO",
-#     overlay_patch=True,
-#     time_idx_start=184,
-#     time_idx_end=184+3*180,
-# )
+pp_gpat.plotting.animate_plumes_3d_plotly(
+    job_id=pp_gpat.job_ids[0],
+    patch_species="NO",
+    overlay_patch=True,
+    time_idx_start=184,
+    time_idx_end=184+3*180,
+)
