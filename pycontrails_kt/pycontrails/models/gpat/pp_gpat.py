@@ -58,13 +58,16 @@ class GPATPostProcessor:
                 params_file = os.path.join(self.inputs, job_id, "params.json")
                 if os.path.isfile(params_file):
                     params = json.load(open(params_file))
+                    params["job_id"] = job_id
+                    self.params_dict[job_id] = params
 
                     # Flatten the dictionary
-                    data_dict = params.copy()
-                    data_dict["job_id"] = job_id
-
+                    fl_params_str = params.get("fl_params", "")
+                    match = re.search(r"n_ac\s*=\s*([0-9]+)", fl_params_str)
+                    n_ac = int(match.group(1)) if match else 0
+                    print(n_ac)
                     # Check if n_ac > 0 and verify the existence of fl and pl files
-                    if data_dict.get("n_ac", 0) > 0:
+                    if n_ac > 0:
                         expected_files = [
                             "params.json",
                             "fl_ds.nc",
@@ -78,13 +81,15 @@ class GPATPostProcessor:
                     input_dir = os.path.join(self.inputs, job_id)
                     if all(os.path.isfile(os.path.join(input_dir, file)) for file in expected_files):
                         # Also check for outputs
-                        if data_dict.get("n_ac", 0) > 0:
+                        if n_ac > 0:
                             output_files = ["boxm_out.nc", "patch_table.nc", "pl_out.nc"]
                         else:
                             output_files = ["boxm_out.nc"]
                         output_dir = os.path.join(self.outputs, job_id)
                         if all(os.path.isfile(os.path.join(output_dir, file)) for file in output_files):
-                            jobs.append(data_dict)
+                            params["job_id"] = job_id
+                            self.params_dict[job_id] = params
+                            jobs.append(params)
 
         jobs_df = pd.DataFrame(jobs)
 
@@ -137,15 +142,21 @@ class GPATAnalysis:
     
     # Loading data methods
     def load_input_datasets(self, job_id):
+        fl_params_str = self.pp_gpat.params_dict[job_id].get("fl_params", "")
+        match = re.search(r"n_ac\s*=\s*([0-9]+)", fl_params_str)
+        n_ac = int(match.group(1)) if match else 0
         self.pp_gpat.params_dict[job_id] = json.load(open(f"{self.pp_gpat.inputs}{job_id}/params.json"))
-        if self.pp_gpat.params_dict[job_id].get("n_ac", 0) > 0:
+        if n_ac > 0:
             self.pp_gpat.fl_ds_dict[job_id] = xr.open_dataset(f"{self.pp_gpat.inputs}{job_id}/fl_ds.nc")
             self.pp_gpat.pl_ds_dict[job_id] = xr.open_dataset(f"{self.pp_gpat.inputs}{job_id}/pl_ds.nc")
         self.pp_gpat.boxm_ds_dict[job_id] = xr.open_dataset(f"{self.pp_gpat.inputs}{job_id}/boxm_ds.nc")
 
     def load_output_datasets(self, job_id):
         self.pp_gpat.boxm_out_dict[job_id] = xr.open_dataset(f"{self.pp_gpat.outputs}{job_id}/boxm_out.nc")
-        if self.pp_gpat.params_dict[job_id].get("n_ac", 0) > 0:
+        fl_params_str = self.pp_gpat.params_dict[job_id].get("fl_params", "")
+        match = re.search(r"n_ac\s*=\s*([0-9]+)", fl_params_str)
+        n_ac = int(match.group(1)) if match else 0
+        if n_ac > 0:
             self.pp_gpat.patch_table_dict[job_id] = xr.open_dataset(f"{self.pp_gpat.outputs}{job_id}/patch_table.nc")
             self.pp_gpat.pl_out_dict[job_id] = xr.open_dataset(f"{self.pp_gpat.outputs}{job_id}/pl_out.nc")
 

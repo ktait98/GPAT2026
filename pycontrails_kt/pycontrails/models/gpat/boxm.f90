@@ -6,8 +6,8 @@ MODULE HELPERS
     INTEGER, PARAMETER, PUBLIC :: DP = KIND(1.0D0)
     LOGICAL, PARAMETER, PUBLIC :: USE_FULL_SLICE_FOOTPRINT = .TRUE.          ! use full along-track footprint in overlap kernel
     LOGICAL, PARAMETER, PUBLIC :: USE_SLICE_BRIDGES = .TRUE.                  ! include prev/next segment bridge shapes
-    LOGICAL, PARAMETER, PUBLIC :: USE_ACTIVE_MASK_IN_PROJECTION = .FALSE.     ! if true, restrict projection candidates to ACTIVE_FLAG cells
-    LOGICAL, PARAMETER, PUBLIC :: USE_BBOX_PREFILTER_IN_PROJECTION = .FALSE.  ! if true, apply fast axis-aligned prefilter before overlap kernel
+    LOGICAL, PARAMETER, PUBLIC :: USE_ACTIVE_MASK_IN_PROJECTION = .TRUE.     ! if true, restrict projection candidates to ACTIVE_FLAG cells
+    LOGICAL, PARAMETER, PUBLIC :: USE_BBOX_PREFILTER_IN_PROJECTION = .TRUE.  ! if true, apply fast axis-aligned prefilter before overlap kernel
     LOGICAL, PARAMETER, PUBLIC :: ENABLE_BACKPROJECTION = .TRUE.             ! keep false until fine-grid chemistry updates are implemented
     LOGICAL, PARAMETER, PUBLIC :: DEBUG_PROJECTION = .FALSE.
     PUBLIC :: NC_CHECK, ERFINV, OVERLAP_1D, DEG_TO_M_DX, DEG_TO_M_DY, RECT_SLICE_RAW_OVERLAP
@@ -5124,6 +5124,7 @@ MODULE DEFINE_INPUT_TYPES
         REAL(DP) :: FMAX ! MAX FRACTIONAL MASS PER SLICE
         INTEGER :: OUTPUT_PL_SLICES ! WHETHER TO OUTPUT PLUME SLICES TO NETCDF
         INTEGER :: NPOINTS ! NUMBER OF POINTS PER PLUME WAYPOINT ELLIPSE
+        INTEGER :: MAX_AGE_S
         
         ! ---------- PRIVATE NETCDF PLUMBING ----------
 
@@ -5219,6 +5220,7 @@ MODULE DEFINE_INPUT_TYPES
         INTEGER :: NTC ! THERMAL COEFFS
         INTEGER :: NFL ! FLUXES
 
+        INTEGER :: RUN_CHEM
         INTEGER :: N_AC
 
         ! ---------- PRIVATE NETCDF PLUMBING ----------
@@ -5747,6 +5749,11 @@ CONTAINS
         STATUS = NF90_GET_ATT(PL_DS%PL_NCID, NF90_GLOBAL, "n_points", PL_DS%NPOINTS)
         CALL NC_CHECK(STATUS, "NF90_GET_ATT(n_points)")
 
+        STATUS = NF90_GET_ATT(PL_DS%PL_NCID, NF90_GLOBAL, "max_age_s", PL_DS%MAX_AGE_S)
+        CALL NC_CHECK(STATUS, "NF90_GET_ATT(max_age_s)")
+
+        PRINT *, PL_DS%MAX_AGE_S
+
     END SUBROUTINE PL_READ_STATIC
 
     SUBROUTINE PL_SUMMARY(PL_DS)
@@ -5761,6 +5768,7 @@ CONTAINS
         PRINT *, "  NSLICES = ", PL_DS%NSLICES
         PRINT *, "  FMAX = ", PL_DS%FMAX
         PRINT *, "  OUTPUT_PL_SLICES = ", PL_DS%OUTPUT_PL_SLICES
+        PRINT *, "  MAX_AGE_S = ", PL_DS%MAX_AGE_S
     END SUBROUTINE PL_SUMMARY
 
     SUBROUTINE PL_CLOSE(PL_DS)
@@ -5978,10 +5986,14 @@ CONTAINS
         STATUS = NF90_GET_ATT(BOXM_DS%BOXM_NCID, NF90_GLOBAL, "flux_species", BOXM_DS%NFL)
         CALL NC_CHECK(STATUS, "NF90_GET_ATT(flux_species)")
 
+        STATUS = NF90_GET_ATT(BOXM_DS%BOXM_NCID, NF90_GLOBAL, "run_chem", BOXM_DS%RUN_CHEM)
+        CALL NC_CHECK(STATUS, "NF90_GET_ATT(run_chem)")
+
         STATUS = NF90_GET_ATT(BOXM_DS%BOXM_NCID, NF90_GLOBAL, "n_ac", BOXM_DS%N_AC)
         CALL NC_CHECK(STATUS, "NF90_GET_ATT(n_ac)")
 
         PRINT *, BOXM_DS%N_AC
+        print *, BOXM_DS%RUN_CHEM
 
         ! BOXM COORDS
         STATUS = NF90_GET_VAR(BOXM_DS%BOXM_NCID, BOXM_DS%VARID_TIME_REL_S, BOXM_DS%TIME_REL_S)
@@ -6206,9 +6218,9 @@ MODULE DEFINE_STATE_TYPES
         PROCEDURE, PASS :: BUILD_ELLIPSES_M => PL_STATE_BUILD_ELLIPSES_M
         PROCEDURE, PASS :: BUILD_SLICE_POLYS_M => PL_STATE_BUILD_SLICE_POLYS_M
         PROCEDURE, PASS :: ADVANCE_GEOM    => PL_STATE_ADVANCE_GEOM
-        PROCEDURE, PASS :: ADVANCE_MASS    => PL_STATE_ADVANCE_MASS
         PROCEDURE, PASS :: BUILD_ACTIVE     => PL_STATE_BUILD_ACTIVE
         PROCEDURE, PASS :: PROJECT_TO_GRID => PL_STATE_PROJECT_TO_GRID
+        PROCEDURE, PASS :: EMI_TO_PLUMES => PL_STATE_EMI_TO_PLUMES
         PROCEDURE, PASS :: BACKPROJECT_FROM_GRID => PL_STATE_BACKPROJECT_FROM_GRID
 
     END TYPE PL_STATE_TYPE
@@ -6568,6 +6580,7 @@ CONTAINS
     END SUBROUTINE PL_STATE_BUILD_ACTIVE
 
     SUBROUTINE PL_STATE_PROJECT_TO_GRID(PL_STATE, PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE)
+            
         CLASS(PL_STATE_TYPE),    INTENT(INOUT) :: PL_STATE
         CLASS(PATCH_STATE_TYPE),  INTENT(INOUT) :: PATCH_STATE
         CLASS(BOXM_DS_TYPE),      INTENT(IN)    :: BOXM_DS
@@ -6601,6 +6614,9 @@ CONTAINS
         REAL(DP), PARAMETER :: EPS = 1.0E-12_DP
         REAL(DP), PARAMETER :: MASS_EPS = 1.0E-30_DP
         REAL(DP) :: SEG_PAD_XY, SEG_PAD_Z
+
+        INTEGER :: DEBUG_SEG
+        REAL(DP) :: DEBUG_SEG_MASS
 
         ! CALCULATE FINE GRID SUBDIVISION
         NX_F = MAX(1, NINT(BOXM_DS%HRES_SIM_C / BOXM_DS%HRES_SIM_F)) ! NUMBER OF FINE CELLS IN X DIRECTION
@@ -7144,7 +7160,73 @@ CONTAINS
 
     END SUBROUTINE PL_STATE_PROJECT_TO_GRID
 
+    SUBROUTINE PL_STATE_EMI_TO_PLUMES(PL_STATE, FL_DS, PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
+        CLASS(PL_STATE_TYPE),    INTENT(INOUT) :: PL_STATE
+        CLASS(FL_DS_TYPE),       INTENT(IN)    :: FL_DS
+        CLASS(PL_DS_TYPE),       INTENT(IN)    :: PL_DS
+        CLASS(BOXM_DS_TYPE),     INTENT(IN)    :: BOXM_DS
+        CLASS(BOXM_STATE_TYPE),  INTENT(IN)    :: BOXM_STATE
+        CLASS(PATCH_STATE_TYPE), INTENT(IN)    :: PATCH_STATE
+        
+        INTEGER :: SEG_ID, SLICE_ID, SPECIES_ID, TIME_IDX, I, STATE_I, EMI_ID, PL_ID
+        REAL(DP) :: MASS_SEG
+
+        INTEGER, ALLOCATABLE :: EMI_SEG_IDS(:)
+        LOGICAL, ALLOCATABLE :: MASK(:)
+
+
+        IF (.NOT. ALLOCATED(PL_STATE%PL_MASS)) THEN
+            ALLOCATE(PL_STATE%PL_MASS(PL_STATE%NSEG, PL_STATE%NSPL))
+        END IF
+
+        ! BEFORE PLUME TIME, ZERO OUT MASS
+        IF (TIME_IDX < PL_DS%TIME_IDX(1)) THEN
+            RETURN
+        END IF
+
+        IF ( (TIME_IDX >= PL_DS%TIME_IDX(1)) .AND. (TIME_IDX <= PL_DS%TIME_IDX(PL_DS%NTPL)) ) THEN
+            
+            DO SEG_ID = 1, PL_STATE%NSEG
+                DO PL_ID = 1, PL_STATE%NSPL
+                    ! Default: retain previous mass
+                    ! Check if segment is too old (expired)
+                    IF (PL_STATE%AGE_S(SEG_ID) > PL_DS%MAX_AGE_S) THEN
+                        PL_STATE%PL_MASS(SEG_ID, PL_ID) = 0.0_DP
+                    END IF
+                END DO
+            END DO
+            
+            ! IF EMISSION HAPPENED AT THIS TIMESTEP, SET DATA TO PL MASS
+            MASK = (FL_DS%TIME_IDX == TIME_IDX)
+            EMI_SEG_IDS = PACK([(I, I=1, SIZE(FL_DS%TIME_IDX))], MASK)
+
+            DO I = 1, SIZE(EMI_SEG_IDS)
+                SEG_ID = EMI_SEG_IDS(I)
+                DO EMI_ID = 1, PL_DS%NSEMI
+                    DO PL_ID = 1, PL_STATE%NSPL
+                        IF (PL_STATE%SPECIES_PL_NUM(PL_ID) == PL_DS%SPECIES_EMI_NUM(EMI_ID)) THEN
+                            PL_STATE%PL_MASS(SEG_ID, PL_ID) = PL_DS%EMI_PL_MASS(SEG_ID, EMI_ID)
+                            
+                            PRINT *, 'EMI DEBUG: SEG_ID=', SEG_ID, 'PL_ID=', PL_ID, 'EMI_ID=', EMI_ID, 'SPECIES_PL_NUM=', &
+                            PL_STATE%SPECIES_PL_NUM(PL_ID), 'SPECIES_EMI_NUM=', PL_DS%SPECIES_EMI_NUM(EMI_ID), 'PL_MASS=', &
+                            PL_STATE%PL_MASS(SEG_ID, PL_ID)
+                            EXIT
+                        END IF
+                    END DO
+                END DO
+            END DO
+            IF (ALLOCATED(EMI_SEG_IDS)) DEALLOCATE(EMI_SEG_IDS)
+
+            ! DEBUG: Print PL_MASS after emission for first 5 segments/species
+            PRINT *, '--- DEBUG: PL_MASS after emission (first 5 seg/pl) ---'
+            DO SEG_ID = 1, PL_STATE%NSEG
+                PRINT *, 'PL_MASS(', SEG_ID, ',', 1, ')=', PL_STATE%PL_MASS(SEG_ID, 1)
+            END DO
+        END IF
+    END SUBROUTINE PL_STATE_EMI_TO_PLUMES
+
     SUBROUTINE PL_STATE_BACKPROJECT_FROM_GRID(PL_STATE, PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
+                        
         CLASS(PL_STATE_TYPE),    INTENT(INOUT) :: PL_STATE
         CLASS(PL_DS_TYPE),       INTENT(IN)    :: PL_DS
         CLASS(BOXM_DS_TYPE),     INTENT(IN)    :: BOXM_DS
@@ -7156,9 +7238,13 @@ CONTAINS
         INTEGER :: NX_F, NY_F
         REAL(DP) :: DX_C_M, DY_C_M, DX_F, DY_F, VOL_F, LAT_C
 
-        ! Backprojection should only be enabled when PATCH_STATE%Y_DEL_F contains
-        ! chemistry-updated deltas (not the direct forward projection field).
-        IF (.NOT. ENABLE_BACKPROJECTION) RETURN
+        REAL(DP) :: DEBUG_TOTAL_PL_MASS
+        INTEGER :: DEBUG_SEG, DEBUG_COUNT
+        REAL(DP) :: DEBUG_SUM_W
+        REAL(DP) :: DEBUG_TOTAL_GRID_MASS
+        INTEGER :: DEBUG_BOXM_ID
+        REAL(DP) :: DEBUG_SUM_Y_DEL_F_BEFORE, DEBUG_SUM_Y_DEL_F_AFTER
+        REAL(DP) :: DEBUG_TOTAL_GRID_MASS_BEFORE, DEBUG_TOTAL_GRID_MASS_AFTER
 
         IF (.NOT. ALLOCATED(PL_STATE%PL_MASS)) RETURN
         IF (.NOT. ALLOCATED(PL_STATE%SPECIES_PL_NUM)) RETURN
@@ -7174,12 +7260,115 @@ CONTAINS
         IF (PL_STATE%NNZ_MAP <= 0) RETURN
         IF (PATCH_STATE%NROWS <= 0) RETURN
 
+        ! DEBUG: Sum of mapped grid mass for PL_ID=1 (before MAP_W applied)
+        DEBUG_TOTAL_GRID_MASS = 0.0_DP
+        
+        ! Set DEBUG_BOXM_ID to the correct BOXM index for PL_ID=1
+        DEBUG_BOXM_ID = PL_STATE%SPECIES_PL_NUM(1)
+        ! Debug: Print total grid mass in physical units (kg) before backprojection
+        DEBUG_TOTAL_GRID_MASS_BEFORE = 0.0_DP
+        DO ROW_IDX = 1, PATCH_STATE%NROWS
+            CELL_C = PATCH_STATE%ROW_CELL_C(ROW_IDX)
+            IF (DEBUG_BOXM_ID < 1 .OR. DEBUG_BOXM_ID > SIZE(BOXM_STATE%MOL_MASS_C)) THEN
+                PRINT *, 'ERROR: DEBUG_BOXM_ID out of bounds:', DEBUG_BOXM_ID
+                CYCLE
+            END IF
+            IF (ROW_IDX < 1 .OR. ROW_IDX > SIZE(PATCH_STATE%Y_DEL_F, 1)) THEN
+                PRINT *, 'ERROR: ROW_IDX out of bounds:', ROW_IDX
+                CYCLE
+            END IF
+            DX_C_M = BOXM_STATE%DX_C_M(CELL_C)
+            DY_C_M = BOXM_STATE%DY_C_M(CELL_C)
+            DX_F = DX_C_M / REAL(NX_F, DP)
+            DY_F = DY_C_M / REAL(NY_F, DP)
+            VOL_F = DX_F * DY_F * BOXM_DS%VRES_SIM_F
+            DEBUG_TOTAL_GRID_MASS_BEFORE = DEBUG_TOTAL_GRID_MASS_BEFORE + PATCH_STATE%Y_DEL_F(ROW_IDX, DEBUG_BOXM_ID) &
+                                            * VOL_F * 1.0E6_DP / 6.02214076E23_DP * BOXM_STATE%MOL_MASS_C(DEBUG_BOXM_ID)
+        END DO
+        PRINT *, 'DEBUG: TOTAL GRID MASS (PL_ID=1, physical units, BOXM_ID=', DEBUG_BOXM_ID, ') BEFORE BACKPROJ =', &
+        DEBUG_TOTAL_GRID_MASS_BEFORE
+
+        DO K = 1, PL_STATE%NNZ_MAP
+            SEG_ID = PL_STATE%MAP_SEG(K)
+            CELL_C = PL_STATE%MAP_CELL_C(K)
+            CELL_F = PL_STATE%MAP_CELL_F(K)
+            IF (SEG_ID < 1 .OR. SEG_ID > PL_STATE%NSEG) CYCLE
+            IF (CELL_C < 1 .OR. CELL_C > BOXM_STATE%NCELL) CYCLE
+            ROW_IDX = -1
+            DO P = 1, PATCH_STATE%NROWS
+                IF (PATCH_STATE%ROW_CELL_C(P) == CELL_C .AND. PATCH_STATE%ROW_CELL_F(P) == CELL_F) THEN
+                    ROW_IDX = P
+                    EXIT
+                END IF
+            END DO
+            IF (ROW_IDX < 1) CYCLE
+            LAT_C = BOXM_STATE%LATITUDE_C(CELL_C)
+            DX_C_M = BOXM_STATE%DX_C_M(CELL_C)
+            DY_C_M = BOXM_STATE%DY_C_M(CELL_C)
+            DX_F = DX_C_M / REAL(NX_F, DP)
+            DY_F = DY_C_M / REAL(NY_F, DP)
+            VOL_F = DX_F * DY_F * BOXM_DS%VRES_SIM_F
+            IF (VOL_F <= 0.0_DP) CYCLE
+            ! Only for PL_ID=1 (first species)
+            B = PL_STATE%SPECIES_PL_NUM(1)
+            IF (B < 1 .OR. B > PATCH_STATE%NSBOXM) CYCLE
+            IF (B > SIZE(BOXM_STATE%MOL_MASS_C)) CYCLE
+            IF (BOXM_STATE%MOL_MASS_C(B) <= 0.0_DP) CYCLE
+            DEBUG_TOTAL_GRID_MASS = DEBUG_TOTAL_GRID_MASS + PATCH_STATE%Y_DEL_F(ROW_IDX, B) * &
+            BOXM_STATE%MOL_MASS_C(B) * VOL_F * 1.0E6_DP / 6.02214076E23_DP
+        END DO
+        
+        ! After backprojection, print total grid mass in physical units (kg)
+        DEBUG_TOTAL_GRID_MASS_AFTER = 0.0_DP
+        DO ROW_IDX = 1, PATCH_STATE%NROWS
+            CELL_C = PATCH_STATE%ROW_CELL_C(ROW_IDX)
+            DX_C_M = BOXM_STATE%DX_C_M(CELL_C)
+            DY_C_M = BOXM_STATE%DY_C_M(CELL_C)
+            DX_F = DX_C_M / REAL(NX_F, DP)
+            DY_F = DY_C_M / REAL(NY_F, DP)
+            VOL_F = DX_F * DY_F * BOXM_DS%VRES_SIM_F
+            DEBUG_TOTAL_GRID_MASS_AFTER = DEBUG_TOTAL_GRID_MASS_AFTER + PATCH_STATE%Y_DEL_F(ROW_IDX, DEBUG_BOXM_ID) * &
+                                            VOL_F * 1.0E6_DP / 6.02214076E23_DP * BOXM_STATE%MOL_MASS_C(DEBUG_BOXM_ID)
+        END DO
+        PRINT *, 'DEBUG: TOTAL GRID MASS (PL_ID=1, physical units, BOXM_ID=', DEBUG_BOXM_ID, ') AFTER BACKPROJ =', &
+                    DEBUG_TOTAL_GRID_MASS_AFTER
+
+
         NX_F = MAX(1, NINT(BOXM_DS%HRES_SIM_C / BOXM_DS%HRES_SIM_F))
         NY_F = NX_F
 
         ! TIME_IDX and PL_DS are kept in signature for orchestration symmetry and future time-aware updates.
         IF (TIME_IDX < 0 .OR. PL_DS%NSEG < 0) RETURN
 
+        ! ! DEBUG: Total PL_MASS before backprojection
+        ! DEBUG_TOTAL_PL_MASS = 0.0_DP
+        ! DO SEG_ID = 1, PL_STATE%NSEG
+        !     DEBUG_TOTAL_PL_MASS = DEBUG_TOTAL_PL_MASS + PL_STATE%PL_MASS(SEG_ID, 1)
+        ! END DO
+        ! PRINT *, 'DEBUG: TOTAL PL_MASS BEFORE BACKPROJ =', DEBUG_TOTAL_PL_MASS
+
+        PL_STATE%PL_MASS(:,:) = 0.0_DP
+
+        ! DEBUG: Print mapping arrays for first 10 entries
+        ! PRINT *, '--- DEBUG: Mapping arrays (first 10 entries) ---'
+        ! DO K = 1, MIN(PL_STATE%NNZ_MAP, 10)
+        !     PRINT *, 'K=', K, 'MAP_SEG=', PL_STATE%MAP_SEG(K), 'MAP_CELL_C=', PL_STATE%MAP_CELL_C(K), &
+        !             'MAP_CELL_F=', PL_STATE%MAP_CELL_F(K), 'MAP_W=', PL_STATE%MAP_W(K)
+        ! END DO
+
+        ! DEBUG: Sum MAP_W for each unique MAP_SEG (first 5 segments)
+        DO DEBUG_SEG = 1, 5
+            DEBUG_SUM_W = 0.0_DP
+            DEBUG_COUNT = 0
+            DO K = 1, PL_STATE%NNZ_MAP
+                IF (PL_STATE%MAP_SEG(K) == DEBUG_SEG) THEN
+                    DEBUG_SUM_W = DEBUG_SUM_W + PL_STATE%MAP_W(K)
+                    DEBUG_COUNT = DEBUG_COUNT + 1
+                END IF
+            END DO
+            PRINT *, 'DEBUG: MAP_SEG=', DEBUG_SEG, 'N_ENTRIES=', DEBUG_COUNT, 'SUM_W=', DEBUG_SUM_W
+        END DO
+        
         DO K = 1, PL_STATE%NNZ_MAP
             SEG_ID = PL_STATE%MAP_SEG(K)
             CELL_C = PL_STATE%MAP_CELL_C(K)
@@ -7212,61 +7401,22 @@ CONTAINS
                 IF (BOXM_STATE%MOL_MASS_C(B) <= 0.0_DP) CYCLE
                 IF (PL_ID > SIZE(PL_STATE%PL_MASS, 2)) CYCLE
 
-                PL_STATE%PL_MASS(SEG_ID, PL_ID) = PL_STATE%PL_MASS(SEG_ID, PL_ID) + &
-                    PL_STATE%MAP_W(K) * PATCH_STATE%Y_DEL_F(ROW_IDX, B) * BOXM_STATE%MOL_MASS_C(B) * VOL_F * 1.0E6_DP
+                PL_STATE%PL_MASS(SEG_ID, PL_ID) = PL_STATE%PL_MASS(SEG_ID, PL_ID) + PL_STATE%MAP_W(K) * &
+                PATCH_STATE%Y_DEL_F(ROW_IDX, B) * BOXM_STATE%MOL_MASS_C(B) * VOL_F * 1.0E6_DP / 6.02214076E23_DP
             END DO
         END DO
+        
+
+        ! DEBUG: Total PL_MASS after backprojection
+        DEBUG_TOTAL_PL_MASS = 0.0_DP
+        DO SEG_ID = 1, PL_STATE%NSEG
+            DEBUG_TOTAL_PL_MASS = DEBUG_TOTAL_PL_MASS + PL_STATE%PL_MASS(SEG_ID, 1)
+        END DO
+        PRINT *, 'DEBUG: TOTAL PL_MASS AFTER BACKPROJ =', DEBUG_TOTAL_PL_MASS
 
     END SUBROUTINE PL_STATE_BACKPROJECT_FROM_GRID
 
-    SUBROUTINE PL_STATE_ADVANCE_MASS(PL_STATE, FL_DS, PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
-        CLASS(PL_STATE_TYPE),    INTENT(INOUT) :: PL_STATE
-        CLASS(FL_DS_TYPE),       INTENT(IN)    :: FL_DS
-        CLASS(PL_DS_TYPE),       INTENT(IN)    :: PL_DS
-        CLASS(BOXM_DS_TYPE),     INTENT(IN)    :: BOXM_DS
-        CLASS(BOXM_STATE_TYPE),  INTENT(IN)    :: BOXM_STATE
-        CLASS(PATCH_STATE_TYPE), INTENT(IN)    :: PATCH_STATE
-        INTEGER :: SEG_ID, SLICE_ID, SPECIES_ID, TIME_IDX, I, STATE_I, EMI_ID, PL_ID
-        REAL(DP) :: MASS_SEG
 
-        INTEGER, ALLOCATABLE :: EMI_SEG_IDS(:)
-        LOGICAL, ALLOCATABLE :: MASK(:)
-
-
-        IF (.NOT. ALLOCATED(PL_STATE%PL_MASS)) THEN
-            ALLOCATE(PL_STATE%PL_MASS(PL_STATE%NSEG, PL_STATE%NSPL))
-        END IF
-
-        ! BEFORE PLUME TIME, ZERO OUT MASS
-        IF (TIME_IDX < PL_DS%TIME_IDX(1)) THEN
-            PL_STATE%PL_MASS(:,:) = 0.0_DP
-        END IF
-
-        IF ( (TIME_IDX >= PL_DS%TIME_IDX(1)) .AND. (TIME_IDX <= PL_DS%TIME_IDX(PL_DS%NTPL)) ) THEN
-            
-            ! IF EMISSION HAPPENED AT THIS TIMESTEP, SET DATA TO PL MASS
-            MASK = (FL_DS%TIME_IDX == TIME_IDX)
-            EMI_SEG_IDS = PACK([(I, I=1, SIZE(FL_DS%TIME_IDX))], MASK)
-
-            DO I = 1, SIZE(EMI_SEG_IDS)
-                SEG_ID = EMI_SEG_IDS(I)
-                PL_STATE%PL_MASS(SEG_ID,:) = 0.0_DP
-                
-                DO EMI_ID = 1, PL_DS%NSEMI
-                    DO PL_ID = 1, PL_STATE%NSPL
-                        IF (PL_STATE%SPECIES_PL_NUM(PL_ID) == PL_DS%SPECIES_EMI_NUM(EMI_ID)) THEN
-                            PL_STATE%PL_MASS(SEG_ID, PL_ID) = PL_DS%EMI_PL_MASS(SEG_ID, EMI_ID)
-                            EXIT
-                        END IF
-                    END DO
-                END DO
-            END DO
-
-            CALL PL_STATE%BACKPROJECT_FROM_GRID(PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
-
-        END IF
-        IF (ALLOCATED(EMI_SEG_IDS)) DEALLOCATE(EMI_SEG_IDS)
-    END SUBROUTINE PL_STATE_ADVANCE_MASS
 
     ! ---------- BOXM STATE METHODS ----------
     SUBROUTINE BOXM_STATE_INIT_FROM_BOXM_DS(BOXM_STATE, BOXM_DS)
@@ -7324,8 +7474,6 @@ CONTAINS
         BOXM_STATE%Y_BG_C(:,:) = BOXM_DS%Y_BG_C(:,:)
         BOXM_STATE%Y_DEL_C(:,:) = 0.0_DP
         BOXM_STATE%ACTIVE_FLAG(:) = .FALSE.
-
-        PRINT *, BOXM_STATE%Y_BG_C(1, 8)
 
     END SUBROUTINE BOXM_STATE_INIT_FROM_BOXM_DS
 
@@ -7548,6 +7696,8 @@ CONTAINS
     END SUBROUTINE PATCH_STATE_BUILD_ROWS_FROM_W
 
     SUBROUTINE PATCH_STATE_ACCUM_DELTAS_FROM_W(PATCH_STATE, PL_STATE, BOXM_DS, BOXM_STATE)
+            
+        
         IMPLICIT NONE
         CLASS(PATCH_STATE_TYPE), INTENT(INOUT) :: PATCH_STATE
         CLASS(PL_STATE_TYPE),    INTENT(IN)    :: PL_STATE
@@ -7558,14 +7708,19 @@ CONTAINS
         INTEGER  :: NX_F, NY_F
         REAL(DP) :: W, VOL_F
         REAL(DP) :: DX_C_M, DY_C_M, DX_F, DY_F
+        INTEGER :: DEBUG_ROW, DEBUG_SPEC
+        REAL(DP) :: DEBUG_TOTAL_PROJ_GRID_MASS
+        REAL(DP) :: DEBUG_TOTAL_GRID_MASS
+        INTEGER :: ROW
+        INTEGER :: DEBUG_BOXM_ID
+        
+        DEBUG_TOTAL_PROJ_GRID_MASS = 0.0_DP
 
         IF (PATCH_STATE%NROWS <= 0 .OR. PL_STATE%NNZ_MAP <= 0) RETURN
 
         ! Compute fine-grid subdivision factors once.
         NX_F = MAX(1, NINT(BOXM_DS%HRES_SIM_C / BOXM_DS%HRES_SIM_F))
         NY_F = NX_F
-
-        PATCH_STATE%Y_DEL_F(:,:) = 0.0_DP
 
         DO K = 1, PL_STATE%NNZ_MAP
             SEG_ID = PL_STATE%MAP_SEG(K)
@@ -7595,9 +7750,48 @@ CONTAINS
                 IF (BOXM_ID < 1 .OR. BOXM_ID > PATCH_STATE%NSBOXM) CYCLE
                 IF (BOXM_STATE%MOL_MASS_C(BOXM_ID) <= 0.0_DP) CYCLE
                 PATCH_STATE%Y_DEL_F(ROW_IDX, BOXM_ID) = PATCH_STATE%Y_DEL_F(ROW_IDX, BOXM_ID) + &
-                    W * PL_STATE%PL_MASS(SEG_ID, PL_ID) / (BOXM_STATE%MOL_MASS_C(BOXM_ID) * VOL_F) / 1.0E6_DP
+                    W * (PL_STATE%PL_MASS(SEG_ID, PL_ID) / (BOXM_STATE%MOL_MASS_C(BOXM_ID) * VOL_F) &
+                    / 1.0E6_DP) * 6.02214076E23_DP
+                ! DEBUG: Only accumulate for PL_ID=1
+                IF (PL_ID == 1) THEN
+                    DEBUG_TOTAL_PROJ_GRID_MASS = DEBUG_TOTAL_PROJ_GRID_MASS + W * &
+                    (PL_STATE%PL_MASS(SEG_ID, PL_ID) / (BOXM_STATE%MOL_MASS_C(BOXM_ID) * VOL_F) &
+                    / 1.0E6_DP) * 6.02214076E23_DP
+                END IF
             END DO
         END DO
+
+        ! Debug: print a sample of Y_DEL_F(:,BOXM_ID) after accumulation for PL_ID=1
+        
+        DEBUG_BOXM_ID = PL_STATE%SPECIES_PL_NUM(1)
+        PRINT *, '--- DEBUG: PATCH_STATE%Y_DEL_F(:,BOXM_ID) after accumulation (first 10 rows, PL_ID=1, BOXM_ID=', &
+                    DEBUG_BOXM_ID, ') ---'
+        DO ROW = 1, MIN(PATCH_STATE%NROWS, 10)
+            PRINT *, 'Y_DEL_F(', ROW, ',', DEBUG_BOXM_ID, ')=', PATCH_STATE%Y_DEL_F(ROW, DEBUG_BOXM_ID)
+        END DO
+
+        ! After accumulation, sum up total grid mass in physical units for PL_ID=1 using correct BOXM_ID
+        DEBUG_TOTAL_GRID_MASS = 0.0_DP
+        DO ROW = 1, PATCH_STATE%NROWS
+            CELL_C = PATCH_STATE%ROW_CELL_C(ROW)
+            DX_C_M = BOXM_STATE%DX_C_M(CELL_C)
+            DY_C_M = BOXM_STATE%DY_C_M(CELL_C)
+            DX_F = DX_C_M / REAL(NX_F, DP)
+            DY_F = DY_C_M / REAL(NY_F, DP)
+            VOL_F = DX_F * DY_F * BOXM_DS%VRES_SIM_F
+            ! Y_DEL_F is in concentration (molecules/cm^3), convert to molecules, then to kg
+            DEBUG_TOTAL_GRID_MASS = DEBUG_TOTAL_GRID_MASS + PATCH_STATE%Y_DEL_F(ROW, DEBUG_BOXM_ID) * VOL_F * &
+                                    1.0E6_DP / 6.02214076E23_DP * BOXM_STATE%MOL_MASS_C(DEBUG_BOXM_ID)
+        END DO
+        PRINT *, 'DEBUG: TOTAL GRID MASS (PL_ID=1, physical units, BOXM_ID=', DEBUG_BOXM_ID, ') =', DEBUG_TOTAL_GRID_MASS
+
+        ! Debug: print a sample of Y_DEL_F after accumulation
+        ! PRINT *, '--- DEBUG: PATCH_STATE%Y_DEL_F after accumulation (first 5 rows/species) ---'
+        ! DO DEBUG_ROW = 1, MIN(PATCH_STATE%NROWS, 5)
+        !     DO DEBUG_SPEC = 1, MIN(PATCH_STATE%NSBOXM, 5)
+        !         PRINT *, 'Y_DEL_F(', DEBUG_ROW, ',', DEBUG_SPEC, ')=', PATCH_STATE%Y_DEL_F(DEBUG_ROW, DEBUG_SPEC)
+        !     END DO
+        ! END DO
     END SUBROUTINE PATCH_STATE_ACCUM_DELTAS_FROM_W
 
     SUBROUTINE PATCH_STATE_RUN_FINE_DELTA_CHEM(PATCH_STATE, BOXM_DS, BOXM_STATE)
@@ -7972,7 +8166,7 @@ CONTAINS
         CLASS(PL_DS_TYPE),    INTENT(IN)  :: PL_DS
 
         INTEGER, INTENT(IN) :: TIME_IDX
-        INTEGER :: STATUS, PL_I, OUT_I, I, NDIMS, DLEN, SPECIES_ID, SLICE_ID, CORNER_ID, COORD_ID, PT_ID
+        INTEGER :: STATUS, PL_I, OUT_I, I, NDIMS, DLEN, SPECIES_ID, SLICE_ID, CORNER_ID, COORD_ID, PT_ID, SEG_ID
         INTEGER :: DIMID_TIME, DIMID_SPECIES_PL, DIMID_SEG_ID
         REAL(DP), ALLOCATABLE :: Y_HALF_TMP(:,:,:), Z_HALF_TMP(:,:,:)
         REAL(DP), ALLOCATABLE :: SLICE_POLYS_M_TMP(:,:,:,:)
@@ -8058,6 +8252,10 @@ CONTAINS
             DO SPECIES_ID = 1, PL_STATE%NSPL
                 IF (ANY(PL_DS%SPECIES_EMI_NUM(:) == PL_STATE%SPECIES_PL_NUM(SPECIES_ID))) THEN
                     PL_OUT%PL_MASS(:,SPECIES_ID,OUT_I) = PL_STATE%PL_MASS(:,SPECIES_ID)
+                    ! DO SEG_ID = 1, PL_OUT%NSEG
+                    !     PRINT *, "PL_OUT PL_MASS=", PL_OUT%PL_MASS(SEG_ID,SPECIES_ID,OUT_I), " FOR SPECIES ", &
+                    !             PL_STATE%SPECIES_PL_NUM(SPECIES_ID), "SEG ", SEG_ID, " AT TIME_IDX ", TIME_IDX
+                    ! END DO
                 END IF
             END DO
         
@@ -8544,7 +8742,7 @@ MODULE BOXM_RUN_UTILS
     IMPLICIT NONE
     
     PRIVATE
-    PUBLIC :: BOXM_RUN_INIT, PROJECT_PLUMES_TO_GRID, RUN_CHEM, BACKPROJECT_GRID_TO_PLUMES
+    PUBLIC :: BOXM_RUN_INIT, ADVANCE_MET, PROJECT_PLUMES_TO_GRID, RUN_CHEM, BACKPROJECT_GRID_TO_PLUMES
     PUBLIC :: WRITE_OUTPUTS, CLOSE_DATASETS, RESET_STATES
     
 CONTAINS
@@ -8618,7 +8816,9 @@ CONTAINS
         CALL BOXM_OUT%INIT(TRIM(DATA_PATH)//'outputs/'//TRIM(JOB_ID)//'/boxm_out.nc')
         CALL BOXM_OUT%READ_STATIC()
 
-        CALL CHEM_ALLOC(BOXM_DS%NCELL, BOXM_DS%NSBOXM, BOXM_DS%NPP, BOXM_DS%NPC, BOXM_DS%NTC, BOXM_DS%NFL)
+        IF (BOXM_DS%RUN_CHEM == 1) THEN
+            CALL CHEM_ALLOC(BOXM_DS%NCELL, BOXM_DS%NSBOXM, BOXM_DS%NPP, BOXM_DS%NPC, BOXM_DS%NTC, BOXM_DS%NFL)
+        END IF
 
     END SUBROUTINE BOXM_RUN_INIT
 
@@ -8639,11 +8839,26 @@ CONTAINS
         CALL PL_STATE%ADVANCE_GEOM(PL_DS, BOXM_DS, TIME_IDX)
         CALL PL_STATE%BUILD_ACTIVE(BOXM_DS, BOXM_STATE)
         CALL PL_STATE%PROJECT_TO_GRID(PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE)
+        CALL PL_STATE%EMI_TO_PLUMES(FL_DS, PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
 
         CALL PATCH_STATE%BUILD_ROWS_FROM_W(PL_STATE, BOXM_STATE)
         CALL PATCH_STATE%ACCUM_DELTAS_FROM_W(PL_STATE, BOXM_DS, BOXM_STATE)
 
     END SUBROUTINE PROJECT_PLUMES_TO_GRID
+
+    SUBROUTINE ADVANCE_MET(BOXM_DS, BOXM_STATE, TIME_IDX)
+        USE DEFINE_INPUT_TYPES
+        USE DEFINE_STATE_TYPES
+        IMPLICIT NONE
+
+        CLASS(BOXM_DS_TYPE),     INTENT(IN)    :: BOXM_DS
+        CLASS(BOXM_STATE_TYPE),  INTENT(INOUT) :: BOXM_STATE
+
+        INTEGER, INTENT(IN) :: TIME_IDX
+
+        CALL BOXM_STATE%ADVANCE_MET(BOXM_DS, TIME_IDX)
+
+    END SUBROUTINE ADVANCE_MET
 
     SUBROUTINE RUN_CHEM(BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
         USE DEFINE_INPUT_TYPES
@@ -8661,8 +8876,6 @@ CONTAINS
         ! Local variables for RUN_LEGACY_CHEM
         INTEGER :: NCELL, NSBOXM, NPP, NPC, NTC, NFL
 
-        CALL BOXM_STATE%ADVANCE_MET(BOXM_DS, TIME_IDX)
-        
         ! === LEGACY BACKGROUND CHEMISTRY ===
         CALL BOXM_STATE%RUN_COARSE_BG_CHEM(BOXM_DS)
         
@@ -8691,7 +8904,7 @@ CONTAINS
 
         INTEGER, INTENT(IN) :: TIME_IDX
 
-        CALL PL_STATE%ADVANCE_MASS(FL_DS, PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
+        CALL PL_STATE%BACKPROJECT_FROM_GRID(PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
 
     END SUBROUTINE BACKPROJECT_GRID_TO_PLUMES
 
@@ -8838,18 +9051,24 @@ PROGRAM BOXM_RUN
 
         CALL RESET_STATES(PL_STATE, BOXM_STATE, PATCH_STATE)
 
+        CALL ADVANCE_MET(BOXM_DS, BOXM_STATE, TIME_IDX)
+
         IF (BOXM_DS%N_AC > 0) THEN
             ! PROJECT_PLUMES_TO_GRID
             CALL PROJECT_PLUMES_TO_GRID(FL_DS, PL_DS, BOXM_DS, PL_STATE, BOXM_STATE, PATCH_STATE, TIME_IDX)
 
-            ! UPDATE_CHEMISTRY
-            CALL RUN_CHEM(BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
-
+            IF (BOXM_DS%RUN_CHEM == 1) THEN
+                ! UPDATE_CHEMISTRY
+                CALL RUN_CHEM(BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
+            END IF
+            
             ! BACKPROJECT_GRID_TO_PLUMES
             CALL BACKPROJECT_GRID_TO_PLUMES(FL_DS, PL_DS, BOXM_DS, PL_STATE, BOXM_STATE, PATCH_STATE, TIME_IDX)
         ELSE
-            ! UPDATE_CHEMISTRY
-            CALL RUN_CHEM(BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
+            IF (BOXM_DS%RUN_CHEM == 1) THEN
+                ! UPDATE_CHEMISTRY
+                CALL RUN_CHEM(BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
+            END IF
         END IF
         
         ! WRITE BACK TO OUTPUT DATASETS

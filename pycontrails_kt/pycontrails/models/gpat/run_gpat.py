@@ -17,7 +17,7 @@ sim_params = {
     "alt_bounds": (10000, 13000),  # alt bounds [m]
     "hres_sim_c": 0.5,  # coarse horizontal resolution [deg]
     "vres_sim_c": 500,  # coarse vertical resolution [m]
-    "hres_sim_f": 0.1,  # fine horizontal resolution [deg]
+    "hres_sim_f": 0.01,  # fine horizontal resolution [deg]
     "vres_sim_f": 500,  # fine vertical resolution [m]
 
     "run_path": "/home/ktait98/GPAT2026/pycontrails_kt/pycontrails/models/gpat/",
@@ -47,7 +47,7 @@ fl_params = {
     "clip_to_domain": True,
     "domain_margin_deg": 0.005,
     "sep_dist": (1000, 0, 0),  # dx, dy, dz [m]
-    "n_ac": 1,  # number of aircraft
+    "n_ac": 2,  # number of aircraft
 }
 
 # plume dispersion parameters
@@ -63,14 +63,14 @@ pl_params = {
 
 # meteorology parameters
 met_params = {
-    "eastward_wind": -5.0,  # m/s
-    "northward_wind": 3.0,  # m/s
+    "eastward_wind": 0.0,  # m/s
+    "northward_wind": 0.0,  # m/s
     "lagrangian_tendency_of_air_pressure": 0.0,  # m/s
 }
 
 # chemistry parameters
 chem_params = {
-    "run_chem": True,
+    "run_chem": False,
     "species_emi": ("NO", "CO", "SO2"),
     # "species_pl": ("NO", "CO", "SO2"),
     "species_pl": ("NO", "NO2", "O3", "NO3", "N2O5",

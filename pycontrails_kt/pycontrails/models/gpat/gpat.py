@@ -335,6 +335,8 @@ class GPAT(Model):
     def preprocess_gpat(self):
         """Preprocess inputs for GPAT FORTRAN implementation (BOXM and CONTRAIL in future)."""
         # Generate flight trajectory points
+        print(self.fl_params.n_ac)
+        
         if self.fl_params.n_ac > 0:
             self.fl = self.setup.traj_gen()
         
@@ -344,7 +346,6 @@ class GPAT(Model):
         # Generate background chemistry data
         self.bg_chem = self.setup.gen_bg_chem()
 
-        
         # Calculate aircraft performance using PS Model
         if self.fl_params.n_ac > 0:
             self.fl = self.setup.ac_perf()
@@ -369,9 +370,6 @@ class GPAT(Model):
         """Postprocess outputs from GPAT FORTRAN implementation."""
         # Load outputs
         self.analysis.load_output_datasets()
-        # self.analysis.load_patch_table()
-        # self.analysis.load_pl_out()
-        # self.analysis.plume_to_grid()
         
 class GPATSetup:
     """Setup the GPAT model, ready for FORTRAN computation."""
@@ -980,9 +978,24 @@ class GPATSetup:
         age_seconds = age_clean.astype("timedelta64[s]").astype(np.int64)
         self.gpat.pl_ds["age_s"] = (("seg_id", "time"), age_seconds)
 
-        active_mask = (self.gpat.pl_ds["age_s"] > 0) & (self.gpat.pl_ds["age_s"] <= sim_params.t_pl[2].total_seconds())
+        df = self.gpat.pl_ds["age_s"].to_dataframe().reset_index()
+        # first_time_dict = df.groupby("seg_id")["time"].min().to_dict()
+
+        # # Create a boolean mask for (seg_id, time) pairs that are the first for that seg_id
+        # first_time_mask = np.zeros(self.gpat.pl_ds["age_s"].shape, dtype=bool)
+        # for i, seg_id in enumerate(self.gpat.pl_ds["age_s"].seg_id.values):
+        #     first_time = first_time_dict[seg_id]
+        #     time_idx = np.where(self.gpat.pl_ds["age_s"].time.values == first_time)[0]
+        #     if len(time_idx) > 0:
+        #         first_time_mask[i, time_idx[0]] = True
+
+        # Now build the active mask
+        active_mask = (self.gpat.pl_ds["age_s"].values > 0) & (self.gpat.pl_ds["age_s"].values <= sim_params.t_pl[2].total_seconds())
         active_mask = active_mask.astype(int)
-        self.gpat.pl_ds = self.gpat.pl_ds.assign_coords(active_seg_flag=(("seg_id", "time"), active_mask.values))
+        self.gpat.pl_ds = self.gpat.pl_ds.assign_coords(active_seg_flag=(("seg_id", "time"), active_mask))
+
+        for seg_id in self.gpat.pl_ds.seg_id.values:
+            print(f"Seg = {seg_id} Active seg flag = {self.gpat.pl_ds['active_seg_flag'].sel(seg_id=seg_id).values}")
 
         self.gpat.pl_ds = self.gpat.pl_ds.assign_coords(
             time_rel_s = ("time", (self.gpat.pl_ds["time"].values - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int)),
@@ -1010,6 +1023,7 @@ class GPATSetup:
             f_max=pl_params.f_max,
             output_pl_slices=int(pl_params.output_pl_slices),
             n_points=pl_params.n_points,
+            max_age_s=int(sim_params.t_pl[2].total_seconds()),
 
             description="Emission species mass in plume segments",
         )
@@ -1025,6 +1039,7 @@ class GPATSetup:
     def init_boxm_ds_nc(self):
         """Initialize the box model dataset (met + background chem on coarse grid)."""
         sim_params = self.gpat.sim_params
+        fl_params = self.gpat.fl_params
         chem_params = self.gpat.chem_params
 
         # --- Merge meteorology and background chemistry fields ---
@@ -1069,7 +1084,8 @@ class GPATSetup:
             therm_coeffs=512,
             flux_species=130,
 
-            n_ac=self.gpat.fl_params.n_ac,
+            run_chem=int(chem_params.run_chem),
+            n_ac=fl_params.n_ac,
 
             description="BOXM coarse-grid meteorology and background chemistry fields",
             note="Emissions and plume segments handled separately via PL_DS.NC and FL_DS.NC",
