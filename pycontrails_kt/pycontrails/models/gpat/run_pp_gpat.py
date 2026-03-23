@@ -4,6 +4,7 @@ import xarray as xr
 from dataclasses import asdict
 from pycontrails.models.gpat.pp_gpat import GPATPostProcessor
 import os
+import json
 import pyvista as pv
 np.set_printoptions(threshold=np.inf, linewidth=500)
 
@@ -17,16 +18,12 @@ pp_gpat = GPATPostProcessor(data_path=data_path, criteria=criteria)
 
 
 boxm_ds = pp_gpat.boxm_ds_dict[pp_gpat.job_ids[0]]
-if pp_gpat.params_dict[pp_gpat.job_ids[0]].get("n_ac", 0) > 0:
-    fl_ds = pp_gpat.fl_ds_dict[pp_gpat.job_ids[0]]
-    pl_ds = pp_gpat.pl_ds_dict[pp_gpat.job_ids[0]]
+fl_ds = pp_gpat.fl_ds_dict[pp_gpat.job_ids[0]]
+pl_ds = pp_gpat.pl_ds_dict[pp_gpat.job_ids[0]]
 
 boxm_out = pp_gpat.boxm_out_dict[pp_gpat.job_ids[0]]
-if pp_gpat.params_dict[pp_gpat.job_ids[0]].get("n_ac", 0) > 0:
-    pl_out = pp_gpat.pl_out_dict[pp_gpat.job_ids[0]]
-    patch_table = pp_gpat.patch_table_dict[pp_gpat.job_ids[0]]
-
-
+pl_out = pp_gpat.pl_out_dict[pp_gpat.job_ids[0]]
+patch_table = pp_gpat.patch_table_dict[pp_gpat.job_ids[0]]
 
 # Plot specific variables with trajectories
 # pp_gpat.plotting.plot_patch_heatmap_2d(
@@ -39,8 +36,9 @@ if pp_gpat.params_dict[pp_gpat.job_ids[0]].get("n_ac", 0) > 0:
 # )
 
 # color_scale = (boxm_out["Y_bg_c"].sel(species_out="NO").min(), boxm_out["Y_bg_c"].sel(species_out="NO").max())
-pl_out = pp_gpat.pl_out_dict[pp_gpat.job_ids[0]]
 print(pl_out["pl_mass"].sel(species_pl="NO", seg_id=1).values)
+
+print(patch_table["Y_del_f"].sel(row=slice(0, 100), species_out="NO").values)
 
 pl_ds = pp_gpat.pl_ds_dict[pp_gpat.job_ids[0]]
 
@@ -65,13 +63,14 @@ print(pl_ds["active_seg_flag"].sel(seg_id=3).values)
 
 # pp_gpat.plotting.plot_heatmap_slider(job_id=pp_gpat.job_ids[0], species="NO", data_var="Y_bg_c", level=11000)
 
-# pp_gpat.plotting.animate_plumes_3d_plotly(
-#     job_id=pp_gpat.job_ids[0],
-#     patch_species="NO",
-#     overlay_patch=True,
-#     time_idx_start=184,
-#     time_idx_end=184+3*180,
-# )
+pp_gpat.plotting.animate_plumes_3d_plotly(
+    job_id=pp_gpat.job_ids[0],
+    patch_species="NO",
+    overlay_patch=True,
+    time_idx_start=184,
+    time_idx_end=184+3*180,
+    output_path="plume_w_bridge.html"
+)
 
 # print(f"boxm_ds: {boxm_ds['Y_bg_c'].sel(species_boxm='NO').isel(cell=0).values}")
 # #print(f"boxm_out: {boxm_out['Y_bg_c'].sel(species_out='NO').isel(latitude_c=1, longitude_c=1, level_c=1).values}")
