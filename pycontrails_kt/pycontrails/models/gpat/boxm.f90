@@ -6129,6 +6129,7 @@ MODULE DEFINE_STATE_TYPES
         PROCEDURE, PASS :: ADVANCE_GEOM    => PL_STATE_ADVANCE_GEOM
         PROCEDURE, PASS :: BUILD_ACTIVE     => PL_STATE_BUILD_ACTIVE
         PROCEDURE, PASS :: PROJECT_TO_GRID => PL_STATE_PROJECT_TO_GRID
+        PROCEDURE, PASS :: PROJECT_TO_GRID_OLD => PL_STATE_PROJECT_TO_GRID_OLD
         PROCEDURE, PASS :: EMI_TO_PLUMES => PL_STATE_EMI_TO_PLUMES
         PROCEDURE, PASS :: BACKPROJECT_FROM_GRID => PL_STATE_BACKPROJECT_FROM_GRID
 
@@ -6463,6 +6464,9 @@ CONTAINS
             END IF
             IF (.NOT. SEG_IS_INCLUDED) CYCLE
 
+            ! PRINT *, "SEG_INCLUDED: SEG_ID=", SEG_IS_INCLUDED, " AGE_S=", PL_STATE%AGE_S(SEG_ID), &
+            !          " MASS=", SUM(PL_STATE%PL_MASS(SEG_ID,:))
+
             ! One segment envelope from all slice polygons (all corners, all slices).
             X_MIN_PL = MINVAL(PL_STATE%SLICE_POLYS_M(SEG_ID, :, :, 1)) - PAD_XY
             X_MAX_PL = MAXVAL(PL_STATE%SLICE_POLYS_M(SEG_ID, :, :, 1)) + PAD_XY
@@ -6485,10 +6489,65 @@ CONTAINS
 
                 BOXM_STATE%ACTIVE_FLAG(I) = .TRUE.
             END DO
+            ! PRINT *, "SEG_ID=", SEG_ID, " ACTIVATES ", COUNT(BOXM_STATE%ACTIVE_FLAG), " CELLS"
         END DO
     END SUBROUTINE PL_STATE_BUILD_ACTIVE
 
-    SUBROUTINE PL_STATE_PROJECT_TO_GRID(PL_STATE, PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE)
+    SUBROUTINE PL_STATE_EMI_TO_PLUMES(PL_STATE, FL_DS, PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
+        CLASS(PL_STATE_TYPE),    INTENT(INOUT) :: PL_STATE
+        CLASS(FL_DS_TYPE),       INTENT(IN)    :: FL_DS
+        CLASS(PL_DS_TYPE),       INTENT(IN)    :: PL_DS
+        CLASS(BOXM_DS_TYPE),     INTENT(IN)    :: BOXM_DS
+        CLASS(BOXM_STATE_TYPE),  INTENT(IN)    :: BOXM_STATE
+        CLASS(PATCH_STATE_TYPE), INTENT(IN)    :: PATCH_STATE
+        
+        INTEGER :: SEG_ID, SLICE_ID, SPECIES_ID, TIME_IDX, I, STATE_I, EMI_ID, PL_ID
+        REAL(DP) :: MASS_SEG
+
+        INTEGER, ALLOCATABLE :: EMI_SEG_IDS(:)
+        LOGICAL, ALLOCATABLE :: MASK(:)
+
+
+        IF (.NOT. ALLOCATED(PL_STATE%PL_MASS)) THEN
+            ALLOCATE(PL_STATE%PL_MASS(PL_STATE%NSEG, PL_STATE%NSPL))
+        END IF
+
+        ! BEFORE PLUME TIME, ZERO OUT MASS
+        IF (TIME_IDX < PL_DS%TIME_IDX(1)) THEN
+            RETURN
+        END IF
+
+        IF ( (TIME_IDX >= PL_DS%TIME_IDX(1)) .AND. (TIME_IDX <= PL_DS%TIME_IDX(PL_DS%NTPL)) ) THEN
+            
+            DO SEG_ID = 1, PL_STATE%NSEG
+                DO PL_ID = 1, PL_STATE%NSPL
+                    ! Default: retain previous mass
+                    ! Check if segment is too old (expired)
+                    IF (PL_STATE%AGE_S(SEG_ID) > PL_DS%MAX_AGE_S) THEN
+                        PL_STATE%PL_MASS(SEG_ID, PL_ID) = 0.0_DP
+                    END IF
+                END DO
+            END DO
+            
+            ! IF EMISSION HAPPENED AT THIS TIMESTEP, SET DATA TO PL MASS
+            MASK = (FL_DS%TIME_IDX == TIME_IDX)
+            EMI_SEG_IDS = PACK([(I, I=1, SIZE(FL_DS%TIME_IDX))], MASK)
+
+            DO I = 1, SIZE(EMI_SEG_IDS)
+                SEG_ID = EMI_SEG_IDS(I)
+                DO EMI_ID = 1, PL_DS%NSEMI
+                    DO PL_ID = 1, PL_STATE%NSPL
+                        IF (PL_STATE%SPECIES_PL_NUM(PL_ID) == PL_DS%SPECIES_EMI_NUM(EMI_ID)) THEN
+                            PL_STATE%PL_MASS(SEG_ID, PL_ID) = PL_DS%EMI_PL_MASS(SEG_ID, EMI_ID)
+                        END IF
+                    END DO
+                END DO
+            END DO
+            IF (ALLOCATED(EMI_SEG_IDS)) DEALLOCATE(EMI_SEG_IDS)
+        END IF
+    END SUBROUTINE PL_STATE_EMI_TO_PLUMES
+
+    SUBROUTINE PL_STATE_PROJECT_TO_GRID_OLD(PL_STATE, PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
             
         CLASS(PL_STATE_TYPE),    INTENT(INOUT) :: PL_STATE
         CLASS(PATCH_STATE_TYPE),  INTENT(INOUT) :: PATCH_STATE
@@ -6496,7 +6555,7 @@ CONTAINS
         CLASS(BOXM_STATE_TYPE),    INTENT(IN)    :: BOXM_STATE
         CLASS(PL_DS_TYPE),       INTENT(IN)    :: PL_DS
 
-        INTEGER :: CELL_C, CELL_F_LOCAL, ROW_IDX, NNZ
+        INTEGER :: CELL_C, CELL_F_LOCAL, ROW_IDX, NNZ, TIME_IDX
         INTEGER :: N_ACTIVE_CELL, ACTIVE_IDX
         INTEGER :: NX_F, NY_F, NZ_F, SEG_ID, SEG_PREV, SEG_NEXT, SLICE_ID
         INTEGER :: FL_S, WP_S, SEG_CAND
@@ -6514,10 +6573,6 @@ CONTAINS
         REAL(DP) :: RAW, RAW_SUM, WEIGHT, RAW_CUR
         REAL(DP) :: SLICE_POLY(4, 3), SLICE_POLY_CUR(4, 3)
         REAL(DP) :: SLICE_POLY_PREV(4, 3), SLICE_POLY_NEXT(4, 3)
-        REAL(DP) :: X_L_P, Y_L_P, X_R_P, Y_R_P
-        REAL(DP) :: X_L_S, Y_L_S, X_R_S, Y_R_S
-        REAL(DP) :: X_L_N, Y_L_N, X_R_N, Y_R_N
-        REAL(DP) :: Z_MIN_PREV, Z_MAX_PREV, Z_MIN_NEXT, Z_MAX_NEXT
         REAL(DP), PARAMETER :: EPS = 1.0E-12_DP
         REAL(DP), PARAMETER :: MASS_EPS = 1.0E-30_DP
         REAL(DP) :: SEG_PAD_XY, SEG_PAD_Z
@@ -6530,7 +6585,6 @@ CONTAINS
         DZ_C = BOXM_DS%VRES_SIM_C ! COARSE CELL HEIGHT
 
         ! DEALLOCATE MAP ARRAYS IF THEY EXIST FROM PREVIOUS CALLS, 
-        
         IF (ALLOCATED(PL_STATE%MAP_SEG)) DEALLOCATE(PL_STATE%MAP_SEG)
         IF (ALLOCATED(PL_STATE%MAP_SLICE)) DEALLOCATE(PL_STATE%MAP_SLICE)
         IF (ALLOCATED(PL_STATE%MAP_CELL_C)) DEALLOCATE(PL_STATE%MAP_CELL_C)
@@ -6590,13 +6644,6 @@ CONTAINS
 
             DO SLICE_ID = 1, PL_STATE%NSLICES
                 SLICE_POLY_CUR(:,:) = PL_STATE%SLICE_POLYS_M(SEG_ID,SLICE_ID,:,:)
-
-                X_L_S = 0.5_DP * (SLICE_POLY_CUR(1,1) + SLICE_POLY_CUR(2,1))
-                Y_L_S = 0.5_DP * (SLICE_POLY_CUR(1,2) + SLICE_POLY_CUR(2,2))
-                X_R_S = 0.5_DP * (SLICE_POLY_CUR(3,1) + SLICE_POLY_CUR(4,1))
-                Y_R_S = 0.5_DP * (SLICE_POLY_CUR(3,2) + SLICE_POLY_CUR(4,2))
-
-                ! Only use current segment
 
                 X_MIN_SLICE = SEG_X_MIN(SEG_ID)
                 X_MAX_SLICE = SEG_X_MAX(SEG_ID)
@@ -6677,11 +6724,7 @@ CONTAINS
             DO SLICE_ID = 1, PL_STATE%NSLICES
                 N_ACTIVE_SLICE = N_ACTIVE_SLICE + 1
                 SLICE_POLY_CUR(:,:) = PL_STATE%SLICE_POLYS_M(SEG_ID,SLICE_ID,:,:)
-                X_L_S = 0.5_DP * (SLICE_POLY_CUR(1,1) + SLICE_POLY_CUR(2,1))
-                Y_L_S = 0.5_DP * (SLICE_POLY_CUR(1,2) + SLICE_POLY_CUR(2,2))
-                X_R_S = 0.5_DP * (SLICE_POLY_CUR(3,1) + SLICE_POLY_CUR(4,1))
-                Y_R_S = 0.5_DP * (SLICE_POLY_CUR(3,2) + SLICE_POLY_CUR(4,2))
-
+   
                 ! Only use current segment
                 X_MIN_SLICE = SEG_X_MIN(SEG_ID)
                 X_MAX_SLICE = SEG_X_MAX(SEG_ID)
@@ -6807,61 +6850,470 @@ CONTAINS
         IF (ALLOCATED(SEG_Y_MIN)) DEALLOCATE(SEG_Y_MIN, SEG_Y_MAX)
         IF (ALLOCATED(SEG_Z_MIN)) DEALLOCATE(SEG_Z_MIN, SEG_Z_MAX)
 
-    END SUBROUTINE PL_STATE_PROJECT_TO_GRID
+    END SUBROUTINE PL_STATE_PROJECT_TO_GRID_OLD
 
-    SUBROUTINE PL_STATE_EMI_TO_PLUMES(PL_STATE, FL_DS, PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
+    SUBROUTINE PL_STATE_PROJECT_TO_GRID(PL_STATE, PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
+            
         CLASS(PL_STATE_TYPE),    INTENT(INOUT) :: PL_STATE
-        CLASS(FL_DS_TYPE),       INTENT(IN)    :: FL_DS
+        CLASS(PATCH_STATE_TYPE),  INTENT(INOUT) :: PATCH_STATE
+        CLASS(BOXM_DS_TYPE),      INTENT(IN)    :: BOXM_DS
+        CLASS(BOXM_STATE_TYPE),    INTENT(IN)    :: BOXM_STATE
         CLASS(PL_DS_TYPE),       INTENT(IN)    :: PL_DS
-        CLASS(BOXM_DS_TYPE),     INTENT(IN)    :: BOXM_DS
-        CLASS(BOXM_STATE_TYPE),  INTENT(IN)    :: BOXM_STATE
-        CLASS(PATCH_STATE_TYPE), INTENT(IN)    :: PATCH_STATE
+
+        INTEGER :: CELL_C, CELL_F_LOCAL, ROW_IDX, NNZ, TIME_IDX
+        INTEGER :: N_ACTIVE_CELL, ACTIVE_IDX
+        INTEGER :: NX_F, NY_F, NZ_F, SEG_ID, SLICE_ID, K1, K2
+        INTEGER :: FL_S, WP_S, SEG_CAND
+        INTEGER :: IX_F, IY_F, IZ_F
+        INTEGER :: N_ACTIVE_SLICE, N_NONZERO_SLICE, N_INCLUDED_SEG
+        INTEGER, ALLOCATABLE :: ACTIVE_CELLS(:)
+        LOGICAL, ALLOCATABLE :: SEG_INCLUDED(:)
+        REAL(DP), ALLOCATABLE :: SEG_X_MIN(:), SEG_X_MAX(:), SEG_Y_MIN(:), SEG_Y_MAX(:), SEG_Z_MIN(:), SEG_Z_MAX(:)
+        REAL(DP) :: ALT_C, LON_C_M, LAT_C_M
+        REAL(DP) :: DX_C_M, DY_C_M, DZ_C
+        REAL(DP) :: DX_F, DY_F, DZ_F
+        REAL(DP) :: X_MIN_SEG, X_MAX_SEG, Y_MIN_SEG, Y_MAX_SEG, Z_MIN_SEG, Z_MAX_SEG
+        REAL(DP) :: X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, Z_MIN_F, Z_MAX_F
+        REAL(DP) :: X_MIN_C, X_MAX_C, Y_MIN_C, Y_MAX_C, Z_MIN_C, Z_MAX_C
+        REAL(DP) :: RAW, RAW_SUM, WEIGHT, RAW_CUR
+        REAL(DP) :: SLICE_POLY(4, 3), SLICE_POLY_CUR(4, 3)
+        REAL(DP), PARAMETER :: EPS = 1.0E-12_DP
+        REAL(DP), PARAMETER :: MASS_EPS = 1.0E-30_DP
+        REAL(DP) :: SEG_PAD_XY, SEG_PAD_Z
+
+        REAL(DP), ALLOCATABLE :: RAW_COARSE(:)
+        REAL(DP) :: SUM_RAW_COARSE
+        REAL(DP), ALLOCATABLE :: RAW_FINE(:,:,:)
+        REAL(DP) :: SUM_RAW_FINE
+
+        INTEGER, ALLOCATABLE :: TMP_SEG(:), TMP_SLICE(:), TMP_CELL_C(:), TMP_CELL_F(:)
+        REAL(DP), ALLOCATABLE :: TMP_W(:)
+
+        INTEGER :: N_UNIQUE, I, J, N_ENTRIES
+        LOGICAL, ALLOCATABLE :: IS_DUP(:)
+        INTEGER :: S
+        REAL(DP) :: SUM_W, TOTAL_PATCH_Y_DEL_F
         
-        INTEGER :: SEG_ID, SLICE_ID, SPECIES_ID, TIME_IDX, I, STATE_I, EMI_ID, PL_ID
-        REAL(DP) :: MASS_SEG
-
-        INTEGER, ALLOCATABLE :: EMI_SEG_IDS(:)
-        LOGICAL, ALLOCATABLE :: MASK(:)
-
-
-        IF (.NOT. ALLOCATED(PL_STATE%PL_MASS)) THEN
-            ALLOCATE(PL_STATE%PL_MASS(PL_STATE%NSEG, PL_STATE%NSPL))
+        ! At entry to PROJECTION
+        IF (ALLOCATED(PL_STATE%PL_MASS)) THEN
+            PRINT *, 'DEBUG: TOTAL PLUME MASS AT ENTRY (PROJECTION) =', SUM(PL_STATE%PL_MASS)
         END IF
+        CALL FLUSH(6)
 
-        ! BEFORE PLUME TIME, ZERO OUT MASS
-        IF (TIME_IDX < PL_DS%TIME_IDX(1)) THEN
-            RETURN
-        END IF
-
-        IF ( (TIME_IDX >= PL_DS%TIME_IDX(1)) .AND. (TIME_IDX <= PL_DS%TIME_IDX(PL_DS%NTPL)) ) THEN
-            
-            DO SEG_ID = 1, PL_STATE%NSEG
-                DO PL_ID = 1, PL_STATE%NSPL
-                    ! Default: retain previous mass
-                    ! Check if segment is too old (expired)
-                    IF (PL_STATE%AGE_S(SEG_ID) > PL_DS%MAX_AGE_S) THEN
-                        PL_STATE%PL_MASS(SEG_ID, PL_ID) = 0.0_DP
-                    END IF
-                END DO
+        IF (ALLOCATED(PATCH_STATE%Y_DEL_F)) THEN
+            TOTAL_PATCH_Y_DEL_F = 0.0_DP
+            DO I = 1, SIZE(PATCH_STATE%Y_DEL_F, 1)
+                TOTAL_PATCH_Y_DEL_F = TOTAL_PATCH_Y_DEL_F + PATCH_STATE%Y_DEL_F(I, 8)
             END DO
-            
-            ! IF EMISSION HAPPENED AT THIS TIMESTEP, SET DATA TO PL MASS
-            MASK = (FL_DS%TIME_IDX == TIME_IDX)
-            EMI_SEG_IDS = PACK([(I, I=1, SIZE(FL_DS%TIME_IDX))], MASK)
+            PRINT *, 'DEBUG: TOTAL PATCH Y_DEL_F AT ENTRY (PROJECTION) = ', TOTAL_PATCH_Y_DEL_F
+            CALL FLUSH(6)
+        END IF
 
-            DO I = 1, SIZE(EMI_SEG_IDS)
-                SEG_ID = EMI_SEG_IDS(I)
-                DO EMI_ID = 1, PL_DS%NSEMI
-                    DO PL_ID = 1, PL_STATE%NSPL
-                        IF (PL_STATE%SPECIES_PL_NUM(PL_ID) == PL_DS%SPECIES_EMI_NUM(EMI_ID)) THEN
-                            PL_STATE%PL_MASS(SEG_ID, PL_ID) = PL_DS%EMI_PL_MASS(SEG_ID, EMI_ID)
-                        END IF
+        
+
+        ! CALCULATE FINE GRID SUBDIVISION
+        NX_F = MAX(1, NINT(BOXM_DS%HRES_SIM_C / BOXM_DS%HRES_SIM_F)) ! NFINE IN X DIRECTION
+        NY_F = NX_F ! MAINTAIN SQUARE CELLS IN HORIZONTAL
+        NZ_F = MAX(1, NINT(BOXM_DS%VRES_SIM_C / BOXM_DS%VRES_SIM_F)) ! NFINE IN Z DIRECTION
+
+        DZ_C = BOXM_DS%VRES_SIM_C ! COARSE CELL HEIGHT
+
+        ! DEALLOCATE MAP ARRAYS IF THEY EXIST FROM PREVIOUS CALLS, 
+        IF (ALLOCATED(PL_STATE%MAP_SEG)) DEALLOCATE(PL_STATE%MAP_SEG)
+        IF (ALLOCATED(PL_STATE%MAP_SLICE)) DEALLOCATE(PL_STATE%MAP_SLICE)
+        IF (ALLOCATED(PL_STATE%MAP_CELL_C)) DEALLOCATE(PL_STATE%MAP_CELL_C)
+        IF (ALLOCATED(PL_STATE%MAP_CELL_F)) DEALLOCATE(PL_STATE%MAP_CELL_F)
+        IF (ALLOCATED(PL_STATE%MAP_W)) DEALLOCATE(PL_STATE%MAP_W)
+
+        N_ACTIVE_SLICE = 0
+        N_NONZERO_SLICE = 0
+
+        N_ACTIVE_CELL = COUNT(BOXM_STATE%ACTIVE_FLAG)
+
+        ! PRINT *, "N_ACTIVE_CELL=", N_ACTIVE_CELL
+        
+        PL_STATE%NNZ_MAP = 0
+        IF (N_ACTIVE_CELL <= 0) RETURN
+
+        ! THEN ALLOCATE NEW ONES BASED ON CURRENT ACTIVE CELLS AND SEGMENTS
+        ALLOCATE(ACTIVE_CELLS(N_ACTIVE_CELL))
+        ACTIVE_CELLS(:) = 0
+
+        ACTIVE_IDX = 0
+        DO CELL_C = 1, BOXM_STATE%NCELL
+            IF (.NOT. BOXM_STATE%ACTIVE_FLAG(CELL_C)) CYCLE
+            ACTIVE_IDX = ACTIVE_IDX + 1
+            ACTIVE_CELLS(ACTIVE_IDX) = CELL_C
+        END DO
+
+        ALLOCATE(SEG_INCLUDED(PL_STATE%NSEG))
+        ALLOCATE(SEG_X_MIN(PL_STATE%NSEG), SEG_X_MAX(PL_STATE%NSEG))
+        ALLOCATE(SEG_Y_MIN(PL_STATE%NSEG), SEG_Y_MAX(PL_STATE%NSEG))
+        ALLOCATE(SEG_Z_MIN(PL_STATE%NSEG), SEG_Z_MAX(PL_STATE%NSEG))
+
+        ! First determine which segments to include based on active flags and mass, 
+        ! and precompute their bounding boxes with padding
+        SEG_INCLUDED(:) = (PL_STATE%ACTIVE_SEG_FLAG(:) == 1)
+        SEG_PAD_XY = 0.5_DP * BOXM_DS%HRES_SIM_F
+        SEG_PAD_Z = 0.5_DP * BOXM_DS%VRES_SIM_F
+
+        IF (ALLOCATED(PL_STATE%PL_MASS)) THEN
+            DO SEG_ID = 1, PL_STATE%NSEG
+                IF (.NOT. SEG_INCLUDED(SEG_ID)) THEN
+                    SEG_INCLUDED(SEG_ID) = (SUM(ABS(PL_STATE%PL_MASS(SEG_ID,:))) > MASS_EPS)
+                END IF
+            END DO
+        END IF
+        N_INCLUDED_SEG = COUNT(SEG_INCLUDED)
+
+        ! Precompute segment bounding boxes with padding for quick rejection in overlap tests
+        DO SEG_ID = 1, PL_STATE%NSEG
+            IF (.NOT. SEG_INCLUDED(SEG_ID)) CYCLE
+            SEG_X_MIN(SEG_ID) = MINVAL(PL_STATE%SLICE_POLYS_M(SEG_ID, :, :, 1)) - SEG_PAD_XY
+            SEG_X_MAX(SEG_ID) = MAXVAL(PL_STATE%SLICE_POLYS_M(SEG_ID, :, :, 1)) + SEG_PAD_XY
+            SEG_Y_MIN(SEG_ID) = MINVAL(PL_STATE%SLICE_POLYS_M(SEG_ID, :, :, 2)) - SEG_PAD_XY
+            SEG_Y_MAX(SEG_ID) = MAXVAL(PL_STATE%SLICE_POLYS_M(SEG_ID, :, :, 2)) + SEG_PAD_XY
+            SEG_Z_MIN(SEG_ID) = MINVAL(PL_STATE%SLICE_POLYS_M(SEG_ID, :, :, 3)) - SEG_PAD_Z
+            SEG_Z_MAX(SEG_ID) = MAXVAL(PL_STATE%SLICE_POLYS_M(SEG_ID, :, :, 3)) + SEG_PAD_Z
+        END DO
+
+        ! Pass 1: count all nonzero overlaps so we can allocate the sparse map exactly once.
+        NNZ = 0
+        DO SEG_ID = 1, PL_STATE%NSEG
+            IF (.NOT. SEG_INCLUDED(SEG_ID)) CYCLE
+
+            DO SLICE_ID = 1, PL_STATE%NSLICES
+                SLICE_POLY_CUR(:,:) = PL_STATE%SLICE_POLYS_M(SEG_ID,SLICE_ID,:,:)
+
+                X_MIN_SEG = SEG_X_MIN(SEG_ID)
+                X_MAX_SEG = SEG_X_MAX(SEG_ID)
+                Y_MIN_SEG = SEG_Y_MIN(SEG_ID)
+                Y_MAX_SEG = SEG_Y_MAX(SEG_ID)
+                Z_MIN_SEG = SEG_Z_MIN(SEG_ID)
+                Z_MAX_SEG = SEG_Z_MAX(SEG_ID)
+
+                DO ACTIVE_IDX = 1, N_ACTIVE_CELL
+                    CELL_C = ACTIVE_CELLS(ACTIVE_IDX)
+
+                    ALT_C = BOXM_STATE%ALTITUDE_C(CELL_C)
+                    LON_C_M = BOXM_STATE%LONGITUDE_C_M(CELL_C)
+                    LAT_C_M = BOXM_STATE%LATITUDE_C_M(CELL_C)
+
+                    DX_C_M = BOXM_STATE%DX_C_M(CELL_C)
+                    DY_C_M = BOXM_STATE%DY_C_M(CELL_C)
+                    DX_F = DX_C_M / REAL(NX_F,DP)
+                    DY_F = DY_C_M / REAL(NY_F,DP)
+                    DZ_F = DZ_C / REAL(NZ_F,DP)
+
+                    X_MIN_C = LON_C_M - 0.5_DP * DX_C_M
+                    X_MAX_C = LON_C_M + 0.5_DP * DX_C_M
+                    Y_MIN_C = LAT_C_M - 0.5_DP * DY_C_M
+                    Y_MAX_C = LAT_C_M + 0.5_DP * DY_C_M
+                    Z_MIN_C = ALT_C - 0.5_DP * DZ_C
+                    Z_MAX_C = ALT_C + 0.5_DP * DZ_C
+                    
+                    IF (OVERLAP_1D(X_MIN_SEG - DX_F, X_MAX_SEG + DX_F, X_MIN_C, X_MAX_C) <= EPS) CYCLE
+                    IF (OVERLAP_1D(Y_MIN_SEG - DY_F, Y_MAX_SEG + DY_F, Y_MIN_C, Y_MAX_C) <= EPS) CYCLE
+                    IF (OVERLAP_1D(Z_MIN_SEG - DZ_F, Z_MAX_SEG + DZ_F, Z_MIN_C, Z_MAX_C) <= EPS) CYCLE
+
+                    DO IZ_F = 1, NZ_F
+                        Z_MIN_F = ALT_C - 0.5_DP * DZ_C + REAL(IZ_F - 1, DP) * DZ_F
+                        Z_MAX_F = Z_MIN_F + DZ_F
+
+                        DO IY_F = 1, NY_F
+                            Y_MIN_F = LAT_C_M - 0.5_DP * DY_C_M + REAL(IY_F - 1, DP) * DY_F
+                            Y_MAX_F = Y_MIN_F + DY_F
+
+                            DO IX_F = 1, NX_F
+                                X_MIN_F = LON_C_M - 0.5_DP * DX_C_M + REAL(IX_F - 1, DP) * DX_F
+                                X_MAX_F = X_MIN_F + DX_F
+
+                                RAW_CUR = RECT_SLICE_RAW_OVERLAP(X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, Z_MIN_F, &
+                                                                 Z_MAX_F, SLICE_POLY_CUR)
+                                RAW = RAW_CUR
+                                IF (RAW > EPS) NNZ = NNZ + 1
+                            END DO
+                        END DO
                     END DO
                 END DO
             END DO
-            IF (ALLOCATED(EMI_SEG_IDS)) DEALLOCATE(EMI_SEG_IDS)
+        END DO
+
+        PL_STATE%NNZ_MAP = NNZ
+        IF (NNZ <= 0) THEN
+            IF (ALLOCATED(ACTIVE_CELLS)) DEALLOCATE(ACTIVE_CELLS)
+            IF (ALLOCATED(SEG_INCLUDED)) DEALLOCATE(SEG_INCLUDED)
+            IF (ALLOCATED(SEG_X_MIN)) DEALLOCATE(SEG_X_MIN, SEG_X_MAX)
+            IF (ALLOCATED(SEG_Y_MIN)) DEALLOCATE(SEG_Y_MIN, SEG_Y_MAX)
+            IF (ALLOCATED(SEG_Z_MIN)) DEALLOCATE(SEG_Z_MIN, SEG_Z_MAX)
+            RETURN
         END IF
-    END SUBROUTINE PL_STATE_EMI_TO_PLUMES
+
+        ALLOCATE(PL_STATE%MAP_SEG(NNZ))
+        ALLOCATE(PL_STATE%MAP_SLICE(NNZ))
+        ALLOCATE(PL_STATE%MAP_CELL_C(NNZ))
+        ALLOCATE(PL_STATE%MAP_CELL_F(NNZ))
+        ALLOCATE(PL_STATE%MAP_W(NNZ))
+
+        ! Pass 2: for each slice, recompute candidate overlaps, normalize them, and store.
+        ROW_IDX = 0
+        DO SEG_ID = 1, PL_STATE%NSEG
+            IF (.NOT. SEG_INCLUDED(SEG_ID)) CYCLE
+
+            DO SLICE_ID = 1, PL_STATE%NSLICES
+                N_ACTIVE_SLICE = N_ACTIVE_SLICE + 1
+                SLICE_POLY_CUR(:,:) = PL_STATE%SLICE_POLYS_M(SEG_ID,SLICE_ID,:,:)
+
+                X_MIN_SEG = SEG_X_MIN(SEG_ID)
+                X_MAX_SEG = SEG_X_MAX(SEG_ID)
+                Y_MIN_SEG = SEG_Y_MIN(SEG_ID)
+                Y_MAX_SEG = SEG_Y_MAX(SEG_ID)
+                Z_MIN_SEG = SEG_Z_MIN(SEG_ID)
+                Z_MAX_SEG = SEG_Z_MAX(SEG_ID)
+
+                ALLOCATE(RAW_COARSE(N_ACTIVE_CELL))
+                SUM_RAW_COARSE = 0.0_DP
+
+                DO ACTIVE_IDX = 1, N_ACTIVE_CELL
+                    CELL_C = ACTIVE_CELLS(ACTIVE_IDX)
+                    ALT_C = BOXM_STATE%ALTITUDE_C(CELL_C)
+                    LON_C_M = BOXM_STATE%LONGITUDE_C_M(CELL_C)
+                    LAT_C_M = BOXM_STATE%LATITUDE_C_M(CELL_C)
+                    DX_C_M = BOXM_STATE%DX_C_M(CELL_C)
+                    DY_C_M = BOXM_STATE%DY_C_M(CELL_C)
+                    X_MIN_C = LON_C_M - 0.5_DP * DX_C_M
+                    X_MAX_C = LON_C_M + 0.5_DP * DX_C_M
+                    Y_MIN_C = LAT_C_M - 0.5_DP * DY_C_M
+                    Y_MAX_C = LAT_C_M + 0.5_DP * DY_C_M
+                    Z_MIN_C = ALT_C - 0.5_DP * DZ_C
+                    Z_MAX_C = ALT_C + 0.5_DP * DZ_C
+
+                    ! Overlap of plume slice with coarse cell
+                    RAW_COARSE(ACTIVE_IDX) = RECT_SLICE_RAW_OVERLAP(X_MIN_C, X_MAX_C, Y_MIN_C, Y_MAX_C, Z_MIN_C, &
+                            Z_MAX_C, SLICE_POLY_CUR)
+                    SUM_RAW_COARSE = SUM_RAW_COARSE + RAW_COARSE(ACTIVE_IDX)
+                END DO
+                IF (SUM_RAW_COARSE <= EPS) THEN
+                    DEALLOCATE(RAW_COARSE)
+                    CYCLE
+                END IF
+                N_NONZERO_SLICE = N_NONZERO_SLICE + 1
+
+                ! Pass 2b: For each coarse cell with nonzero overlap, subdivide among fine cells
+                ALLOCATE(RAW_FINE(NX_F, NY_F, NZ_F))
+                RAW_FINE(:,:,:) = 0.0_DP
+                DO ACTIVE_IDX = 1, N_ACTIVE_CELL
+                    IF (RAW_COARSE(ACTIVE_IDX) <= EPS) CYCLE
+                    CELL_C = ACTIVE_CELLS(ACTIVE_IDX)
+
+                    ALT_C = BOXM_STATE%ALTITUDE_C(CELL_C)
+                    LON_C_M = BOXM_STATE%LONGITUDE_C_M(CELL_C)
+                    LAT_C_M = BOXM_STATE%LATITUDE_C_M(CELL_C)
+
+                    DX_C_M = BOXM_STATE%DX_C_M(CELL_C)
+                    DY_C_M = BOXM_STATE%DY_C_M(CELL_C)
+                    DX_F = DX_C_M / REAL(NX_F, DP)
+                    DY_F = DY_C_M / REAL(NY_F, DP)
+                    DZ_F = DZ_C / REAL(NZ_F, DP)
+
+                    X_MIN_C = LON_C_M - 0.5_DP * DX_C_M
+                    X_MAX_C = LON_C_M + 0.5_DP * DX_C_M
+                    Y_MIN_C = LAT_C_M - 0.5_DP * DY_C_M
+                    Y_MAX_C = LAT_C_M + 0.5_DP * DY_C_M
+                    Z_MIN_C = ALT_C - 0.5_DP * DZ_C
+                    Z_MAX_C = ALT_C + 0.5_DP * DZ_C
+
+                    IF (OVERLAP_1D(X_MIN_SEG - DX_F, X_MAX_SEG + DX_F, X_MIN_C, X_MAX_C) <= EPS) CYCLE
+                    IF (OVERLAP_1D(Y_MIN_SEG - DY_F, Y_MAX_SEG + DY_F, Y_MIN_C, Y_MAX_C) <= EPS) CYCLE
+                    IF (OVERLAP_1D(Z_MIN_SEG - DZ_F, Z_MAX_SEG + DZ_F, Z_MIN_C, Z_MAX_C) <= EPS) CYCLE
+
+                    SUM_RAW_FINE = 0.0_DP
+                    DO IZ_F = 1, NZ_F
+                        Z_MIN_F = ALT_C - 0.5_DP * DZ_C + REAL(IZ_F - 1, DP) * DZ_F
+                        Z_MAX_F = Z_MIN_F + DZ_F
+
+                        DO IY_F = 1, NY_F
+                            Y_MIN_F = LAT_C_M - 0.5_DP * DY_C_M + REAL(IY_F - 1, DP) * DY_F
+                            Y_MAX_F = Y_MIN_F + DY_F
+
+                            DO IX_F = 1, NX_F
+                                X_MIN_F = LON_C_M - 0.5_DP * DX_C_M + REAL(IX_F - 1, DP) * DX_F
+                                X_MAX_F = X_MIN_F + DX_F
+
+                                RAW_FINE(IX_F, IY_F, IZ_F) = RECT_SLICE_RAW_OVERLAP(X_MIN_F, X_MAX_F, Y_MIN_F, Y_MAX_F, &
+                                        Z_MIN_F, Z_MAX_F, SLICE_POLY_CUR)
+                                SUM_RAW_FINE = SUM_RAW_FINE + RAW_FINE(IX_F, IY_F, IZ_F)
+                            END DO
+                        END DO
+                    END DO
+                    IF (SUM_RAW_FINE <= EPS) CYCLE
+
+                    ! Now assign weights for each fine cell in this coarse cell
+                    DO IZ_F = 1, NZ_F
+                        DO IY_F = 1, NY_F
+                            DO IX_F = 1, NX_F
+                                IF (RAW_FINE(IX_F, IY_F, IZ_F) <= EPS) CYCLE
+                                WEIGHT = PL_STATE%W_SLICE(SLICE_ID) * (RAW_COARSE(ACTIVE_IDX)/SUM_RAW_COARSE) * &
+                                        (RAW_FINE(IX_F,IY_F,IZ_F)/SUM_RAW_FINE)
+                                ROW_IDX = ROW_IDX + 1
+                                CELL_F_LOCAL = (IZ_F - 1) * NX_F * NY_F + (IY_F - 1) * NX_F + IX_F
+                                PL_STATE%MAP_SEG(ROW_IDX) = SEG_ID
+                                PL_STATE%MAP_SLICE(ROW_IDX) = SLICE_ID
+                                PL_STATE%MAP_CELL_C(ROW_IDX) = CELL_C
+                                PL_STATE%MAP_CELL_F(ROW_IDX) = CELL_F_LOCAL
+                                PL_STATE%MAP_W(ROW_IDX) = WEIGHT
+                            END DO
+                        END DO
+                    END DO
+                END DO
+                DEALLOCATE(RAW_FINE)
+                DEALLOCATE(RAW_COARSE)
+            END DO
+        END DO
+
+        IF (ROW_IDX /= NNZ) THEN
+            PRINT *, "PL_STATE_PROJECT_TO_GRID: sparse map row mismatch", ROW_IDX, NNZ
+            STOP 1
+        END IF
+
+        IF (ALLOCATED(ACTIVE_CELLS)) DEALLOCATE(ACTIVE_CELLS)
+        IF (ALLOCATED(SEG_INCLUDED)) DEALLOCATE(SEG_INCLUDED)
+        IF (ALLOCATED(SEG_X_MIN)) DEALLOCATE(SEG_X_MIN, SEG_X_MAX)
+        IF (ALLOCATED(SEG_Y_MIN)) DEALLOCATE(SEG_Y_MIN, SEG_Y_MAX)
+        IF (ALLOCATED(SEG_Z_MIN)) DEALLOCATE(SEG_Z_MIN, SEG_Z_MAX)
+
+        ! After filling MAP_SEG, MAP_CELL_C, MAP_CELL_F
+        ! DO K1 = 1, PL_STATE%NNZ_MAP
+        !     DO K2 = K1+1, PL_STATE%NNZ_MAP
+        !         IF (PL_STATE%MAP_SEG(K1) == PL_STATE%MAP_SEG(K2) .AND. &
+        !             PL_STATE%MAP_CELL_C(K1) == PL_STATE%MAP_CELL_C(K2) .AND. &
+        !             PL_STATE%MAP_CELL_F(K1) == PL_STATE%MAP_CELL_F(K2)) THEN
+        !         PRINT *, 'DUPLICATE: SEG=', PL_STATE%MAP_SEG(K1), 'CELL_C=', PL_STATE%MAP_CELL_C(K1), &
+        !                 'CELL_F=', PL_STATE%MAP_CELL_F(K1), 'K1=', K1, 'K2=', K2
+        !         END IF
+        !     END DO
+        ! END DO
+        
+        ! Deduplicate MAP arrays: sum weights for duplicate (SEG, CELL_C, CELL_F)
+        IF (PL_STATE%NNZ_MAP > 1) THEN
+            ALLOCATE(IS_DUP(PL_STATE%NNZ_MAP))
+            IS_DUP = .FALSE.
+            N_UNIQUE = 0
+            DO I = 1, PL_STATE%NNZ_MAP
+                IF (IS_DUP(I)) CYCLE
+                DO J = I+1, PL_STATE%NNZ_MAP
+                    IF (.NOT. IS_DUP(J) .AND. &
+                        PL_STATE%MAP_SEG(I) == PL_STATE%MAP_SEG(J) .AND. &
+                        PL_STATE%MAP_CELL_C(I) == PL_STATE%MAP_CELL_C(J) .AND. &
+                        PL_STATE%MAP_CELL_F(I) == PL_STATE%MAP_CELL_F(J)) THEN
+                        PL_STATE%MAP_W(I) = PL_STATE%MAP_W(I) + PL_STATE%MAP_W(J)
+                        IS_DUP(J) = .TRUE.
+                    END IF
+                END DO
+                N_UNIQUE = N_UNIQUE + 1
+            END DO
+            IF (N_UNIQUE > 0 .AND. N_UNIQUE < PL_STATE%NNZ_MAP) THEN
+                ALLOCATE(TMP_SEG(N_UNIQUE), TMP_SLICE(N_UNIQUE), TMP_CELL_C(N_UNIQUE), TMP_CELL_F(N_UNIQUE), TMP_W(N_UNIQUE))
+                J = 0
+                DO I = 1, PL_STATE%NNZ_MAP
+                    IF (.NOT. IS_DUP(I)) THEN
+                        J = J + 1
+                        TMP_SEG(J) = PL_STATE%MAP_SEG(I)
+                        TMP_SLICE(J) = PL_STATE%MAP_SLICE(I)
+                        TMP_CELL_C(J) = PL_STATE%MAP_CELL_C(I)
+                        TMP_CELL_F(J) = PL_STATE%MAP_CELL_F(I)
+                        TMP_W(J) = PL_STATE%MAP_W(I)
+                    END IF
+                END DO
+                DEALLOCATE(PL_STATE%MAP_SEG, PL_STATE%MAP_SLICE, PL_STATE%MAP_CELL_C, PL_STATE%MAP_CELL_F, PL_STATE%MAP_W)
+                ALLOCATE(PL_STATE%MAP_SEG(N_UNIQUE), PL_STATE%MAP_SLICE(N_UNIQUE), PL_STATE%MAP_CELL_C(N_UNIQUE), &
+                         PL_STATE%MAP_CELL_F(N_UNIQUE), PL_STATE%MAP_W(N_UNIQUE))
+                PL_STATE%MAP_SEG = TMP_SEG
+                PL_STATE%MAP_SLICE = TMP_SLICE
+                PL_STATE%MAP_CELL_C = TMP_CELL_C
+                PL_STATE%MAP_CELL_F = TMP_CELL_F
+                PL_STATE%MAP_W = TMP_W
+                PL_STATE%NNZ_MAP = N_UNIQUE
+                DEALLOCATE(TMP_SEG, TMP_SLICE, TMP_CELL_C, TMP_CELL_F, TMP_W)
+            ELSE IF (N_UNIQUE == 0) THEN
+                IF (ALLOCATED(PL_STATE%MAP_SEG)) DEALLOCATE(PL_STATE%MAP_SEG)
+                IF (ALLOCATED(PL_STATE%MAP_SLICE)) DEALLOCATE(PL_STATE%MAP_SLICE)
+                IF (ALLOCATED(PL_STATE%MAP_CELL_C)) DEALLOCATE(PL_STATE%MAP_CELL_C)
+                IF (ALLOCATED(PL_STATE%MAP_CELL_F)) DEALLOCATE(PL_STATE%MAP_CELL_F)
+                IF (ALLOCATED(PL_STATE%MAP_W)) DEALLOCATE(PL_STATE%MAP_W)
+                PL_STATE%NNZ_MAP = 0
+            END IF
+            DEALLOCATE(IS_DUP)
+        END IF
+
+        ! Normalize weights for each segment so they sum to 1, if there are duplicates
+        ! DO S = 1, PL_STATE%NSEG
+        !     SUM_W = 0.0_DP
+        !     DO I = 1, PL_STATE%NNZ_MAP
+        !         IF (PL_STATE%MAP_SEG(I) == S) SUM_W = SUM_W + PL_STATE%MAP_W(I)
+        !     END DO
+        !     IF (SUM_W > 0.0_DP) THEN
+        !         DO I = 1, PL_STATE%NNZ_MAP
+        !             IF (PL_STATE%MAP_SEG(I) == S) PL_STATE%MAP_W(I) = PL_STATE%MAP_W(I) / SUM_W
+        !         END DO
+        !     END IF
+        ! END DO
+
+        ! Debug: Print sum of MAP_W for each segment after deduplication
+        ! DO S = 1, PL_STATE%NSEG
+        !     SUM_W = 0.0_DP
+        !     DO I = 1, PL_STATE%NNZ_MAP
+        !         IF (PL_STATE%MAP_SEG(I) == S) SUM_W = SUM_W + PL_STATE%MAP_W(I)
+        !     END DO
+        !     IF (SUM_W > 0.0_DP) THEN
+        !         PRINT *, 'DEBUG: SEG=', S, 'SUM_W=', SUM_W
+        !     END IF
+        ! END DO
+
+        ! For each segment, count number of mapping entries and print first few weights
+        ! DO S = 1, PL_STATE%NSEG
+        !     SUM_W = 0.0_DP
+        !     N_ENTRIES = 0
+        !     DO I = 1, PL_STATE%NNZ_MAP
+        !         IF (PL_STATE%MAP_SEG(I) == S) THEN
+        !             SUM_W = SUM_W + PL_STATE%MAP_W(I)
+        !             N_ENTRIES = N_ENTRIES + 1
+        !             IF (N_ENTRIES <= 5) THEN
+        !                 PRINT *, 'DEBUG: SEG=', S, 'ENTRY=', N_ENTRIES, 'W=', PL_STATE%MAP_W(I)
+        !             END IF
+        !         END IF
+        !     END DO
+        !     IF (SUM_W > 0.0_DP) THEN
+        !         PRINT *, 'DEBUG: SEG=', S, 'SUM_W=', SUM_W, 'N_ENTRIES=', N_ENTRIES
+        !     END IF
+        ! END DO
+
+        ! DO K1 = 1, PL_STATE%NNZ_MAP
+        !     DO K2 = K1+1, PL_STATE%NNZ_MAP
+        !         IF (PL_STATE%MAP_SEG(K1) == PL_STATE%MAP_SEG(K2) .AND. &
+        !             PL_STATE%MAP_CELL_C(K1) == PL_STATE%MAP_CELL_C(K2) .AND. &
+        !             PL_STATE%MAP_CELL_F(K1) == PL_STATE%MAP_CELL_F(K2)) THEN
+        !             PRINT *, 'DUPLICATE: SEG=', PL_STATE%MAP_SEG(K1), 'CELL_C=', PL_STATE%MAP_CELL_C(K1), &
+        !                         'CELL_F=', PL_STATE%MAP_CELL_F(K1), 'K1=', K1, 'K2=', K2
+        !         END IF
+        !     END DO
+        ! END DO
+
+        IF (ALLOCATED(PL_STATE%PL_MASS)) THEN
+            PRINT *, 'DEBUG: TOTAL PLUME MASS AT EXIT (PROJECTION) =', SUM(PL_STATE%PL_MASS)
+        END IF
+        CALL FLUSH(6)
+
+        IF (ALLOCATED(PATCH_STATE%Y_DEL_F)) THEN
+            TOTAL_PATCH_Y_DEL_F = 0.0_DP
+            DO I = 1, SIZE(PATCH_STATE%Y_DEL_F, 1)
+                TOTAL_PATCH_Y_DEL_F = TOTAL_PATCH_Y_DEL_F + PATCH_STATE%Y_DEL_F(I, 8)
+            END DO
+            PRINT *, 'DEBUG: TOTAL PATCH Y_DEL_F AT EXIT (PROJECTION) = ', TOTAL_PATCH_Y_DEL_F
+            CALL FLUSH(6)
+        END IF
+
+    END SUBROUTINE PL_STATE_PROJECT_TO_GRID
 
     SUBROUTINE PL_STATE_BACKPROJECT_FROM_GRID(PL_STATE, PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
                         
@@ -6873,9 +7325,9 @@ CONTAINS
         INTEGER,                 INTENT(IN)    :: TIME_IDX
 
         INTEGER :: K, ROW_IDX, P, B, SEG_ID, CELL_C, CELL_F, PL_ID
-        INTEGER :: NX_F, NY_F
-        REAL(DP) :: DX_C_M, DY_C_M, DX_F, DY_F, VOL_F, LAT_C
-
+        INTEGER :: NX_F, NY_F, I
+        REAL(DP) :: DX_C_M, DY_C_M, DX_F, DY_F, VOL_F, LAT_C, TOTAL_PATCH_Y_DEL_F
+        
         IF (.NOT. ALLOCATED(PL_STATE%PL_MASS)) RETURN
         IF (.NOT. ALLOCATED(PL_STATE%SPECIES_PL_NUM)) RETURN
         IF (.NOT. ALLOCATED(PL_STATE%MAP_W)) RETURN
@@ -6889,6 +7341,21 @@ CONTAINS
         IF (.NOT. ALLOCATED(BOXM_STATE%LATITUDE_C)) RETURN
         IF (PL_STATE%NNZ_MAP <= 0) RETURN
         IF (PATCH_STATE%NROWS <= 0) RETURN
+
+        IF (ALLOCATED(PL_STATE%PL_MASS)) THEN
+            PRINT *, 'DEBUG: TOTAL PLUME MASS AT ENTRY (BACKPROJECTION) =', SUM(PL_STATE%PL_MASS)
+        END IF
+        CALL FLUSH(6)
+
+        IF (ALLOCATED(PATCH_STATE%Y_DEL_F)) THEN
+            TOTAL_PATCH_Y_DEL_F = 0.0_DP
+            DO I = 1, SIZE(PATCH_STATE%Y_DEL_F, 1)
+                TOTAL_PATCH_Y_DEL_F = TOTAL_PATCH_Y_DEL_F + PATCH_STATE%Y_DEL_F(I, 8)
+            END DO
+            PRINT *, 'DEBUG: TOTAL PATCH Y_DEL_F AT ENTRY (BACKPROJECTION) = ', TOTAL_PATCH_Y_DEL_F
+            CALL FLUSH(6)
+        END IF
+
 
         NX_F = MAX(1, NINT(BOXM_DS%HRES_SIM_C / BOXM_DS%HRES_SIM_F))
         NY_F = NX_F
@@ -6915,7 +7382,6 @@ CONTAINS
             END DO
             IF (ROW_IDX < 1) CYCLE
 
-            LAT_C = BOXM_STATE%LATITUDE_C(CELL_C)
             DX_C_M = BOXM_STATE%DX_C_M(CELL_C)
             DY_C_M = BOXM_STATE%DY_C_M(CELL_C)
             DX_F = DX_C_M / REAL(NX_F, DP)
@@ -6927,13 +7393,36 @@ CONTAINS
                 B = PL_STATE%SPECIES_PL_NUM(PL_ID)
                 IF (B < 1 .OR. B > PATCH_STATE%NSBOXM) CYCLE
                 IF (B > SIZE(BOXM_STATE%MOL_MASS_C)) CYCLE
-                IF (BOXM_STATE%MOL_MASS_C(B) <= 0.0_DP) CYCLE
                 IF (PL_ID > SIZE(PL_STATE%PL_MASS, 2)) CYCLE
+                IF (BOXM_STATE%MOL_MASS_C(B) /= BOXM_STATE%MOL_MASS_C(B)) CYCLE
+                IF (BOXM_STATE%MOL_MASS_C(B) <= 0.0_DP) CYCLE
+
+                ! IF (PL_ID .EQ. 1) THEN !  .OR. PL_ID .EQ. 13 .OR. PL_ID .EQ. 16
+                !     PRINT *, 'DEBUG: K=', K, 'SEG_ID=', SEG_ID, 'CELL_C=', CELL_C, 'CELL_F=', CELL_F, 'PL_ID=', PL_ID, &
+                !         'MAP_W=', PL_STATE%MAP_W(K), 'Y_DEL_F=', PATCH_STATE%Y_DEL_F(ROW_IDX, B), 'MOL_MASS_C=', &
+                !         BOXM_STATE%MOL_MASS_C(B), 'VOL_F=', VOL_F
+                !     FLUSH(6)
+                ! END IF
 
                 PL_STATE%PL_MASS(SEG_ID, PL_ID) = PL_STATE%PL_MASS(SEG_ID, PL_ID) + PL_STATE%MAP_W(K) * &
                 PATCH_STATE%Y_DEL_F(ROW_IDX, B) * BOXM_STATE%MOL_MASS_C(B) * VOL_F * 1.0E6_DP / 6.02214076E23_DP
             END DO
         END DO
+
+        IF (ALLOCATED(PL_STATE%PL_MASS)) THEN
+            PRINT *, 'DEBUG: TOTAL PLUME MASS AT EXIT (BACKPROJECTION) =', SUM(PL_STATE%PL_MASS)
+        END IF
+        CALL FLUSH(6)
+
+        IF (ALLOCATED(PATCH_STATE%Y_DEL_F)) THEN
+            TOTAL_PATCH_Y_DEL_F = 0.0_DP
+            DO I = 1, SIZE(PATCH_STATE%Y_DEL_F, 1)
+                TOTAL_PATCH_Y_DEL_F = TOTAL_PATCH_Y_DEL_F + PATCH_STATE%Y_DEL_F(I, 8)
+            END DO
+            PRINT *, 'DEBUG: TOTAL PATCH Y_DEL_F AT EXIT (BACKPROJECTION) = ', TOTAL_PATCH_Y_DEL_F
+            CALL FLUSH(6)
+        END IF
+ 
     END SUBROUTINE PL_STATE_BACKPROJECT_FROM_GRID
 
     ! ---------- BOXM STATE METHODS ----------
@@ -7204,7 +7693,6 @@ CONTAINS
             PATCH_STATE%ROW_CELL_C(ROW_IDX) = CELL_C
             PATCH_STATE%ROW_CELL_F(ROW_IDX) = CELL_F
         END DO
-        PATCH_STATE%Y_DEL_F(:,:) = 0.0_DP
         PATCH_STATE%ROW_IDX = PATCH_STATE%NROWS
 
         DEALLOCATE(TMP_CELL_C, TMP_CELL_F)
@@ -7229,6 +7717,8 @@ CONTAINS
         ! Compute fine-grid subdivision factors once.
         NX_F = MAX(1, NINT(BOXM_DS%HRES_SIM_C / BOXM_DS%HRES_SIM_F))
         NY_F = NX_F
+
+        PATCH_STATE%Y_DEL_F(:,:) = 0.0_DP
 
         DO K = 1, PL_STATE%NNZ_MAP
             SEG_ID = PL_STATE%MAP_SEG(K)
@@ -7262,12 +7752,6 @@ CONTAINS
                         (BOXM_STATE%MOL_MASS_C(BOXM_ID) * VOL_F * 1.0E6_DP)) 
             END DO
         END DO
-
-        ! MAKE SURE SUM_W IS 1 FOR EACH ROW (OR ZERO IF NO PLUME CONTRIBUTION)
-        ! DO ROW = 1, PATCH_STATE%NROWS
-        !     W = SUM(PATCH_STATE%Y_DEL_F(ROW, 1))
-        !     PRINT *, 'DEBUG: ROW=', ROW, 'SUM_W_BEFORE=', W
-        ! END DO
 
     END SUBROUTINE PATCH_STATE_ACCUM_DELTAS_FROM_W
 
@@ -8313,12 +8797,15 @@ CONTAINS
         CLASS(PATCH_STATE_TYPE), INTENT(INOUT) :: PATCH_STATE
 
         INTEGER, INTENT(IN) :: TIME_IDX
-        CALL PL_STATE%ADVANCE_GEOM(PL_DS, BOXM_DS, TIME_IDX)
-        CALL PL_STATE%BUILD_ACTIVE(BOXM_DS, BOXM_STATE)
-        CALL PL_STATE%PROJECT_TO_GRID(PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE)
-        CALL PL_STATE%EMI_TO_PLUMES(FL_DS, PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
+        
+        IF (MOD((TIME_IDX-1)*BOXM_DS%TS_SIM, BOXM_DS%TS_PL) == 0) THEN
+            CALL PL_STATE%ADVANCE_GEOM(PL_DS, BOXM_DS, TIME_IDX)
+            CALL PL_STATE%BUILD_ACTIVE(BOXM_DS, BOXM_STATE)
+            CALL PL_STATE%EMI_TO_PLUMES(FL_DS, PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
+            CALL PL_STATE%PROJECT_TO_GRID(PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
+            CALL PATCH_STATE%BUILD_ROWS_FROM_W(PL_STATE, BOXM_STATE)
+        END IF
 
-        CALL PATCH_STATE%BUILD_ROWS_FROM_W(PL_STATE, BOXM_STATE)
         CALL PATCH_STATE%ACCUM_DELTAS_FROM_W(PL_STATE, BOXM_DS, BOXM_STATE)
 
     END SUBROUTINE PROJECT_PLUMES_TO_GRID
@@ -8381,7 +8868,9 @@ CONTAINS
 
         INTEGER, INTENT(IN) :: TIME_IDX
 
-        CALL PL_STATE%BACKPROJECT_FROM_GRID(PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
+        IF (MOD((TIME_IDX-1)*BOXM_DS%TS_SIM, BOXM_DS%TS_PL) == 0) THEN
+            CALL PL_STATE%BACKPROJECT_FROM_GRID(PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
+        END IF
 
     END SUBROUTINE BACKPROJECT_GRID_TO_PLUMES
 
@@ -8412,34 +8901,43 @@ CONTAINS
 
     END SUBROUTINE WRITE_OUTPUTS
 
-    SUBROUTINE RESET_STATES(PL_STATE, BOXM_STATE, PATCH_STATE)
+    SUBROUTINE RESET_STATES(PL_STATE, BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
         USE HELPERS
+        USE DEFINE_INPUT_TYPES
         USE DEFINE_STATE_TYPES
         IMPLICIT NONE
 
         CLASS(PL_STATE_TYPE),    INTENT(INOUT) :: PL_STATE
+        CLASS(BOXM_DS_TYPE),     INTENT(IN)    :: BOXM_DS
         CLASS(BOXM_STATE_TYPE),  INTENT(INOUT) :: BOXM_STATE
         CLASS(PATCH_STATE_TYPE), INTENT(INOUT) :: PATCH_STATE
 
-        IF (ALLOCATED(PL_STATE%AGE_S)) PL_STATE%AGE_S(:) = 0
-        IF (ALLOCATED(PL_STATE%LONGITUDE)) PL_STATE%LONGITUDE(:) = 0.0_DP
-        IF (ALLOCATED(PL_STATE%LONGITUDE_M)) PL_STATE%LONGITUDE_M(:) = 0.0_DP
-        IF (ALLOCATED(PL_STATE%LATITUDE)) PL_STATE%LATITUDE(:) = 0.0_DP
-        IF (ALLOCATED(PL_STATE%LATITUDE_M)) PL_STATE%LATITUDE_M(:) = 0.0_DP
-        IF (ALLOCATED(PL_STATE%ALTITUDE)) PL_STATE%ALTITUDE(:) = 0.0_DP
-        IF (ALLOCATED(PL_STATE%LEVEL)) PL_STATE%LEVEL(:) = 0.0_DP
-        IF (ALLOCATED(PL_STATE%WIDTH)) PL_STATE%WIDTH(:) = 0.0_DP
-        IF (ALLOCATED(PL_STATE%DEPTH)) PL_STATE%DEPTH(:) = 0.0_DP
-        IF (ALLOCATED(PL_STATE%HEADING)) PL_STATE%HEADING(:) = 0.0_DP
-        IF (ALLOCATED(PL_STATE%SIGMA_YY)) PL_STATE%SIGMA_YY(:) = 0.0_DP
-        IF (ALLOCATED(PL_STATE%SIGMA_YZ)) PL_STATE%SIGMA_YZ(:) = 0.0_DP
-        IF (ALLOCATED(PL_STATE%SIGMA_ZZ)) PL_STATE%SIGMA_ZZ(:) = 0.0_DP
-        ! Keep carried plume mass between timesteps; it is updated by BACKPROJECT_GRID_TO_PLUMES
-        ! and only newly emitted segments are reset in PL_STATE_ADVANCE_MASS.
+        INTEGER, INTENT(IN) :: TIME_IDX
 
-        IF (ALLOCATED(PL_STATE%Y_HALF)) PL_STATE%Y_HALF(:,:) = 0.0_DP
-        IF (ALLOCATED(PL_STATE%Z_HALF)) PL_STATE%Z_HALF(:,:) = 0.0_DP
-        IF (ALLOCATED(PL_STATE%SLICE_POLYS_M)) PL_STATE%SLICE_POLYS_M(:,:,:,:) = 0.0_DP
+        IF (MOD((TIME_IDX-1)*BOXM_DS%TS_SIM, BOXM_DS%TS_PL) == 0) THEN
+            IF (ALLOCATED(PL_STATE%AGE_S)) PL_STATE%AGE_S(:) = 0
+            IF (ALLOCATED(PL_STATE%LONGITUDE)) PL_STATE%LONGITUDE(:) = 0.0_DP
+            IF (ALLOCATED(PL_STATE%LONGITUDE_M)) PL_STATE%LONGITUDE_M(:) = 0.0_DP
+            IF (ALLOCATED(PL_STATE%LATITUDE)) PL_STATE%LATITUDE(:) = 0.0_DP
+            IF (ALLOCATED(PL_STATE%LATITUDE_M)) PL_STATE%LATITUDE_M(:) = 0.0_DP
+            IF (ALLOCATED(PL_STATE%ALTITUDE)) PL_STATE%ALTITUDE(:) = 0.0_DP
+            IF (ALLOCATED(PL_STATE%LEVEL)) PL_STATE%LEVEL(:) = 0.0_DP
+            IF (ALLOCATED(PL_STATE%WIDTH)) PL_STATE%WIDTH(:) = 0.0_DP
+            IF (ALLOCATED(PL_STATE%DEPTH)) PL_STATE%DEPTH(:) = 0.0_DP
+            IF (ALLOCATED(PL_STATE%HEADING)) PL_STATE%HEADING(:) = 0.0_DP
+            IF (ALLOCATED(PL_STATE%SIGMA_YY)) PL_STATE%SIGMA_YY(:) = 0.0_DP
+            IF (ALLOCATED(PL_STATE%SIGMA_YZ)) PL_STATE%SIGMA_YZ(:) = 0.0_DP
+            IF (ALLOCATED(PL_STATE%SIGMA_ZZ)) PL_STATE%SIGMA_ZZ(:) = 0.0_DP
+            IF (ALLOCATED(PL_STATE%ACTIVE_SEG_FLAG)) PL_STATE%ACTIVE_SEG_FLAG(:) = .FALSE.
+            ! Keep carried plume mass between timesteps; it is updated by BACKPROJECT_GRID_TO_PLUMES
+            ! and only newly emitted segments are reset in PL_STATE_ADVANCE_MASS.
+
+            IF (ALLOCATED(PL_STATE%Y_HALF)) PL_STATE%Y_HALF(:,:) = 0.0_DP
+            IF (ALLOCATED(PL_STATE%Z_HALF)) PL_STATE%Z_HALF(:,:) = 0.0_DP
+            IF (ALLOCATED(PL_STATE%SLICE_POLYS_M)) PL_STATE%SLICE_POLYS_M(:,:,:,:) = 0.0_DP
+
+            
+        END IF
 
         IF (ALLOCATED(BOXM_STATE%TEMP)) BOXM_STATE%TEMP(:) = 0.0_DP
         IF (ALLOCATED(BOXM_STATE%H2O)) BOXM_STATE%H2O(:) = 0.0_DP
@@ -8447,15 +8945,12 @@ CONTAINS
         IF (ALLOCATED(BOXM_STATE%O2)) BOXM_STATE%O2(:) = 0.0_DP
         IF (ALLOCATED(BOXM_STATE%N2)) BOXM_STATE%N2(:) = 0.0_DP
         IF (ALLOCATED(BOXM_STATE%SZA)) BOXM_STATE%SZA(:) = 0.0_DP
-        ! Preserve background chemistry across timesteps; it is initialized from BOXM_DS
-        ! once and then advanced in RUN_CHEM.
-        IF (ALLOCATED(BOXM_STATE%Y_DEL_C)) BOXM_STATE%Y_DEL_C(:,:) = 0.0_DP
+
         IF (ALLOCATED(BOXM_STATE%ACTIVE_FLAG)) BOXM_STATE%ACTIVE_FLAG(:) = .FALSE.
 
         IF (ALLOCATED(PATCH_STATE%TIME_REL_S)) PATCH_STATE%TIME_REL_S(:) = 0
         IF (ALLOCATED(PATCH_STATE%ROW_CELL_C)) PATCH_STATE%ROW_CELL_C(:) = 0
         IF (ALLOCATED(PATCH_STATE%ROW_CELL_F)) PATCH_STATE%ROW_CELL_F(:) = 0
-        IF (ALLOCATED(PATCH_STATE%Y_DEL_F)) PATCH_STATE%Y_DEL_F(:,:) = 0.0_DP
 
     END SUBROUTINE RESET_STATES
 
@@ -8489,14 +8984,97 @@ CONTAINS
 END MODULE BOXM_RUN_UTILS
 
 MODULE VALIDATION_UTILS
+    USE DEFINE_INPUT_TYPES
     USE DEFINE_STATE_TYPES
     USE HELPERS
     IMPLICIT NONE
 
     PRIVATE
-    PUBLIC :: PRINT_TOTAL_PLUME_MASS, PRINT_TOTAL_PATCH_MASS
+    PUBLIC :: PRINT_TOTAL_PLUME_MASS, PRINT_TOTAL_PATCH_MASS, CHECK_SEGMENT_MASS_RECOVERY
 
 CONTAINS
+    SUBROUTINE CHECK_SEGMENT_MASS_RECOVERY(PL_STATE, PATCH_STATE, BOXM_STATE, BOXM_DS, SEG_ID)
+        CLASS(PL_STATE_TYPE), INTENT(IN) :: PL_STATE
+        CLASS(PATCH_STATE_TYPE), INTENT(IN) :: PATCH_STATE
+        CLASS(BOXM_STATE_TYPE), INTENT(IN) :: BOXM_STATE
+        CLASS(BOXM_DS_TYPE), INTENT(IN) :: BOXM_DS
+        INTEGER, INTENT(IN) :: SEG_ID
+        INTEGER :: PL_ID, B, K, CELL_C, CELL_F, ROW_IDX, P, NX_F, NY_F
+        REAL(DP) :: DX_C_M, DY_C_M, DX_F, DY_F, VOL_F, recovered_mass, pl_mass_cell, total_map_w
+        INTEGER :: map_count, dup_count, map_idx, check_k
+        LOGICAL :: is_dup
+    
+        IF (SEG_ID < 1 .OR. SEG_ID > PL_STATE%NSEG) THEN
+            PRINT *, 'CHECK_SEGMENT_MASS_RECOVERY: Invalid SEG_ID', SEG_ID
+            RETURN
+        END IF
+
+        
+        PRINT *, '--- DEBUG: PL_MASS for SEG_ID=', SEG_ID, ':', PL_STATE%PL_MASS(SEG_ID, 1:SIZE(PL_STATE%PL_MASS,2))
+        DO PL_ID = 1, 1
+            B = PL_STATE%SPECIES_PL_NUM(PL_ID)
+            IF (B < 1 .OR. B > PATCH_STATE%NSBOXM) CYCLE
+            IF (B > SIZE(BOXM_STATE%MOL_MASS_C)) CYCLE
+            IF (PL_ID > SIZE(PL_STATE%PL_MASS, 2)) CYCLE
+            IF (BOXM_STATE%MOL_MASS_C(B) /= BOXM_STATE%MOL_MASS_C(B)) CYCLE
+            IF (BOXM_STATE%MOL_MASS_C(B) <= 0.0_DP) CYCLE
+            recovered_mass = 0.0_DP
+            total_map_w = 0.0_DP
+            map_count = 0
+            dup_count = 0
+            ! Check for duplicate mappings for this segment
+            DO K = 1, PL_STATE%NNZ_MAP
+                IF (PL_STATE%MAP_SEG(K) == SEG_ID) THEN
+                    map_count = map_count + 1
+                    ! Check for duplicate CELL_C/CELL_F for this SEG_ID
+                    is_dup = .FALSE.
+                    DO map_idx = 1, K-1
+                        IF (PL_STATE%MAP_SEG(map_idx) == SEG_ID .AND. &
+                            PL_STATE%MAP_CELL_C(map_idx) == PL_STATE%MAP_CELL_C(K) .AND. &
+                            PL_STATE%MAP_CELL_F(map_idx) == PL_STATE%MAP_CELL_F(K)) THEN
+                            is_dup = .TRUE.
+                            EXIT
+                        END IF
+                    END DO
+                    IF (is_dup) THEN
+                        dup_count = dup_count + 1
+                        PRINT *, '  DUPLICATE MAPPING: K=', K, 'CELL_C=', PL_STATE%MAP_CELL_C(K), 'CELL_F=', PL_STATE%MAP_CELL_F(K)
+                    END IF
+                    CELL_C = PL_STATE%MAP_CELL_C(K)
+                    CELL_F = PL_STATE%MAP_CELL_F(K)
+                    ROW_IDX = -1
+                    DO P = 1, PATCH_STATE%NROWS
+                        IF (PATCH_STATE%ROW_CELL_C(P) == CELL_C .AND. PATCH_STATE%ROW_CELL_F(P) == CELL_F) THEN
+                            ROW_IDX = P
+                            EXIT
+                        END IF
+                    END DO
+                    IF (ROW_IDX < 1) CYCLE
+
+                    NX_F = MAX(1, NINT(BOXM_DS%HRES_SIM_C / BOXM_DS%HRES_SIM_F))
+                    NY_F = NX_F
+
+                    DX_C_M = BOXM_STATE%DX_C_M(CELL_C)
+                    DY_C_M = BOXM_STATE%DY_C_M(CELL_C)
+                    DX_F = DX_C_M / REAL(NX_F, DP)
+                    DY_F = DY_C_M / REAL(NY_F, DP)
+                    VOL_F = DX_F * DY_F * BOXM_DS%VRES_SIM_F
+                    IF (VOL_F <= 0.0_DP) CYCLE
+                    total_map_w = total_map_w + PL_STATE%MAP_W(K)
+                    pl_mass_cell = PL_STATE%MAP_W(K) * PATCH_STATE%Y_DEL_F(ROW_IDX, B) * &
+                        BOXM_STATE%MOL_MASS_C(B) * VOL_F * 1.0E6_DP / 6.02214076E23_DP
+                    ! PRINT *, '  K=', K, 'CELL_C=', CELL_C, 'CELL_F=', CELL_F, 'ROW_IDX=', ROW_IDX, &
+                    !     'MAP_W=', PL_STATE%MAP_W(K), 'Y_DEL_F=', PATCH_STATE%Y_DEL_F(ROW_IDX, B), 'VOL_F=', VOL_F, &
+                    !     'pl_mass_cell=', pl_mass_cell
+                    recovered_mass = recovered_mass + pl_mass_cell
+                END IF
+            END DO
+            PRINT *, 'CHECK SEG', SEG_ID, 'PL_ID=', PL_ID, 'original mass=', PL_STATE%PL_MASS(SEG_ID, PL_ID), &
+                    'recovered mass=', recovered_mass, 'total_map_w=', total_map_w, 'map_count=', map_count, 'dup_count=', dup_count
+        END DO
+        ! PRINT *, '--- END DEBUG: PL_MASS for SEG_ID=', SEG_ID, ':', PL_STATE%PL_MASS(SEG_ID, 1:SIZE(PL_STATE%PL_MASS,2))
+    END SUBROUTINE CHECK_SEGMENT_MASS_RECOVERY
+
     SUBROUTINE PRINT_TOTAL_PLUME_MASS(PL_STATE)
         CLASS(PL_STATE_TYPE), INTENT(IN) :: PL_STATE
         REAL(DP) :: TOTAL_MASS
@@ -8560,7 +9138,7 @@ PROGRAM BOXM_RUN
     CHARACTER(LEN=256)     :: JOB_ID
     CHARACTER(LEN=1024)    :: DATA_PATH
 
-    INTEGER :: TIME_IDX
+    INTEGER :: TIME_IDX, S
     REAL :: PROG_PCT
 
     ! RETRIEVE JOB ID FROM COMMAND LINE ARG
@@ -8576,35 +9154,44 @@ PROGRAM BOXM_RUN
         PROG_PCT = 100.0 * REAL(TIME_IDX) / REAL(MAX(1, BOXM_DS%NTBOXM))
         WRITE(*,'(A,I0,A,I0,A,F6.2,A)') "SIM progress: TIME_IDX ", TIME_IDX, " / ", BOXM_DS%NTBOXM, " (", PROG_PCT, "%)"
 
-        CALL RESET_STATES(PL_STATE, BOXM_STATE, PATCH_STATE)
+        CALL RESET_STATES(PL_STATE, BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
 
         CALL ADVANCE_MET(BOXM_DS, BOXM_STATE, TIME_IDX)
 
         IF (BOXM_DS%N_AC > 0) THEN
+            
             ! PROJECT_PLUMES_TO_GRID
             CALL PROJECT_PLUMES_TO_GRID(FL_DS, PL_DS, BOXM_DS, PL_STATE, BOXM_STATE, PATCH_STATE, TIME_IDX)
-    
+
             IF (BOXM_DS%RUN_CHEM == 1) THEN
                 ! UPDATE_CHEMISTRY
                 CALL RUN_CHEM(BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
             END IF
-            
-            ! BACKPROJECT_GRID_TO_PLUMES
-            ! CALL BACKPROJECT_GRID_TO_PLUMES(FL_DS, PL_DS, BOXM_DS, PL_STATE, BOXM_STATE, PATCH_STATE, TIME_IDX)
 
-            ! CALL PRINT_TOTAL_PLUME_MASS(PL_STATE)
-            ! CALL PRINT_TOTAL_PATCH_MASS(PATCH_STATE, BOXM_STATE)
+            ! BACKPROJECT_GRID_TO_PLUMES
+            CALL BACKPROJECT_GRID_TO_PLUMES(FL_DS, PL_DS, BOXM_DS, PL_STATE, BOXM_STATE, PATCH_STATE, TIME_IDX)
+
+            ! CALL CHECK_SEGMENT_MASS_RECOVERY(PL_STATE, PATCH_STATE, BOXM_STATE, BOXM_DS, 1)
+
         ELSE
             IF (BOXM_DS%RUN_CHEM == 1) THEN
                 ! UPDATE_CHEMISTRY
                 CALL RUN_CHEM(BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
             END IF
         END IF
-        
-        ! WRITE BACK TO OUTPUT DATASETS
-        CALL WRITE_OUTPUTS(PL_OUT, BOXM_OUT, PATCH_TABLE, PL_DS, BOXM_DS, PL_STATE, BOXM_STATE, PATCH_STATE, TIME_IDX)
 
+        IF (MOD((TIME_IDX-1)*BOXM_DS%TS_SIM, BOXM_DS%TS_OUT) == 0) THEN
+            ! WRITE BACK TO OUTPUT DATASETS
+            CALL WRITE_OUTPUTS(PL_OUT, BOXM_OUT, PATCH_TABLE, PL_DS, BOXM_DS, PL_STATE, BOXM_STATE, PATCH_STATE, TIME_IDX)
+        END IF
+        ! ! Debug: print number of active segments and active cells
+        ! PRINT *, 'PL_STATE_BUILD_ACTIVE: NSEG=', PL_STATE%NSEG, ' NCELL=', BOXM_STATE%NCELL
+        ! ! PRINT *, '  ACTIVE_SEG_FLAG:', PL_STATE%ACTIVE_SEG_FLAG(:)
+        ! PRINT *, '  Number of active segments:', COUNT(PL_STATE%ACTIVE_SEG_FLAG(:) == 1)
+        ! PRINT *, '  Number of active cells:', COUNT(BOXM_STATE%ACTIVE_FLAG)
+        ! END DO
     END DO
+    
 
     CALL CLOSE_DATASETS(FL_DS, PL_DS, BOXM_DS, PL_OUT, BOXM_OUT, PATCH_TABLE)
     

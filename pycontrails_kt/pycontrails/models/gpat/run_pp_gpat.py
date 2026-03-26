@@ -11,7 +11,7 @@ np.set_printoptions(threshold=np.inf, linewidth=500)
 data_path = f"{os.getcwd()}/data/"
 
 criteria = {
-    "job_id": "test",
+    "job_id": "test3",
 }
 
 pp_gpat = GPATPostProcessor(data_path=data_path, criteria=criteria)
@@ -36,15 +36,24 @@ patch_table = pp_gpat.patch_table_dict[pp_gpat.job_ids[0]]
 # )
 
 # color_scale = (boxm_out["Y_bg_c"].sel(species_out="NO").min(), boxm_out["Y_bg_c"].sel(species_out="NO").max())
-print(pl_out["pl_mass"].sel(species_pl="NO", seg_id=1).values)
+# print(fl_ds["waypoint"].values)
+# print(pl_ds["waypoint"].values)
+# print(pl_out["waypoint"].values)
+print(pl_ds["longitude"].sel(seg_id=10).values)
+
+for t in range(0, 60, 1):
+    print(pl_ds["active_seg_flag"].sel(seg_id=slice(1,10)).isel(time=t).values)
+
+for t in range(60, 180, 1):
+    print(pl_out["pl_mass"].sel(species_pl="NO", seg_id=slice(1,10)).isel(time=t).values)
 
 print(patch_table["Y_del_f"].sel(row=slice(0, 100), species_out="NO").values)
 
 pl_ds = pp_gpat.pl_ds_dict[pp_gpat.job_ids[0]]
 
-print(pl_ds["time_idx"].values)
-print(pl_ds["age_s"].sel(seg_id=3).values)
-print(pl_ds["active_seg_flag"].sel(seg_id=3).values)
+# print(pl_ds["emi_pl_mass"].sel(species_emi="NO").values)
+# print(pl_ds["age_s"].sel(seg_id=31).values)
+# print(pl_ds["waypoint"].values)
 # boxm_out["Y_bg_c"] = boxm_out["Y_bg_c"] * 1e9 / 5.9e+18  # Convert from kg/kg to ppb
 
 # pp_gpat.plotting.plot_time_series(pp_gpat.job_ids[0], species="NO", level=217, lat=0.5, lon=0.5, data_var="Y_del_c")
@@ -63,14 +72,14 @@ print(pl_ds["active_seg_flag"].sel(seg_id=3).values)
 
 # pp_gpat.plotting.plot_heatmap_slider(job_id=pp_gpat.job_ids[0], species="NO", data_var="Y_bg_c", level=11000)
 
-pp_gpat.plotting.animate_plumes_3d_plotly(
-    job_id=pp_gpat.job_ids[0],
-    patch_species="NO",
-    overlay_patch=True,
-    time_idx_start=184,
-    time_idx_end=184+3*180,
-    output_path="plume_w_bridge.html"
-)
+# pp_gpat.plotting.animate_plumes_3d_plotly(
+#     job_id=pp_gpat.job_ids[0],
+#     patch_species="NO",
+#     overlay_patch=True,
+#     time_idx_start=184,
+#     time_idx_end=184+3*180,
+#     output_path="plume.html"
+# )
 
 # print(f"boxm_ds: {boxm_ds['Y_bg_c'].sel(species_boxm='NO').isel(cell=0).values}")
 # #print(f"boxm_out: {boxm_out['Y_bg_c'].sel(species_out='NO').isel(latitude_c=1, longitude_c=1, level_c=1).values}")

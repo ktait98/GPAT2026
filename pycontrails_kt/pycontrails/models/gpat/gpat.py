@@ -478,11 +478,15 @@ class GPATSetup:
             df["latitude"] = lat_points
             df["altitude"] = alt_points
             df["time"] = times
-            ts_fl_min = int(sim_params.t_fl[1].total_seconds() / 60)
+            ts_fl_sec = int(sim_params.t_fl[1].total_seconds())
+            if ts_fl_sec < 60:
+                freq_str = f"{ts_fl_sec}s"
+            else:
+                freq_str = f"{int(ts_fl_sec // 60)}min"
 
-            fl0 = Flight(df).resample_and_fill(freq=f"{ts_fl_min}min")
-            #fl0["time_rel_s"] = (fl0.dataframe["time"] - sim_params.t_sim[0]).dt.total_seconds()
+            fl0 = Flight(df).resample_and_fill(freq=freq_str)
             fl0.attrs = {"flight_id": int(0), "aircraft_type": fl_params.ac_type}
+            fl0["waypoint"] = np.arange(len(fl0))  # add waypoint index for tracking in BOXM and PL outputs
             fl0 = _clip_flight_domain(fl0)
             fl.append(fl0)
 
@@ -510,10 +514,10 @@ class GPATSetup:
                     fli["longitude"] += dlon
                     fli["altitude"] += dalt
                     fli.attrs = {"flight_id": int(i), "aircraft_type": fl_params.ac_type}
-
+                    
                     fli = _clip_flight_domain(fli)
-                    fl.append(fli)
 
+                    fl.append(fli)
                     # Update starting coordinates for next flight
                     lon0, lat0, alt0 = lon_dx_dy, lat_dx_dy, alt_dx_dy
 
@@ -660,7 +664,6 @@ class GPATSetup:
             fl[i] = ps_model.eval(fl[i])
 
         return fl
-        return []
 
     def emissions(self) -> list[Flight]:
         """Estimate emissions using Pycontrails Emissions Model."""
@@ -722,10 +725,17 @@ class GPATSetup:
 
         pl = []
 
+        # simulate plumes for each flight and store results in list of dataframes
         for i, fli in enumerate(fl):
             pli = dry_adv.eval(fli)
+            # Reset plume waypoint to be 0-based, contiguous per flight
+            # pli["waypoint"] = np.arange(len(pli))
             pl.append(pli)
+            print(pl[i])
 
+            # for t, wp, lat, lon, alt in zip(fli["time"], fli["waypoint"], fli["latitude"], fli["longitude"], fli["altitude"]):
+            #     print(str(pd.to_datetime(t)), int(wp), float(lat), float(lon), float(alt))
+            
             # convert both flights and plumes to dataframes
             fl[i] = fl[i].dataframe
 
@@ -747,8 +757,7 @@ class GPATSetup:
             # calc plume heading
             pl[i] = self.calc_heading(pl[i])
             pl[i]["flight_id"] = fl[i]["flight_id"][0]
-            fl[i]["waypoint"] = fl[i].index
-
+            
         # concatenate all flights and plumes into single dfs
         fl_df = pd.concat(fl)
         pl_df = pd.concat(pl)
@@ -809,9 +818,10 @@ class GPATSetup:
         pl["cos_a"] = np.cos(np.radians(pl["heading"]))
         pl["altitude"] = units.pl_to_m(pl["level"])
         pl["time"] = pl["time"] - sim_params.t_pl[1]
+        pl["age"] = pl["age"] - sim_params.t_pl[1]
 
         return fl, pl
-
+    
     def gen_inputs(self):
         """Generate BOXM inputs."""
         # Initialise parameters dataset
@@ -849,18 +859,11 @@ class GPATSetup:
 
         # change flight id to int
         df["flight_id"] = df["flight_id"].astype(int) + 1  # start flight_id from 1 (FORTRAN)
-        if "waypoint" in df.columns:
-            df["waypoint"] = df["waypoint"].astype(int) + 1  # start waypoint from 1 (FORTRAN)
-        else:
-            df["waypoint"] = df.index + 1  # start waypoint from 1 (FORTRAN)
+        df["waypoint"] = df["waypoint"].astype(int) + 1
 
-        # BOXM expects FL and PL segment indexing to be identical.
-        # Restrict FL waypoints to the set present in PL inputs so seg_id ranges match.
-        if hasattr(self.gpat, "pl") and self.gpat.pl is not None:
-            pl_keys = self.gpat.pl[["flight_id", "waypoint"]].drop_duplicates()
-            pl_keys["flight_id"] = pl_keys["flight_id"].astype(int) + 1
-            pl_keys["waypoint"] = pl_keys["waypoint"].astype(int) + 1
-            df = df.merge(pl_keys, on=["flight_id", "waypoint"], how="inner")
+        # pl_keys = self.gpat.pl[["flight_id", "waypoint"]].drop_duplicates()
+        # # Do NOT increment pl_keys here!
+        # df = df.merge(pl_keys, on=["flight_id", "waypoint"], how="inner")
 
         # Sort by flight_id, waypoint to establish the seg_id ordering
         df = df.sort_values(by=["flight_id", "waypoint"]).reset_index(drop=True)
@@ -941,8 +944,10 @@ class GPATSetup:
         # Stack species into single variable: (seg_id, species_emi)
         # Concatenate along species dimension
         if species_data:
+            seg_id_vals = df["seg_id"].unique()
+            seg_id_vals.sort()
             emi_pl_mass_seg = xr.concat(
-                [xr.DataArray(data, dims="seg_id") for data in species_data],
+                [xr.DataArray(data.groupby(df["seg_id"]).first().values, dims="seg_id", coords={"seg_id": seg_id_vals}) for data in species_data],
                 dim=pd.Index([col for col in species_cols if col in df.columns], name="species_emi")
             ).transpose("seg_id", "species_emi")
 
@@ -994,8 +999,8 @@ class GPATSetup:
         active_mask = active_mask.astype(int)
         self.gpat.pl_ds = self.gpat.pl_ds.assign_coords(active_seg_flag=(("seg_id", "time"), active_mask))
 
-        for seg_id in self.gpat.pl_ds.seg_id.values:
-            print(f"Seg = {seg_id} Active seg flag = {self.gpat.pl_ds['active_seg_flag'].sel(seg_id=seg_id).values}")
+        # for seg_id in self.gpat.pl_ds.seg_id.values:
+        #     print(f"Seg = {seg_id} Active seg flag = {self.gpat.pl_ds['active_seg_flag'].sel(seg_id=seg_id).values}")
 
         self.gpat.pl_ds = self.gpat.pl_ds.assign_coords(
             time_rel_s = ("time", (self.gpat.pl_ds["time"].values - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int)),
