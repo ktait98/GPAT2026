@@ -1624,6 +1624,8 @@ class GPATPlotting:
         patch_clim=None,
         z_exaggeration=1.0,
         flight_ids=None,
+        overlay_ellipses=True,
+        overlay_slices=True,
     ):
         """Interactive 3D animation rendered in the browser via Plotly/WebGL.
 
@@ -1658,6 +1660,10 @@ class GPATPlotting:
             Vertical exaggeration factor (1.0 = true scale).
         flight_ids : array-like or None
             Restrict to these flight IDs.
+        overlay_ellipses : bool
+            Render the ellipses (ribbon) mesh for each flight.
+        overlay_slices : bool
+            Render the slice mesh for each flight.
         """
         import plotly.graph_objects as go
 
@@ -2001,8 +2007,15 @@ class GPATPlotting:
                 else:
                     trajs.append(empty_s)
 
-                ribbons.append(_ribbon_data(ea) if len(ea) >= 2 else empty_m)
-                slices.append(_slice_data(spa, len(ea)))
+                # Only append ribbons and slices if enabled
+                if overlay_ellipses:
+                    ribbons.append(_ribbon_data(ea) if len(ea) >= 2 else empty_m)
+                else:
+                    ribbons.append(empty_m)
+                if overlay_slices:
+                    slices.append(_slice_data(spa, len(ea)))
+                else:
+                    slices.append(empty_m)
 
             # Patch overlay
             patch_d = empty_p
@@ -2042,22 +2055,24 @@ class GPATPlotting:
                 name=f"{fid} trajectory",
                 showlegend=True,
             ))
-            r0 = ribbons0[fi]
-            initial_traces.append(go.Mesh3d(
-                x=r0["x"], y=r0["y"], z=r0["z"],
-                i=r0["i"], j=r0["j"], k=r0["k"],
-                color=col, opacity=0.5,
-                name=f"{fid} ellipses",
-                showlegend=False,
-            ))
-            s0 = slices0[fi]
-            initial_traces.append(go.Mesh3d(
-                x=s0["x"], y=s0["y"], z=s0["z"],
-                i=s0["i"], j=s0["j"], k=s0["k"],
-                color=col, opacity=0.25,
-                name=f"{fid} slices",
-                showlegend=False,
-            ))
+            if overlay_ellipses:
+                r0 = ribbons0[fi]
+                initial_traces.append(go.Mesh3d(
+                    x=r0["x"], y=r0["y"], z=r0["z"],
+                    i=r0["i"], j=r0["j"], k=r0["k"],
+                    color=col, opacity=0.5,
+                    name=f"{fid} ellipses",
+                    showlegend=False,
+                ))
+            if overlay_slices:
+                s0 = slices0[fi]
+                initial_traces.append(go.Mesh3d(
+                    x=s0["x"], y=s0["y"], z=s0["z"],
+                    i=s0["i"], j=s0["j"], k=s0["k"],
+                    color=col, opacity=0.25,
+                    name=f"{fid} slices",
+                    showlegend=False,
+                ))
 
         if overlay_patch and patch_available:
             p0 = patch0
@@ -2070,13 +2085,13 @@ class GPATPlotting:
                 cmax=log_clim[1] if log_clim else None,
                 colorbar=dict(
                     title=(
-                        f"log10 Y_del_f<br>{patch_species} (mol/m^3)"
+                        f"log10 Y_del_f<br>{patch_species} (ppb)"
                         if self._resolve_patch_plot_floor(
                             patch_table["Y_del_f"].sel(species_out=patch_species).values
                         ) is None
                         else (
                             "log10 Y_del_f<br>"
-                            f"{patch_species} (mol/m^3)<br>"
+                            f"{patch_species} (ppb)<br>"
                             f">= {self._resolve_patch_plot_floor(patch_table['Y_del_f'].sel(species_out=patch_species).values):.1e}"
                         )
                     )
@@ -2088,17 +2103,21 @@ class GPATPlotting:
 
         # --- Build frames ---
         frames = []
-        N_animated = 3 * n_flt + (1 if (overlay_patch and patch_available) else 0)
+        # Calculate number of animated traces per frame
+        n_traces_per_flight = 1 + int(overlay_ellipses) + int(overlay_slices)
+        N_animated = n_traces_per_flight * n_flt + (1 if (overlay_patch and patch_available) else 0)
         for frame_num, t_idx in enumerate(common_times):
             trajs, ribbons, slices, patch_d = _collect_frame(t_idx)
             fd = []
             for fi in range(n_flt):
                 t = trajs[fi]
                 fd.append(go.Scatter3d(x=t["x"], y=t["y"], z=t["z"]))
-                r = ribbons[fi]
-                fd.append(go.Mesh3d(x=r["x"], y=r["y"], z=r["z"], i=r["i"], j=r["j"], k=r["k"]))
-                s = slices[fi]
-                fd.append(go.Mesh3d(x=s["x"], y=s["y"], z=s["z"], i=s["i"], j=s["j"], k=s["k"]))
+                if overlay_ellipses:
+                    r = ribbons[fi]
+                    fd.append(go.Mesh3d(x=r["x"], y=r["y"], z=r["z"], i=r["i"], j=r["j"], k=r["k"]))
+                if overlay_slices:
+                    s = slices[fi]
+                    fd.append(go.Mesh3d(x=s["x"], y=s["y"], z=s["z"], i=s["i"], j=s["j"], k=s["k"]))
             if overlay_patch and patch_available:
                 p = patch_d
                 fd.append(go.Mesh3d(

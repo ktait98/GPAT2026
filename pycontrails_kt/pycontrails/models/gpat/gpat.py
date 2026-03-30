@@ -96,7 +96,6 @@ class FlParams:
     """Default flight/fleet parameters."""
     mode: Literal["direct", "synthetic"] = "direct"
     file: Optional[str] = None
-
     ac_type: Optional[str] = "A320"  # aircraft type
     fl0_speed: Optional[float] = 100.0  # m/s
     fl0_rocd: Optional[float] = 0.0  # m/s
@@ -289,6 +288,9 @@ class GPAT(Model):
         else:
             self.job_id = sim_params.job_id
 
+        if fl_params.mode == "direct" and fl_params.file is not None:
+            self.job_id = os.path.splitext(os.path.basename(fl_params.file))[0]
+
         sim_params.date_created = pd.Timestamp.now()
 
         chem_params.species_emi_num = grab_species_num(self.run_path, chem_params.species_emi)
@@ -378,8 +380,9 @@ class GPATSetup:
         self.gpat = gpat
 
     # Setup methods
+
     def traj_gen(self) -> list[Flight]:
-        """Generate flight trajectory points."""
+        """Generate flight trajectory points. Supports loading and plotting all test flights if requested."""
         fl_params = self.gpat.fl_params
         sim_params = self.gpat.sim_params
 
@@ -401,13 +404,63 @@ class GPATSetup:
             return flight.filter(mask)
 
         if fl_params.mode == "direct":
-            # provide flight file - csv to convert to Flight object (Pd df)
             if fl_params.file is None:
                 raise ValueError("Flight file must be provided for direct mode.")
-            fl = Flight.read_csv(fl_params.file)
-            fl.attrs = {"flight_id": int(0), "aircraft_type": fl_params.ac_type}
-            fl = _clip_flight_domain(fl)
-            return [fl]
+
+            df = pd.read_csv(fl_params.file)
+            fl = []
+
+            if "flight_id" in df.columns:
+                for flight_id in sorted(df["flight_id"].dropna().unique()):
+                    df_flt = df[df["flight_id"] == flight_id].copy()
+
+                    # Drop rows missing core trajectory fields
+                    df_flt = df_flt.dropna(subset=["time", "latitude", "longitude", "altitude"])
+                    if df_flt.empty:
+                        print(f"Skipping flight_id={flight_id}: no valid rows")
+                        continue
+
+                    # Ensure time is datetime and sort
+                    df_flt["time"] = pd.to_datetime(df_flt["time"])
+                    df_flt = df_flt.sort_values("time").reset_index(drop=True)
+
+                    # Skip degenerate flights
+                    if len(df_flt) < 2:
+                        print(f"Skipping flight_id={flight_id}: fewer than 2 valid points")
+                        continue
+
+                    fli = Flight(data=df_flt)
+                    fli.attrs = {"flight_id": int(flight_id), "aircraft_type": fl_params.ac_type}
+                    fli = _clip_flight_domain(fli)
+
+                    if len(fli) < 2:
+                        print(f"Skipping flight_id={flight_id}: fewer than 2 points after clipping")
+                        continue
+
+                    fli["waypoint"] = np.arange(len(fli))
+                    fl.append(fli)
+            else:
+                df = df.dropna(subset=["time", "latitude", "longitude", "altitude"])
+                if df.empty:
+                    raise ValueError("Direct flight file contains no valid trajectory rows.")
+
+                df["time"] = pd.to_datetime(df["time"])
+                df = df.sort_values("time").reset_index(drop=True)
+
+                fli = Flight(data=df)
+                fli.attrs = {"flight_id": 0, "aircraft_type": fl_params.ac_type}
+                fli = _clip_flight_domain(fli)
+
+                if len(fli) < 2:
+                    raise ValueError("Direct flight file has fewer than 2 valid points after clipping.")
+
+                fli["waypoint"] = np.arange(len(fli))
+                fl.append(fli)
+
+            if not fl:
+                raise ValueError("No valid flights were loaded from the direct-mode CSV.")
+
+            return fl
 
         # generate synthetic formation flight
         if fl_params.mode == "synthetic":
@@ -723,44 +776,75 @@ class GPATSetup:
             shear=pl_params.shear,
         )
 
-        pl = []
+        pl_list = []
+        fl_list = []
 
         # simulate plumes for each flight and store results in list of dataframes
         for i, fli in enumerate(fl):
-            pli = dry_adv.eval(fli)
-            # Reset plume waypoint to be 0-based, contiguous per flight
-            # pli["waypoint"] = np.arange(len(pli))
-            pl.append(pli)
-            print(pl[i])
+            print(f"Flight {i}: type={type(fli)}, hasattr(dataframe)={hasattr(fli, 'dataframe')}, hasattr(data)={hasattr(fli, 'data')}, len={len(fli) if hasattr(fli, '__len__') else 'N/A'}")
+            if hasattr(fli, 'dataframe'):
+                print(f"  dataframe shape: {fli.dataframe.shape}")
+                print(f"  dataframe columns: {fli.dataframe.columns}")
+                print(f"  dataframe head:\n{fli.dataframe.head()}")
+            elif hasattr(fli, 'data'):
+                print(f"  data shape: {fli.data.shape}")
 
-            # for t, wp, lat, lon, alt in zip(fli["time"], fli["waypoint"], fli["latitude"], fli["longitude"], fli["altitude"]):
-            #     print(str(pd.to_datetime(t)), int(wp), float(lat), float(lon), float(alt))
-            
+            # Ensure flight has valid core data
+            df = fli.dataframe.copy()
+
+            required = ["time", "latitude", "longitude", "altitude"]
+            df = df.dropna(subset=required)
+
+            if "air_temperature" in df.columns:
+                df = df.dropna(subset=["air_temperature"])
+
+            if len(df) < 2:
+                print(f"Skipping flight {i}: fewer than 2 valid rows before DryAdvection")
+                continue
+
+            # also enforce unique, increasing time
+            df["time"] = pd.to_datetime(df["time"])
+            df = df.sort_values("time").drop_duplicates(subset=["time"]).reset_index(drop=True)
+
+            if len(df) < 2:
+                print(f"Skipping flight {i}: fewer than 2 unique-time rows before DryAdvection")
+                continue
+
+            fli = Flight(df)
+            fli.attrs = fl[i].attrs
+
+            pli = dry_adv.eval(fli)
+      
             # convert both flights and plumes to dataframes
-            fl[i] = fl[i].dataframe
+            fli_df = fli.dataframe
 
             # Add level to flight dataframe right after converting
-            fl[i]["level"] = units.m_to_pl(fl[i]["altitude"].values)
+            fli_df["level"] = units.m_to_pl(fli_df["altitude"].values)
 
             # Reorder columns to have level after latitude
-            var_list = list(fl[i])
+            var_list = list(fli_df)
             var_list.remove("level")
             var_list.insert(var_list.index("latitude") + 1, "level")
-            fl[i] = fl[i][var_list]
-
-            for column in fl[i].columns:
+            fli_df = fli_df[var_list]
+            for column in fli_df.columns:
                 # Replace NaN values in the column with the value from the previous row
-                fl[i][column] = fl[i][column].ffill()
+                fli_df[column] = fli_df[column].ffill()
 
-            pl[i] = pl[i].dataframe
+            pli_df = pli.dataframe
 
             # calc plume heading
-            pl[i] = self.calc_heading(pl[i])
-            pl[i]["flight_id"] = fl[i]["flight_id"][0]
-            
-        # concatenate all flights and plumes into single dfs
-        fl_df = pd.concat(fl)
-        pl_df = pd.concat(pl)
+            pli_df = self.calc_heading(pli_df)
+            pli_df["flight_id"] = fli_df["flight_id"][0]
+
+            fl_list.append(fli_df)
+            pl_list.append(pli_df)
+
+        # concatenate all successfully processed flights and plumes into single dfs
+        if not fl_list or not pl_list:
+            print("No valid flights or plumes to process.")
+            return None, None
+        fl_df = pd.concat(fl_list)
+        pl_df = pd.concat(pl_list)
 
         # merge the two dataframes
         fl = fl_df
@@ -857,8 +941,12 @@ class GPATSetup:
         """Initialize the flight dataset for BOXM."""
         df = self.gpat.fl.copy()
 
-        # change flight id to int
-        df["flight_id"] = df["flight_id"].astype(int) + 1  # start flight_id from 1 (FORTRAN)
+        # Ensure flight_id is numeric; if not, create numeric flight_id and store original as flight_name
+        if not pd.api.types.is_numeric_dtype(df["flight_id"]):
+            df["flight_name"] = df["flight_id"]
+            df["flight_id"] = pd.factorize(df["flight_id"])[0] + 1  # start from 1
+        else:
+            df["flight_id"] = df["flight_id"].astype(int) + 1  # start flight_id from 1 (FORTRAN)
         df["waypoint"] = df["waypoint"].astype(int) + 1
 
         # pl_keys = self.gpat.pl[["flight_id", "waypoint"]].drop_duplicates()
@@ -913,7 +1001,12 @@ class GPATSetup:
         # Sort by flight_id, waypoint to establish the seg_id ordering
         df = df.sort_values(by=["flight_id", "waypoint"]).reset_index(drop=True)
 
-        df["flight_id"] = df["flight_id"].astype(int) + 1  # start flight_id from 1 (FORTRAN)
+        # Ensure flight_id is numeric; if not, create numeric flight_id and store original as flight_name
+        if not pd.api.types.is_numeric_dtype(df["flight_id"]):
+            df["flight_name"] = df["flight_id"]
+            df["flight_id"] = pd.factorize(df["flight_id"])[0] + 1  # start from 1
+        else:
+            df["flight_id"] = df["flight_id"].astype(int) + 1  # start flight_id from 1 (FORTRAN)
         df["waypoint"] = df["waypoint"].astype(int) + 1
         
         # Create segment index: assign same seg_id to all rows with same (flight_id, waypoint)
@@ -1218,6 +1311,7 @@ class GPATSetup:
                 "w_slice": ("slice_id", np.zeros(self.gpat.pl_params.n_slices)),
                 "ellipses_m": (("seg_id", "pt_id", "coord", "time"), np.zeros((len(pl_ds.seg_id), self.gpat.pl_params.n_points, 3, len(times_out)))),
                 "slice_polys_m": (("seg_id", "slice_id", "corner_id", "coord", "time"), np.zeros((len(pl_ds.seg_id), self.gpat.pl_params.n_slices, 4, 3, len(times_out)))),
+                "slice_boxes_m": (("face", "slice_id", "corner_id", "coord", "time"), np.zeros((2, self.gpat.pl_params.n_slices, 4, 3, len(times_out)))),
                 },
                 coords={
                     "seg_id": self.gpat.pl_out.seg_id,
@@ -1227,6 +1321,7 @@ class GPATSetup:
                     "slice_id": np.arange(1, self.gpat.pl_params.n_slices + 1),
                     "corner_id": xr.DataArray(np.array(["BL", "TL", "TR", "BR"], dtype="U2"), dims=("corner_id",)),
                     "coord": xr.DataArray(np.array(["lon_m", "lat_m", "alt_m"], dtype="U5"), dims=("coord",)),
+                    "face": xr.DataArray(np.array(["back", "front"], dtype="U6"), dims=("face",)),
                 }
             )
             for var in pl_slices.data_vars:
@@ -1305,7 +1400,7 @@ class GPATSetup:
                         ),
                         dtype=float
                     ),
-                    {"units": "mol_cm3"},
+                    {"units": "ppb"},
                 ),
                 "Y_del_c": (
                     ("time", "level_c", "longitude_c", "latitude_c", "species_out"),
@@ -1319,7 +1414,7 @@ class GPATSetup:
                         ),
                         dtype=float
                     ),
-                    {"units": "mol_cm3"},
+                    {"units": "ppb"},
                 ),
                 "active_flag": (
                     ("time", "level_c", "longitude_c", "latitude_c"),
@@ -1381,7 +1476,7 @@ class GPATSetup:
                 "Y_del_f": (
                     ("row", "species_out"), 
                     da.zeros((0, len(species_out)), dtype=float),
-                    {"units": "mol_cm3"},
+                    {"units": "ppb"},
                 ),
                 
             },

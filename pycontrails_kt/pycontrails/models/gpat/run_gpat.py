@@ -11,11 +11,11 @@ import holoviews as hv
 sim_params = {
     "t_fl": (pd.to_datetime("2022-01-20 13:00:00"), pd.Timedelta(seconds=60), pd.Timedelta(minutes=30)),# (start time, time step, run time)
     "t_pl": (pd.to_datetime("2022-01-20 13:00:00"), pd.Timedelta(seconds=60), pd.Timedelta(hours=2)),# (start time, time step, max age)
-    "t_sim": (pd.to_datetime("2022-01-20 12:00:00"), pd.Timedelta(seconds=60), pd.Timedelta(hours=4)),# (start time, time step, run time)
+    "t_sim": (pd.to_datetime("2022-01-20 12:00:00"), pd.Timedelta(seconds=20), pd.Timedelta(hours=4)),# (start time, time step, run time)
     "t_out": (pd.to_datetime("2022-01-20 12:00:00"), pd.Timedelta(seconds=60), pd.Timedelta(hours=4)),# (start time, time step, run time)
-    "lat_bounds": (0, 1),  # lat bounds [deg]
-    "lon_bounds": (0, 1),  # lon bounds [deg]
-    "alt_bounds": (10000, 13000),  # alt bounds [m]
+    "lat_bounds": (-0.5, 1.5),  # lat bounds [deg]
+    "lon_bounds": (-0.5, 1.5),  # lon bounds [deg]
+    "alt_bounds": (10000, 14000),  # alt bounds [m]
     "hres_sim_c": 0.5,  # coarse horizontal resolution [deg]
     "vres_sim_c": 500,  # coarse vertical resolution [m]
     "hres_sim_f": 0.025,  # fine horizontal resolution [deg]
@@ -23,32 +23,38 @@ sim_params = {
 
     "run_path": "/home/ktait98/GPAT2026/pycontrails_kt/pycontrails/models/gpat/",
     "data_path": "/home/ktait98/GPAT2026/pycontrails_kt/pycontrails/models/gpat/data/", # "/projects/Impact_of_aviation_on_climate
-    "job_id": "test3",
+    "job_id": None,
 }
 
 #flight trajectory parameters
 fl_params = {
-    "mode": "synthetic",
-    "file": None,  # flight trajectory file
+    "mode": "direct",
+    "file": "data/flights/2_flights_origin.csv",  # flight trajectory file
 
     "ac_type": "A320",  # aircraft type
-    "fl0_speed": 150.0,  # m/s
-    "fl0_rocd": 1,  # m/s (ignored when target_altitude is set)
-    "fl0_heading": 45.0,  # deg
-    "fl0_coords0": (0.25, 0.25, 11000),  # lat, lon, alt [deg, deg, m]
-    "target_altitude": 11950,  # m, reached at end of t_fl
+    # "fl0_speed": 150.0,  # m/s
+    # "fl0_rocd": 0,  # m/s (ignored when target_altitude is set)
+    # "fl0_heading": 90.0,  # deg1
+    # "fl0_coords0": (0.25, 0.5, 11000),  # lat, lon, alt [deg, deg, m]
+    # # "target_altitude": 11950,  # m, reached at end of t_fl
+    # "control_waypoints": [
+    #     (0.25, 0.5, 11000),
+    #     (0.35, 0.5, 11350),
+    #     (0.45, 0.5, 11700),
+    #     (0.65, 0.5, 11600),
+    #     (0.75, 0.5, 11950),
+    # ],
     "control_waypoints": [
         (0.25, 0.25, 11000),
-        (0.35, 0.35, 11350),
-        (0.45, 0.45, 11700),
-        (0.65, 0.65, 11600),
-        (0.75, 0.75, 11950),
+        (0.35, 0.5, 11350),
+        (0.45, 0.6, 11700),
+        (0.70, 0.75, 11950),
         # (1.0, 1.0, 12000)
     ],
     "clip_to_domain": False,
-    "domain_margin_deg": 0.005,
+    # "domain_margin_deg": 0.005,
     "sep_dist": (1000, 0, 0),  # dx, dy, dz [m]
-    "n_ac": 1,  # number of aircraft
+    "n_ac": 10,  # number of aircraft
 }
 
 # plume dispersion parameters
@@ -59,19 +65,19 @@ pl_params = {
     "shear": 0.01,  # shear [m/s]
     "n_slices": 3,  # number of slices in the plume
     "f_max": 0.99,  # maximum fraction of total emissions in any slice
-    "output_pl_slices": True,  # output plume slices to netCDF
+    "output_pl_slices":True,  # output plume slices to netCDF
     }
 
 # meteorology parameters
 met_params = {
-    "eastward_wind": 0.0,  # m/s
-    "northward_wind": 0.0,  # m/s
+    "eastward_wind": 3.0,  # m/s
+    "northward_wind": -2.0,  # m/s
     "lagrangian_tendency_of_air_pressure": 0.0,  # m/s
 }
 
 # chemistry parameters
 chem_params = {
-    "run_chem": False,
+    "run_chem": True,
     "species_emi": ("NO", "CO", "SO2"),
     # "species_pl": ("NO", "CO", "SO2"),
     "species_pl": ("NO", "NO2", "O3", "NO3", "N2O5",

@@ -11,7 +11,7 @@ np.set_printoptions(threshold=np.inf, linewidth=500)
 data_path = f"{os.getcwd()}/data/"
 
 criteria = {
-    "job_id": "test3",
+    "job_id": "2_flights_origin",
 }
 
 pp_gpat = GPATPostProcessor(data_path=data_path, criteria=criteria)
@@ -39,26 +39,33 @@ patch_table = pp_gpat.patch_table_dict[pp_gpat.job_ids[0]]
 # print(fl_ds["waypoint"].values)
 # print(pl_ds["waypoint"].values)
 # print(pl_out["waypoint"].values)
-print(pl_ds["longitude"].sel(seg_id=10).values)
+# print(pl_ds["longitude"].sel(seg_id=2).values)
 
-for t in range(0, 60, 1):
-    print(pl_ds["active_seg_flag"].sel(seg_id=slice(1,10)).isel(time=t).values)
+# for t in range(0, 60, 1):
+#     print(pl_ds["active_seg_flag"].sel(seg_id=slice(1,10)).isel(time=t).values)
 
 for t in range(60, 180, 1):
-    print(pl_out["pl_mass"].sel(species_pl="NO", seg_id=slice(1,10)).isel(time=t).values)
+    print(pl_out["pl_mass"].sel(species_pl="NO", seg_id=5).isel(time=t).values)
 
-print(patch_table["Y_del_f"].sel(row=slice(0, 100), species_out="NO").values)
+print(patch_table["Y_del_f"].sel(species_out="NO", row=slice(0,30)).values)
+print(pl_out["pl_mass"].sel(species_pl="NO").isel(time=60+60).values)
+      
+#   sel(species_out="NO").where(
+# (patch_table["Y_del_f"].coords["map_seg"] == 1) &
+# (patch_table["Y_del_f"].coords["map_slice"] == 1),
+# drop=True
+# ).values)
 
 pl_ds = pp_gpat.pl_ds_dict[pp_gpat.job_ids[0]]
 
 # print(pl_ds["emi_pl_mass"].sel(species_emi="NO").values)
 # print(pl_ds["age_s"].sel(seg_id=31).values)
-# print(pl_ds["waypoint"].values)
+# print(pl_ds["heading"].sel(time='2022-01-20T13:30:00Z').values)
 # boxm_out["Y_bg_c"] = boxm_out["Y_bg_c"] * 1e9 / 5.9e+18  # Convert from kg/kg to ppb
 
 # pp_gpat.plotting.plot_time_series(pp_gpat.job_ids[0], species="NO", level=217, lat=0.5, lon=0.5, data_var="Y_del_c")
 
-# pp_gpat.plotting.plot_boxm_background_slider(pp_gpat.job_ids[0], species="OH", level=217.56859635, time_indices=None)
+pp_gpat.plotting.plot_boxm_background_slider(pp_gpat.job_ids[0], species="OH", level=217.56859635, time_indices=None)
 
 # pp_gpat.plotting.plot_patch_heatmap_2d_with_slider(
 #     time_indices=patch_time_idx,
@@ -75,9 +82,11 @@ pl_ds = pp_gpat.pl_ds_dict[pp_gpat.job_ids[0]]
 # pp_gpat.plotting.animate_plumes_3d_plotly(
 #     job_id=pp_gpat.job_ids[0],
 #     patch_species="NO",
+#     overlay_ellipses=False,
+#     overlay_slices=False,
 #     overlay_patch=True,
-#     time_idx_start=184,
-#     time_idx_end=184+3*180,
+#     time_idx_start=181,
+#     time_idx_end=181+3*180,
 #     output_path="plume.html"
 # )
 
