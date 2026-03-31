@@ -65,7 +65,7 @@ pl_ds = pp_gpat.pl_ds_dict[pp_gpat.job_ids[0]]
 
 # pp_gpat.plotting.plot_time_series(pp_gpat.job_ids[0], species="NO", level=217, lat=0.5, lon=0.5, data_var="Y_del_c")
 
-pp_gpat.plotting.plot_boxm_background_slider(pp_gpat.job_ids[0], species="OH", level=217.56859635, time_indices=None)
+pp_gpat.plotting.plot_boxm_background_slider(pp_gpat.job_ids[0], species="O3", level=217.56859635, time_indices=None)
 
 # pp_gpat.plotting.plot_patch_heatmap_2d_with_slider(
 #     time_indices=patch_time_idx,
@@ -79,16 +79,16 @@ pp_gpat.plotting.plot_boxm_background_slider(pp_gpat.job_ids[0], species="OH", l
 
 # pp_gpat.plotting.plot_heatmap_slider(job_id=pp_gpat.job_ids[0], species="NO", data_var="Y_bg_c", level=11000)
 
-# pp_gpat.plotting.animate_plumes_3d_plotly(
-#     job_id=pp_gpat.job_ids[0],
-#     patch_species="NO",
-#     overlay_ellipses=False,
-#     overlay_slices=False,
-#     overlay_patch=True,
-#     time_idx_start=181,
-#     time_idx_end=181+3*180,
-#     output_path="plume.html"
-# )
+pp_gpat.plotting.animate_plumes_3d_plotly(
+    job_id=pp_gpat.job_ids[0],
+    patch_species="OH",
+    overlay_ellipses=False,
+    overlay_slices=False,
+    overlay_patch=True,
+    time_idx_start=181,
+    time_idx_end=181+3*180,
+    output_path="plume.html"
+)
 
 # print(f"boxm_ds: {boxm_ds['Y_bg_c'].sel(species_boxm='NO').isel(cell=0).values}")
 # #print(f"boxm_out: {boxm_out['Y_bg_c'].sel(species_out='NO').isel(latitude_c=1, longitude_c=1, level_c=1).values}")

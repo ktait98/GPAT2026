@@ -759,8 +759,43 @@ class GPATSetup:
             for species, ei in eis.items():
                 fl[i][species] = ei * fl[i]["fuel_burn"] # [kg]
 
+
+
         return fl
 
+    def mask_flight_to_met_domain(self, flight: Flight, met) -> Flight:
+        lons = self.gpat.lons
+        lats = self.gpat.lats
+        alts = self.gpat.alts
+
+        lon_min = float(lons.min())
+        lon_max = float(lons.max())
+        lat_min = float(lats.min())
+        lat_max = float(lats.max())
+        alt_min = float(alts.min())
+        alt_max = float(alts.max())
+
+        mask = (
+            (flight.dataframe["longitude"] >= lon_min)
+            & (flight.dataframe["longitude"] <= lon_max)
+            & (flight.dataframe["latitude"] >= lat_min)
+            & (flight.dataframe["latitude"] <= lat_max)
+        )
+
+        if "altitude" in flight.dataframe.columns:
+            # Prefer sim_params bounds in metres
+            alt_min, alt_max = self.gpat.sim_params.alt_bounds
+            mask &= (
+                (flight.dataframe["altitude"] >= alt_min)
+                & (flight.dataframe["altitude"] <= alt_max)
+            )
+
+        masked_df = flight.dataframe.loc[mask].copy()
+        new_flight = Flight(data=masked_df)
+        if hasattr(flight, "attrs"):
+            new_flight.attrs = getattr(flight, "attrs", {})
+        return new_flight
+    
     def sim_plumes(self) -> list[pd.DataFrame]:
         """Simulate plume dispersion/advection using Pycontrails Dry Advection Model."""
         pl_params = self.gpat.pl_params
@@ -786,6 +821,8 @@ class GPATSetup:
                 print(f"  dataframe shape: {fli.dataframe.shape}")
                 print(f"  dataframe columns: {fli.dataframe.columns}")
                 print(f"  dataframe head:\n{fli.dataframe.head()}")
+                print(f"  dataframe NaNs:\n{fli.dataframe.isna().sum()}")
+                print(f"  dataframe Nan rows:\n{fli.dataframe[fli.dataframe.isna().any(axis=1)]}")
             elif hasattr(fli, 'data'):
                 print(f"  data shape: {fli.data.shape}")
 
@@ -813,14 +850,34 @@ class GPATSetup:
             fli = Flight(df)
             fli.attrs = fl[i].attrs
 
+            # Mask flight to met domain BEFORE advection
+            met = self.gpat.met
+            fli = self.mask_flight_to_met_domain(fli, met)
+            if len(fli.dataframe) < 2:
+                print(f"Skipping flight {i}: fewer than 2 points after met domain masking (pre-advection)")
+                continue
+
             pli = dry_adv.eval(fli)
       
+            # Mask both flight and plume DataFrames to met domain
+            met = self.gpat.met
+            fli = self.mask_flight_to_met_domain(fli, met)
+            pli = self.mask_flight_to_met_domain(pli, met)
+
+            print(f"Flight {i} AFTER CLIPPING: type={type(fli)}, hasattr(dataframe)={hasattr(fli, 'dataframe')}, hasattr(data)={hasattr(fli, 'data')}, len={len(fli) if hasattr(fli, '__len__') else 'N/A'}")
+            if hasattr(fli, 'dataframe'):
+                print(f"  dataframe shape: {fli.dataframe.shape}")
+                print(f"  dataframe columns: {fli.dataframe.columns}")
+                print(f"  dataframe head:\n{fli.dataframe.head()}")
+                print(f"  dataframe NaNs:\n{fli.dataframe.isna().sum()}")
+                print(f"  dataframe Nan rows:\n{fli.dataframe[fli.dataframe.isna().any(axis=1)]}")
+            elif hasattr(fli, 'data'):
+                print(f"  data shape: {fli.data.shape}")
+
             # convert both flights and plumes to dataframes
             fli_df = fli.dataframe
-
             # Add level to flight dataframe right after converting
             fli_df["level"] = units.m_to_pl(fli_df["altitude"].values)
-
             # Reorder columns to have level after latitude
             var_list = list(fli_df)
             var_list.remove("level")
@@ -831,11 +888,15 @@ class GPATSetup:
                 fli_df[column] = fli_df[column].ffill()
 
             pli_df = pli.dataframe
-
-            # calc plume heading
+            # Only calculate heading if there are at least 2 rows
+            if len(pli_df) < 2:
+                print(f"Skipping flight {i}: plume has fewer than 2 points after masking.")
+                continue
             pli_df = self.calc_heading(pli_df)
-            pli_df["flight_id"] = fli_df["flight_id"][0]
-
+            if len(fli_df) == 0 or len(pli_df) == 0:
+                print(f"Skipping flight {i}: all points advected outside met domain after DryAdvection.")
+                continue
+            pli_df["flight_id"] = fli_df["flight_id"].iloc[0]
             fl_list.append(fli_df)
             pl_list.append(pli_df)
 
@@ -1530,7 +1591,7 @@ class GPATSetup:
         pl_df = pl_df.sort_values(by=["time", "waypoint"])
 
         # Group the dataframe by the timestep and apply the function
-        pl_df["heading"] = pl_df.groupby("time").apply(self.calculate_heading_g).reset_index(drop=True)
+        pl_df["heading"] = pl_df.groupby("time").transform(self.calculate_heading_g)["heading"]
 
         return pl_df
 

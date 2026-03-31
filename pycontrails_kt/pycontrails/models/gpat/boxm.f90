@@ -7488,7 +7488,7 @@ CONTAINS
 
         CALL RUN_LEGACY_CHEM(BOXM_STATE%Y_BG_C, BOXM_STATE%TEMP, BOXM_STATE%H2O, BOXM_STATE%O2, &
                             BOXM_STATE%N2, BOXM_STATE%M, BOXM_STATE%SZA, BOXM_STATE%DTS, BOXM_STATE%NCELL, &
-                            BOXM_DS%NCELL, BOXM_DS%NPP, BOXM_DS%NPC, BOXM_DS%NTC, BOXM_DS%NFL)
+                            BOXM_DS%NSBOXM, BOXM_DS%NPP, BOXM_DS%NPC, BOXM_DS%NTC, BOXM_DS%NFL)
 
     END SUBROUTINE BOXM_STATE_RUN_COARSE_BG_CHEM
 
@@ -7522,7 +7522,7 @@ CONTAINS
 
         CALL RUN_LEGACY_CHEM(BOXM_STATE%Y_DEL_C, BOXM_STATE%TEMP, BOXM_STATE%H2O, BOXM_STATE%O2, &
                             BOXM_STATE%N2, BOXM_STATE%M, BOXM_STATE%SZA, BOXM_STATE%DTS, BOXM_STATE%NCELL, &
-                            BOXM_DS%NCELL, BOXM_DS%NPP, BOXM_DS%NPC, BOXM_DS%NTC, BOXM_DS%NFL)
+                            BOXM_DS%NSBOXM, BOXM_DS%NPP, BOXM_DS%NPC, BOXM_DS%NTC, BOXM_DS%NFL)
 
     END SUBROUTINE BOXM_STATE_RUN_COARSE_DELTA_CHEM
 
@@ -7671,7 +7671,7 @@ CONTAINS
         INTEGER :: CELL_C, I, J, ROW_IDX
         INTEGER :: NX_F, NY_F, NFINE_XY, NFINE_Z, NFINE_CELL
         INTEGER, ALLOCATABLE :: ROWS_CELL(:)
-        REAL(DP), ALLOCATABLE :: Y_DEL_F_CELL(:,:)
+        REAL(DP), ALLOCATABLE :: Y_BG_F_CELL(:,:), Y_DEL_F_CELL(:,:), Y_TOT_F_CELL(:,:)
 
         REAL(DP), ALLOCATABLE :: TEMP_CELL(:), H2O_CELL(:), O2_CELL(:), N2_CELL(:), M_CELL(:), SZA_CELL(:)
         LOGICAL :: FOUND
@@ -7691,8 +7691,33 @@ CONTAINS
             ! FIND ALL RELEVANT ROWS TO THIS COARSE CELL
             ROWS_CELL = PACK((/(I, I=1,PATCH_STATE%NROWS)/), PATCH_STATE%ROW_CELL_C(:) == CELL_C)
 
+            ! ALLOCATE MET VARIABLES
+            ALLOCATE(TEMP_CELL(NFINE_CELL), H2O_CELL(NFINE_CELL), O2_CELL(NFINE_CELL), &
+                     N2_CELL(NFINE_CELL), M_CELL(NFINE_CELL), SZA_CELL(NFINE_CELL))
+
+            ! ALLOCATE Y (CONCENTRATION) VARIABLES
+            ALLOCATE(Y_BG_F_CELL(NFINE_CELL, BOXM_STATE%NSBOXM))
             ALLOCATE(Y_DEL_F_CELL(NFINE_CELL, PATCH_STATE%NSBOXM))
+            ALLOCATE(Y_TOT_F_CELL(NFINE_CELL, BOXM_STATE%NSBOXM))
+
+            Y_BG_F_CELL(:,:) = 0.0_DP
             Y_DEL_F_CELL(:,:) = 0.0_DP
+            Y_TOT_F_CELL(:,:) = 0.0_DP
+
+            ! LOCATE MET VALUES FROM BOXM STATE
+            TEMP_CELL(:) = BOXM_STATE%TEMP(CELL_C)
+            H2O_CELL(:) = BOXM_STATE%H2O(CELL_C)
+            O2_CELL(:) = BOXM_STATE%O2(CELL_C)
+            N2_CELL(:) = BOXM_STATE%N2(CELL_C)
+            M_CELL(:) = BOXM_STATE%M(CELL_C)
+            SZA_CELL(:) = BOXM_STATE%SZA(CELL_C)
+
+            ! LOCATE Y_BG_F VALUES FROM BOXM STATE
+            DO I = 1, NFINE_CELL
+                Y_BG_F_CELL(I,:) = BOXM_STATE%Y_BG_C(CELL_C,:)
+            END DO
+
+            ! LOCATE Y_DEL_F VALUES FROM PATCH STATE
             DO I = 1, NFINE_CELL
                 FOUND = .FALSE.
                 DO J = 1, SIZE(ROWS_CELL)
@@ -7706,20 +7731,16 @@ CONTAINS
                 ! If not found, Y_DEL_F_CELL(I,:) remains zero
             END DO
             
-            ALLOCATE(TEMP_CELL(NFINE_CELL), H2O_CELL(NFINE_CELL), O2_CELL(NFINE_CELL), &
-                     N2_CELL(NFINE_CELL), M_CELL(NFINE_CELL), SZA_CELL(NFINE_CELL))
+            ! SUM TOTAL MASS INTO CELLS FOR CHEMISTRY
+            Y_TOT_F_CELL = Y_BG_F_CELL + Y_DEL_F_CELL
 
-            TEMP_CELL(:) = BOXM_STATE%TEMP(CELL_C)
-            H2O_CELL(:) = BOXM_STATE%H2O(CELL_C)
-            O2_CELL(:) = BOXM_STATE%O2(CELL_C)
-            N2_CELL(:) = BOXM_STATE%N2(CELL_C)
-            M_CELL(:) = BOXM_STATE%M(CELL_C)
-            SZA_CELL(:) = BOXM_STATE%SZA(CELL_C)
-            
-            ! ACCESS Y_DEL_F_CELL(I, :) FOR CHEMISTRY UPDATE
-            CALL RUN_LEGACY_CHEM(Y_DEL_F_CELL, TEMP_CELL, H2O_CELL, O2_CELL, N2_CELL, M_CELL, &
+            ! ACCESS Y_TOT_F_CELL(I, :) FOR CHEMISTRY UPDATE
+            CALL RUN_LEGACY_CHEM(Y_TOT_F_CELL, TEMP_CELL, H2O_CELL, O2_CELL, N2_CELL, M_CELL, &
                             SZA_CELL, BOXM_STATE%DTS, NFINE_CELL, BOXM_DS%NSBOXM, BOXM_DS%NPP, &
                             BOXM_DS%NPC, BOXM_DS%NTC, BOXM_DS%NFL)
+
+            ! SUBTRACT UPDATED BG CHEM FROM TOTAL TO GET REMAINING IN PLUME
+            Y_DEL_F_CELL = Y_TOT_F_CELL - Y_BG_F_CELL
 
             ! WRITE BACK RESULTS TO PATCH_STATE%Y_DEL_F
             DO I = 1, NFINE_CELL
@@ -7735,7 +7756,9 @@ CONTAINS
                 ! If not found, this would be unexpected since we are iterating over rows for this cell, 
                 ! but we can choose to ignore or log as needed.
             END DO
+            DEALLOCATE(Y_BG_F_CELL)
             DEALLOCATE(Y_DEL_F_CELL)
+            DEALLOCATE(Y_TOT_F_CELL)
             DEALLOCATE(ROWS_CELL)
             DEALLOCATE(TEMP_CELL, H2O_CELL, O2_CELL, N2_CELL, M_CELL, SZA_CELL)
         END DO
@@ -8752,10 +8775,10 @@ CONTAINS
         CALL BOXM_STATE%RUN_COARSE_BG_CHEM(BOXM_DS)
         
         IF (BOXM_DS%N_AC > 0) THEN
-            ! === FINE DELTA CHEMISTRY ===
+            ! === FINE PLUME CHEMISTRY ===
             CALL PATCH_STATE%RUN_FINE_DELTA_CHEM(BOXM_DS, BOXM_STATE)
         
-            ! === COARSE DELTA CHEMISTRY ===
+            ! === COARSE PLUME CHEMISTRY ===
             CALL BOXM_STATE%RUN_COARSE_DELTA_CHEM(BOXM_DS, PATCH_STATE)
         END IF
         
