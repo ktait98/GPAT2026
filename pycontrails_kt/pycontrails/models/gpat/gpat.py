@@ -105,7 +105,6 @@ class FlParams:
     # Optional control points for a tactile route definition.
     # Each tuple is (lat, lon, alt_m); times are spread uniformly over t_fl.
     control_waypoints: Optional[list[tuple[float, float, float]]] = None
-    clip_to_domain: bool = True
     domain_margin_deg: float = 0.01
     sep_dist: Optional[tuple[float, float, float]] = (5000, 2000, 0)  # dx, dy, dz [m]
     n_ac: Optional[int] = 1  # number of aircraft
@@ -386,23 +385,6 @@ class GPATSetup:
         fl_params = self.gpat.fl_params
         sim_params = self.gpat.sim_params
 
-        margin = float(getattr(fl_params, "domain_margin_deg", 0.01) or 0.0)
-        clip_to_domain = bool(getattr(fl_params, "clip_to_domain", True))
-
-        def _clip_flight_domain(flight: Flight) -> Flight:
-            """Optionally clip trajectory to simulation domain."""
-            if not clip_to_domain:
-                return flight
-            mask = (
-                (flight["latitude"] >= sim_params.lat_bounds[0] + margin)
-                & (flight["latitude"] <= sim_params.lat_bounds[1] - margin)
-                & (flight["longitude"] >= sim_params.lon_bounds[0] + margin)
-                & (flight["longitude"] <= sim_params.lon_bounds[1] - margin)
-                & (flight["altitude"] >= sim_params.alt_bounds[0])
-                & (flight["altitude"] <= sim_params.alt_bounds[1])
-            )
-            return flight.filter(mask)
-
         if fl_params.mode == "direct":
             if fl_params.file is None:
                 raise ValueError("Flight file must be provided for direct mode.")
@@ -410,49 +392,20 @@ class GPATSetup:
             df = pd.read_csv(fl_params.file)
             fl = []
 
-            if "flight_id" in df.columns:
-                for flight_id in sorted(df["flight_id"].dropna().unique()):
-                    df_flt = df[df["flight_id"] == flight_id].copy()
+            for flight_id in sorted(df["flight_id"].dropna().unique()):
+                df_flt = df[df["flight_id"] == flight_id].copy()
 
-                    # Drop rows missing core trajectory fields
-                    df_flt = df_flt.dropna(subset=["time", "latitude", "longitude", "altitude"])
-                    if df_flt.empty:
-                        print(f"Skipping flight_id={flight_id}: no valid rows")
-                        continue
+                # Ensure time is datetime and sort
+                df_flt["time"] = pd.to_datetime(df_flt["time"])
+                df_flt = df_flt.sort_values("time").reset_index(drop=True)
 
-                    # Ensure time is datetime and sort
-                    df_flt["time"] = pd.to_datetime(df_flt["time"])
-                    df_flt = df_flt.sort_values("time").reset_index(drop=True)
+                # Skip degenerate flights
+                if len(df_flt) < 2:
+                    print(f"Skipping flight_id={flight_id}: fewer than 2 valid points")
+                    continue
 
-                    # Skip degenerate flights
-                    if len(df_flt) < 2:
-                        print(f"Skipping flight_id={flight_id}: fewer than 2 valid points")
-                        continue
-
-                    fli = Flight(data=df_flt)
-                    fli.attrs = {"flight_id": int(flight_id), "aircraft_type": fl_params.ac_type}
-                    fli = _clip_flight_domain(fli)
-
-                    if len(fli) < 2:
-                        print(f"Skipping flight_id={flight_id}: fewer than 2 points after clipping")
-                        continue
-
-                    fli["waypoint"] = np.arange(len(fli))
-                    fl.append(fli)
-            else:
-                df = df.dropna(subset=["time", "latitude", "longitude", "altitude"])
-                if df.empty:
-                    raise ValueError("Direct flight file contains no valid trajectory rows.")
-
-                df["time"] = pd.to_datetime(df["time"])
-                df = df.sort_values("time").reset_index(drop=True)
-
-                fli = Flight(data=df)
-                fli.attrs = {"flight_id": 0, "aircraft_type": fl_params.ac_type}
-                fli = _clip_flight_domain(fli)
-
-                if len(fli) < 2:
-                    raise ValueError("Direct flight file has fewer than 2 valid points after clipping.")
+                fli = Flight(data=df_flt)
+                fli.attrs = {"flight_id": int(flight_id), "aircraft_type": fl_params.ac_type}
 
                 fli["waypoint"] = np.arange(len(fli))
                 fl.append(fli)
@@ -540,7 +493,6 @@ class GPATSetup:
             fl0 = Flight(df).resample_and_fill(freq=freq_str)
             fl0.attrs = {"flight_id": int(0), "aircraft_type": fl_params.ac_type}
             fl0["waypoint"] = np.arange(len(fl0))  # add waypoint index for tracking in BOXM and PL outputs
-            fl0 = _clip_flight_domain(fl0)
             fl.append(fl0)
 
             fli = fl0
@@ -568,8 +520,6 @@ class GPATSetup:
                     fli["altitude"] += dalt
                     fli.attrs = {"flight_id": int(i), "aircraft_type": fl_params.ac_type}
                     
-                    fli = _clip_flight_domain(fli)
-
                     fl.append(fli)
                     # Update starting coordinates for next flight
                     lon0, lat0, alt0 = lon_dx_dy, lat_dx_dy, alt_dx_dy
@@ -705,16 +655,24 @@ class GPATSetup:
         ps_model = PSFlight()
 
         for i, fli in enumerate(fl):
+
+            print(f"Before {i}: {fli.dataframe}")
+
+            # mask flight to simulation domain
+            fli = self.mask_flight_to_sim_domain(fli)
+
+            print(f"After {i}: {fli.dataframe}")
+
             # downselect met data to the flight trajectory
             fli.downselect_met(met)
-            fl[i]["air_temperature"] = models.interpolate_met(met, fli, "air_temperature")
-            fl[i]["specific_humidity"] = models.interpolate_met(met, fli, "specific_humidity")
-            fl[i]["true_airspeed"] = fli.segment_groundspeed()
+            fli["air_temperature"] = models.interpolate_met(met, fli, "air_temperature")
+            fli["specific_humidity"] = models.interpolate_met(met, fli, "specific_humidity")
+            fli["true_airspeed"] = fli.segment_groundspeed()
             
             print(f"flight {i} done")
 
             # get ac performance data using Poll-Schumann Model
-            fl[i] = ps_model.eval(fl[i])
+            fl[i] = ps_model.eval(fli)
 
         return fl
 
@@ -762,39 +720,6 @@ class GPATSetup:
 
 
         return fl
-
-    def mask_flight_to_met_domain(self, flight: Flight, met) -> Flight:
-        lons = self.gpat.lons
-        lats = self.gpat.lats
-        alts = self.gpat.alts
-
-        lon_min = float(lons.min())
-        lon_max = float(lons.max())
-        lat_min = float(lats.min())
-        lat_max = float(lats.max())
-        alt_min = float(alts.min())
-        alt_max = float(alts.max())
-
-        mask = (
-            (flight.dataframe["longitude"] >= lon_min)
-            & (flight.dataframe["longitude"] <= lon_max)
-            & (flight.dataframe["latitude"] >= lat_min)
-            & (flight.dataframe["latitude"] <= lat_max)
-        )
-
-        if "altitude" in flight.dataframe.columns:
-            # Prefer sim_params bounds in metres
-            alt_min, alt_max = self.gpat.sim_params.alt_bounds
-            mask &= (
-                (flight.dataframe["altitude"] >= alt_min)
-                & (flight.dataframe["altitude"] <= alt_max)
-            )
-
-        masked_df = flight.dataframe.loc[mask].copy()
-        new_flight = Flight(data=masked_df)
-        if hasattr(flight, "attrs"):
-            new_flight.attrs = getattr(flight, "attrs", {})
-        return new_flight
     
     def sim_plumes(self) -> list[pd.DataFrame]:
         """Simulate plume dispersion/advection using Pycontrails Dry Advection Model."""
@@ -816,63 +741,34 @@ class GPATSetup:
 
         # simulate plumes for each flight and store results in list of dataframes
         for i, fli in enumerate(fl):
-            print(f"Flight {i}: type={type(fli)}, hasattr(dataframe)={hasattr(fli, 'dataframe')}, hasattr(data)={hasattr(fli, 'data')}, len={len(fli) if hasattr(fli, '__len__') else 'N/A'}")
-            if hasattr(fli, 'dataframe'):
-                print(f"  dataframe shape: {fli.dataframe.shape}")
-                print(f"  dataframe columns: {fli.dataframe.columns}")
-                print(f"  dataframe head:\n{fli.dataframe.head()}")
-                print(f"  dataframe NaNs:\n{fli.dataframe.isna().sum()}")
-                print(f"  dataframe Nan rows:\n{fli.dataframe[fli.dataframe.isna().any(axis=1)]}")
-            elif hasattr(fli, 'data'):
-                print(f"  data shape: {fli.data.shape}")
+            # print(f"Flight {i}: type={type(fli)}, hasattr(dataframe)={hasattr(fli, 'dataframe')}, hasattr(data)={hasattr(fli, 'data')}, len={len(fli) if hasattr(fli, '__len__') else 'N/A'}")
+            # if hasattr(fli, 'dataframe'):
+            #     print(f"  dataframe shape: {fli.dataframe.shape}")
+            #     print(f"  dataframe columns: {fli.dataframe.columns}")
+            #     print(f"  dataframe head:\n{fli.dataframe.head()}")
+            #     print(f"  dataframe NaNs:\n{fli.dataframe.isna().sum()}")
+            #     # print(f"  dataframe Nan rows:\n{fli.dataframe[fli.dataframe.isna().any(axis=1)]}")
+            # elif hasattr(fli, 'data'):
+            #     print(f"  data shape: {fli.data.shape}")
 
-            # Ensure flight has valid core data
-            df = fli.dataframe.copy()
-
-            required = ["time", "latitude", "longitude", "altitude"]
-            df = df.dropna(subset=required)
-
-            if "air_temperature" in df.columns:
-                df = df.dropna(subset=["air_temperature"])
-
-            if len(df) < 2:
-                print(f"Skipping flight {i}: fewer than 2 valid rows before DryAdvection")
-                continue
-
-            # also enforce unique, increasing time
-            df["time"] = pd.to_datetime(df["time"])
-            df = df.sort_values("time").drop_duplicates(subset=["time"]).reset_index(drop=True)
-
-            if len(df) < 2:
-                print(f"Skipping flight {i}: fewer than 2 unique-time rows before DryAdvection")
-                continue
-
-            fli = Flight(df)
-            fli.attrs = fl[i].attrs
-
-            # Mask flight to met domain BEFORE advection
             met = self.gpat.met
-            fli = self.mask_flight_to_met_domain(fli, met)
+
             if len(fli.dataframe) < 2:
                 print(f"Skipping flight {i}: fewer than 2 points after met domain masking (pre-advection)")
                 continue
 
             pli = dry_adv.eval(fli)
-      
-            # Mask both flight and plume DataFrames to met domain
-            met = self.gpat.met
-            fli = self.mask_flight_to_met_domain(fli, met)
-            pli = self.mask_flight_to_met_domain(pli, met)
 
-            print(f"Flight {i} AFTER CLIPPING: type={type(fli)}, hasattr(dataframe)={hasattr(fli, 'dataframe')}, hasattr(data)={hasattr(fli, 'data')}, len={len(fli) if hasattr(fli, '__len__') else 'N/A'}")
-            if hasattr(fli, 'dataframe'):
-                print(f"  dataframe shape: {fli.dataframe.shape}")
-                print(f"  dataframe columns: {fli.dataframe.columns}")
-                print(f"  dataframe head:\n{fli.dataframe.head()}")
-                print(f"  dataframe NaNs:\n{fli.dataframe.isna().sum()}")
-                print(f"  dataframe Nan rows:\n{fli.dataframe[fli.dataframe.isna().any(axis=1)]}")
-            elif hasattr(fli, 'data'):
-                print(f"  data shape: {fli.data.shape}")
+            # Attach altitude to plume for later masking and analysis
+            pli["altitude"] = units.pl_to_m(pli["level"])
+
+            # Mask plume to simulation domain
+            pli = self.mask_plume_to_sim_domain(pli)
+
+            print(fli)
+            print(pli)
+      
+            met = self.gpat.met
 
             # convert both flights and plumes to dataframes
             fli_df = fli.dataframe
@@ -1575,24 +1471,15 @@ class GPATSetup:
              
     # Helper functions used in GPAT Setup
     def calc_heading(self, pl_df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate heading for each plume.
+        """Calculate heading for each plume at each timestep."""
+        pl_df = pl_df.sort_values(by=["time", "waypoint"]).copy()
 
-        Parameters
-        ----------
-        pl_df : pd.DataFrame
-            DataFrame containing plume data.
+        heading = (
+            pl_df.groupby("time", group_keys=False)
+            .apply(self.calculate_heading_g)
+        )
 
-        Returns
-        -------
-        pd.DataFrame
-            DataFrame containing plume data with heading.
-        """
-        # Sort the dataframe by time and waypoint
-        pl_df = pl_df.sort_values(by=["time", "waypoint"])
-
-        # Group the dataframe by the timestep and apply the function
-        pl_df["heading"] = pl_df.groupby("time").transform(self.calculate_heading_g)["heading"]
-
+        pl_df["heading"] = heading.reindex(pl_df.index)
         return pl_df
 
     def calculate_heading_g(self, group):
@@ -1651,6 +1538,73 @@ class GPATSetup:
                     geo.cosine_solar_zenith_angle(lonval, latval, timesteps, theta_rad)
                 )
         return sza
+    
+    def mask_flight_to_sim_domain(self, flight: Flight) -> Flight:
+        
+        sim_params = self.gpat.sim_params
+        
+        lons = np.asarray(self.gpat.lons, dtype=float)
+        lats = np.asarray(self.gpat.lats, dtype=float)
+        alts = np.asarray(self.gpat.alts, dtype=float)
+
+        dlon = sim_params.hres_sim_c
+        dlat = sim_params.hres_sim_c
+        dalt = sim_params.vres_sim_c
+
+        lon_min = float(lons.min())
+        lon_max = float(lons.max())
+        lat_min = float(lats.min())
+        lat_max = float(lats.max())
+        alt_min = float(alts.min())
+        alt_max = float(alts.max())
+
+        mask = (
+            (flight.dataframe["longitude"] >= lon_min)
+            & (flight.dataframe["longitude"] <= lon_max)
+            & (flight.dataframe["latitude"] >= lat_min)
+            & (flight.dataframe["latitude"] <= lat_max)
+            & (flight.dataframe["altitude"] >= alt_min)
+            & (flight.dataframe["altitude"] <= alt_max)
+        )
+
+        masked_df = flight.dataframe.loc[mask].copy()
+        new_flight = Flight(data=masked_df)
+        if hasattr(flight, "attrs"):
+            new_flight.attrs = getattr(flight, "attrs", {})
+        return new_flight
+    
+    def mask_plume_to_sim_domain(self, plume: GeoVectorDataset) -> GeoVectorDataset:
+        sim_params = self.gpat.sim_params
+        
+        lons = np.asarray(self.gpat.lons, dtype=float)
+        lats = np.asarray(self.gpat.lats, dtype=float)
+        alts = np.asarray(self.gpat.alts, dtype=float)
+
+        dlon = sim_params.hres_sim_c
+        dlat = sim_params.hres_sim_c
+        dalt = sim_params.vres_sim_c
+
+        lon_min = float(lons.min())
+        lon_max = float(lons.max())
+        lat_min = float(lats.min())
+        lat_max = float(lats.max())
+        alt_min = float(alts.min())
+        alt_max = float(alts.max())
+
+        mask = (
+            (plume.dataframe["longitude"] >= lon_min)
+            & (plume.dataframe["longitude"] <= lon_max)
+            & (plume.dataframe["latitude"] >= lat_min)
+            & (plume.dataframe["latitude"] <= lat_max)
+            & (plume.dataframe["altitude"] >= alt_min)
+            & (plume.dataframe["altitude"] <= alt_max)
+        )
+
+        masked_df = plume.dataframe.loc[mask].copy()
+        new_plume = GeoVectorDataset(data=masked_df)
+        if hasattr(plume, "attrs"):
+            new_plume.attrs = getattr(plume, "attrs", {})
+        return new_plume
 
 class GPATRun:
     """Run the GPAT model."""

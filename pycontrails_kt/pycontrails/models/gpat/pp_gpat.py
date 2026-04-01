@@ -279,14 +279,10 @@ class GPATPlotting:
         plt.tight_layout()
         plt.show()
     
-    def plot_boxm_background_slider(self, 
-                                    job_id, 
-                                    species="NO", 
-                                    level=None, 
-                                    time_indices=None,
-                                    ):                
+    def plot_boxm_background_slider(self, job_id, species="NO", level=None, time_indices=None):                
         import matplotlib.pyplot as plt
         from matplotlib.widgets import Slider
+
         boxm_out = self.pp_gpat.boxm_out_dict[job_id]
         all_time_indices = np.asarray(boxm_out["time_idx"].values, dtype=int)
         if time_indices is None:
@@ -392,1224 +388,385 @@ class GPATPlotting:
 
         slider.on_changed(slider_update)
         plt.show()
-    
 
-    def set_patch_plot_policy(self, min_value=None, max_log10_span=3.0):
-        """Configure the default fine-grid patch filtering used across plots.
-
-        Parameters
-        ----------
-        min_value : float or None, optional
-            Absolute lower bound in mol/m^3 for rendering patch cells.
-            ``None`` disables the absolute floor.
-        max_log10_span : float or None, default 3.0
-            Maximum number of log10 decades below the species peak to render.
-            For example, ``3.0`` keeps values down to ``peak * 1e-3``.
-            ``None`` disables the relative floor.
-        """
-        if min_value is not None:
-            min_value = float(min_value)
-            if min_value <= 0.0:
-                raise ValueError("min_value must be positive when provided.")
-
-        if max_log10_span is not None:
-            max_log10_span = float(max_log10_span)
-            if max_log10_span <= 0.0:
-                raise ValueError("max_log10_span must be positive when provided.")
-
-        self.patch_plot_min_value = min_value
-        self.patch_plot_max_log10_span = max_log10_span
-
-    def _resolve_patch_plot_floor(self, values, min_value=None, max_log10_span=None):
-        """Return the effective patch rendering floor for the provided values."""
-        vals = np.asarray(values, dtype=float)
-        pos = vals[np.isfinite(vals) & (vals > 0.0)]
-        if pos.size == 0:
-            return None
-
-        floor_candidates = []
-
-        min_value_use = self.patch_plot_min_value if min_value is None else min_value
-        if min_value_use is not None:
-            min_value_use = float(min_value_use)
-            if min_value_use > 0.0:
-                floor_candidates.append(min_value_use)
-
-        max_log10_span_use = (
-            self.patch_plot_max_log10_span if max_log10_span is None else max_log10_span
-        )
-        if max_log10_span_use is not None:
-            max_log10_span_use = float(max_log10_span_use)
-            if max_log10_span_use > 0.0:
-                floor_candidates.append(float(np.nanmax(pos)) * 10.0 ** (-max_log10_span_use))
-
-        if not floor_candidates:
-            return None
-
-        return max(floor_candidates)
-
-    def _patch_value_mask(self, values, min_value=None, max_log10_span=None):
-        """Return a finite positive mask filtered by the active patch plotting floor."""
-        vals = np.asarray(values, dtype=float)
-        mask = np.isfinite(vals) & (vals > 0.0)
-        floor = self._resolve_patch_plot_floor(vals, min_value=min_value, max_log10_span=max_log10_span)
-        if floor is not None:
-            mask &= vals >= floor
-        return mask, floor
-
-    def _overlay_plume_on_ax(
+    def plot_boxm_patch_slider(
         self,
-        ax,
         job_id,
-        time_idx,
-        flight_ids,
-        overlay_plume_centers,
-        overlay_trajectories,
-        plume_marker_size,
-        plume_marker_color,
-        plume_marker_edge_color,
-        plume_marker_alpha,
-        trajectory_color,
-        trajectory_linewidth,
-        trajectory_alpha,
+        species="NO",
+        mode="total",                    # "background", "coarse_delta", "patch_delta", "total", "total_with_patch"
+        level=None,                      # required for vertical_mode="single"
+        time_indices=None,
+        vertical_mode="single",          # "single", "column", "topk"
+        top_k=3,
+        level_tol=None,
+        use_nearest_level=True,
+        dynamic_colorbar=False,
+        cmap="viridis",
     ):
-        """Helper method to overlay plume data on a given axes."""
-        pl_ds = self.pp_gpat.pl_ds_dict.get(job_id)
+        """
+        Plot GPAT chemistry fields on a 2D lat-lon map with a time slider.
 
-        if pl_ds is None:
-            print(f"No pl_ds available for job_id={job_id}; skipping plume overlay.")
-            return
+        Data sources
+        ------------
+        boxm_out   = self.pp_gpat.boxm_out_dict[job_id]
+        pl_out     = self.pp_gpat.pl_out_dict[job_id]      # loaded but not used here yet
+        patch_table = self.pp_gpat.patch_table_dict[job_id]
 
-        if not {"time_idx", "flight_id", "longitude", "latitude"}.issubset(set(pl_ds.variables) | set(pl_ds.coords)):
-            print("pl_ds is missing required variables (time_idx, flight_id, longitude, latitude); skipping plume overlay.")
-            return
+        Modes
+        -----
+        background       : Y_bg_c
+        coarse_delta     : Y_del_c
+        patch_delta      : sparse patch_table Y_del_f accumulated to coarse map
+        total            : Y_bg_c + Y_del_c
+        total_with_patch : Y_bg_c + patch-accumulated Y_del_f
 
-        pl_t = pl_ds.where(pl_ds["time_idx"] == int(time_idx), drop=True)
+        Vertical modes
+        --------------
+        single : one level
+        column : sum over all levels
+        topk   : sum top-k levels per lat-lon column
 
-        if pl_t.sizes.get("seg_id", 0) == 0:
-            print(f"No plume segments found for time_idx={time_idx}; skipping plume overlay.")
-            return
-
-        if flight_ids is not None:
-            flight_ids_filter = np.atleast_1d(flight_ids)
-            pl_t = pl_t.where(np.isin(pl_t["flight_id"], flight_ids_filter), drop=True)
-
-        if pl_t.sizes.get("seg_id", 0) == 0:
-            print("No plume segments left after flight_id filtering; skipping plume overlay.")
-            return
-
-        unique_fids = np.unique(pl_t["flight_id"].values)
-        for fid in unique_fids:
-            pl_f = pl_t.where(pl_t["flight_id"] == fid, drop=True)
-
-            lon = np.asarray(pl_f["longitude"].values).ravel()
-            lat = np.asarray(pl_f["latitude"].values).ravel()
-
-            if "seg_id" in pl_f:
-                seg = np.asarray(pl_f["seg_id"].values).ravel()
-                order = np.argsort(seg)
-            else:
-                order = np.arange(lon.size)
-
-            lon = lon[order]
-            lat = lat[order]
-            valid = np.isfinite(lon) & np.isfinite(lat)
-            lon = lon[valid]
-            lat = lat[valid]
-
-            if lon.size == 0:
-                continue
-
-            if overlay_trajectories and lon.size > 1:
-                ax.plot(
-                    lon,
-                    lat,
-                    color=trajectory_color,
-                    linewidth=trajectory_linewidth,
-                    alpha=trajectory_alpha,
-                    zorder=4,
-                )
-
-            if overlay_plume_centers:
-                ax.scatter(
-                    lon,
-                    lat,
-                    s=plume_marker_size,
-                    c=plume_marker_color,
-                    edgecolors=plume_marker_edge_color,
-                    alpha=plume_marker_alpha,
-                    linewidths=0.5,
-                    zorder=5,
-                )
-
-    def plot_heatmap_slider(self, job_id, data_var, species="NO", level=None, time_indices=None):
+        Notes
+        -----
+        - boxm_out after unstack_boxm_out has dims:
+            (time, level_c, longitude_c, latitude_c, species_out)
+        - For plotting with pcolormesh(lon, lat, Z), Z must be shaped (lat, lon),
+        so fields are transposed before plotting.
+        """
+        import numpy as np
+        import pandas as pd
         import matplotlib.pyplot as plt
         from matplotlib.widgets import Slider
+
+        allowed_modes = {"background", "coarse_delta", "patch_delta", "total", "total_with_patch"}
+        if mode not in allowed_modes:
+            raise ValueError(f"mode must be one of {allowed_modes}, got {mode!r}")
+
+        allowed_vertical_modes = {"single", "column", "topk"}
+        if vertical_mode not in allowed_vertical_modes:
+            raise ValueError(f"vertical_mode must be one of {allowed_vertical_modes}, got {vertical_mode!r}")
+
+        if vertical_mode == "single" and level is None:
+            raise ValueError("level must be provided when vertical_mode='single'")
+
+        if vertical_mode == "topk" and int(top_k) < 1:
+            raise ValueError("top_k must be >= 1 when vertical_mode='topk'")
+
         boxm_out = self.pp_gpat.boxm_out_dict[job_id]
+        patch_table = self.pp_gpat.patch_table_dict[job_id]
+        pl_out = self.pp_gpat.pl_out_dict.get(job_id, None)  # not used yet, but kept for consistency
+
         all_time_indices = np.asarray(boxm_out["time_idx"].values, dtype=int)
         if time_indices is None:
             time_indices = all_time_indices
         else:
-            time_indices = np.asarray(time_indices, dtype=int)
-        vmin = float(boxm_out[data_var].sel(species_out=species).min().compute().item())
-        vmax = float(boxm_out[data_var].sel(species_out=species).max().compute().item())
+            time_indices = np.intersect1d(np.asarray(time_indices, dtype=int), all_time_indices)
 
-        fig, ax = plt.subplots()
-        plt.subplots_adjust(bottom=0.2)
-        slider_ax = fig.add_axes([0.15, 0.05, 0.7, 0.05])
-        slider = Slider(slider_ax, 'Time Index', int(time_indices.min()), int(time_indices.max()), valinit=int(time_indices[0]), valstep=1)
+        if time_indices.size == 0:
+            raise ValueError("No valid time_indices remain after intersecting with boxm_out time_idx.")
 
-        def plot_for_time(t_idx):
-            _t_sel = np.flatnonzero(time_indices == t_idx)
-            if _t_sel.size == 0:
-                return
-            _b_t = boxm_out.isel(time=_t_sel).squeeze("time")
-            # Slice by altitude level if provided
-            if level is not None:
-                if "level_c" in _b_t.dims:
-                    level_arr = np.asarray(_b_t["level_c"].values)
-                    level_mask = level_arr == int(level)
-                    if not np.any(level_mask):
-                        ax.set_title(f"No data for level={level}")
-                        return
-                    _b_t = _b_t.isel(level_c=level_mask)
-                elif "altitude_c" in _b_t.dims:
-                    alt_arr = np.asarray(_b_t["altitude_c"].values)
-                    alt_mask = np.isclose(alt_arr, float(level), atol=1.0)
-                    if not np.any(alt_mask):
-                        ax.set_title(f"No data for altitude={level}")
-                        return
-                    _b_t = _b_t.isel(altitude_c=alt_mask)
-            vals = np.asarray(_b_t[data_var].sel(species_out=species).values)
-            lat = np.asarray(_b_t["latitude_c"].values)
-            lon = np.asarray(_b_t["longitude_c"].values)
-            mesh = ax.pcolormesh(lon, lat, vals, shading="auto", cmap="viridis", vmin=vmin, vmax=vmax)
-            return mesh
+        print(f"Using time indices: {time_indices}")
 
-        mesh = plot_for_time(int(slider.val))
-        cbar = fig.colorbar(mesh, ax=ax)
-        ax.set_title(f"{data_var} {species}, time_idx={slider.val}, level={level}")
+        lon_bg = np.asarray(boxm_out["longitude_c"].values, dtype=float)
+        lat_bg = np.asarray(boxm_out["latitude_c"].values, dtype=float)
+        level_bg_all = np.asarray(boxm_out["level_c"].values, dtype=float)
 
-        def slider_update(val):
+        if "level_f" in patch_table:
+            patch_levels_all = np.unique(np.asarray(patch_table["level_f"].values, dtype=float))
+        else:
+            patch_levels_all = np.array([], dtype=float)
+
+        if vertical_mode == "single":
+            bg_level_req = float(level_bg_all[np.argmin(np.abs(level_bg_all - float(level)))])
+            print(f"Requested level={level}, using background level={bg_level_req}")
+
+            if patch_levels_all.size > 0:
+                patch_level_req = float(patch_levels_all[np.argmin(np.abs(patch_levels_all - float(level)))])
+                print(f"Requested level={level}, using patch level={patch_level_req}")
+            else:
+                patch_level_req = None
+        else:
+            bg_level_req = None
+            patch_level_req = None
+
+        def _snap_time_index(t_idx_req):
+            idx = int(np.argmin(np.abs(time_indices - int(t_idx_req))))
+            return int(time_indices[idx])
+
+        def _get_boxm_time_slice(t_idx_actual):
+            sel = np.flatnonzero(all_time_indices == t_idx_actual)
+            if sel.size == 0:
+                raise ValueError(f"No matching time_idx={t_idx_actual}")
+            return boxm_out.isel(time=sel).squeeze("time")
+
+        def _get_2d_from_coarse_da(da3):
+            """
+            da3 is expected after species selection, with dims either:
+            - (level_c, longitude_c, latitude_c)
+            - (longitude_c, latitude_c)
+            Returns array shaped (lat, lon) for plotting.
+            """
+            vals = np.asarray(da3.values, dtype=float)
+
+            if vertical_mode == "single":
+                level_arr = np.asarray(da3["level_c"].values, dtype=float)
+                idx = int(np.argmin(np.abs(level_arr - bg_level_req)))
+                vals2 = vals[idx, :, :]   # (lon, lat)
+
+            elif vertical_mode == "column":
+                if vals.ndim == 3:
+                    vals2 = np.nansum(vals, axis=0)   # (lon, lat)
+                else:
+                    vals2 = vals
+
+            elif vertical_mode == "topk":
+                if vals.ndim == 3:
+                    nz = vals.shape[0]
+                    k = min(int(top_k), nz)
+                    work = np.where(np.isfinite(vals), vals, -np.inf)
+                    part = np.partition(work, kth=nz - k, axis=0)
+                    topk_vals = part[-k:, :, :]
+                    topk_vals = np.where(np.isfinite(topk_vals), topk_vals, 0.0)
+                    vals2 = np.sum(topk_vals, axis=0)  # (lon, lat)
+                else:
+                    vals2 = vals
+            else:
+                raise ValueError(vertical_mode)
+
+            # convert (lon, lat) -> (lat, lon) for pcolormesh(lon, lat, Z)
+            return np.asarray(vals2, dtype=float).T
+
+        def _nearest_index_1d(arr, values):
+            arr = np.asarray(arr, dtype=float)
+            values = np.asarray(values, dtype=float)
+            return np.abs(arr[None, :] - values[:, None]).argmin(axis=1)
+
+        def _patch_rows_dataframe(t_idx_actual):
+            mask_t = np.asarray(patch_table["time_idx"].values, dtype=int) == int(t_idx_actual)
+            if not np.any(mask_t):
+                return pd.DataFrame(columns=["latitude_f", "longitude_f", "level_f", "y_del"])
+
+            ds_p = patch_table.isel(row=np.flatnonzero(mask_t))
+            y_del = np.asarray(ds_p["Y_del_f"].sel(species_out=species).values, dtype=float)
+            lat_f = np.asarray(ds_p["latitude_f"].values, dtype=float)
+            lon_f = np.asarray(ds_p["longitude_f"].values, dtype=float)
+            lev_f = np.asarray(ds_p["level_f"].values, dtype=float) if "level_f" in ds_p else np.full_like(lat_f, np.nan)
+
+            valid = np.isfinite(y_del) & np.isfinite(lat_f) & np.isfinite(lon_f)
+            if not np.any(valid):
+                return pd.DataFrame(columns=["latitude_f", "longitude_f", "level_f", "y_del"])
+
+            return pd.DataFrame({
+                "latitude_f": lat_f[valid],
+                "longitude_f": lon_f[valid],
+                "level_f": lev_f[valid],
+                "y_del": y_del[valid],
+            })
+
+        def _build_patch_delta_2d(t_idx_actual):
+            """
+            Build a 2D field on the coarse lon/lat map from sparse patch_table rows.
+            Returned shape is (lat, lon).
+            """
+            df = _patch_rows_dataframe(t_idx_actual)
+            if df.empty:
+                return np.zeros((lat_bg.size, lon_bg.size), dtype=float)
+
+            if vertical_mode == "single":
+                levs = df["level_f"].values
+                if np.all(~np.isfinite(levs)) or patch_level_req is None:
+                    return np.zeros((lat_bg.size, lon_bg.size), dtype=float)
+
+                if use_nearest_level:
+                    unique_levs = np.unique(levs[np.isfinite(levs)])
+                    if unique_levs.size == 0:
+                        return np.zeros((lat_bg.size, lon_bg.size), dtype=float)
+                    lev_use = float(unique_levs[np.argmin(np.abs(unique_levs - patch_level_req))])
+                    mask = np.isclose(levs, lev_use)
+                else:
+                    if level_tol is None:
+                        mask = np.isclose(levs, patch_level_req)
+                    else:
+                        mask = np.abs(levs - patch_level_req) <= float(level_tol)
+
+                df = df.loc[mask]
+                if df.empty:
+                    return np.zeros((lat_bg.size, lon_bg.size), dtype=float)
+
+                # grid stored for plotting as (lat, lon)
+                delta = np.zeros((lat_bg.size, lon_bg.size), dtype=float)
+                i_lat = _nearest_index_1d(lat_bg, df["latitude_f"].values)
+                i_lon = _nearest_index_1d(lon_bg, df["longitude_f"].values)
+
+                for ii, jj, vv in zip(i_lat, i_lon, df["y_del"].values):
+                    delta[ii, jj] += vv
+
+                return delta
+
+            elif vertical_mode == "column":
+                delta = np.zeros((lat_bg.size, lon_bg.size), dtype=float)
+                i_lat = _nearest_index_1d(lat_bg, df["latitude_f"].values)
+                i_lon = _nearest_index_1d(lon_bg, df["longitude_f"].values)
+
+                for ii, jj, vv in zip(i_lat, i_lon, df["y_del"].values):
+                    delta[ii, jj] += vv
+
+                return delta
+
+            elif vertical_mode == "topk":
+                df = df[np.isfinite(df["level_f"].values)]
+                if df.empty:
+                    return np.zeros((lat_bg.size, lon_bg.size), dtype=float)
+
+                i_lat = _nearest_index_1d(lat_bg, df["latitude_f"].values)
+                i_lon = _nearest_index_1d(lon_bg, df["longitude_f"].values)
+                levs = df["level_f"].values
+                vals = df["y_del"].values
+
+                unique_levs = np.unique(levs)
+                level_to_idx = {lev: i for i, lev in enumerate(unique_levs)}
+                nz = len(unique_levs)
+
+                # shape (z, lat, lon)
+                delta_3d = np.zeros((nz, lat_bg.size, lon_bg.size), dtype=float)
+                for lev, ii, jj, vv in zip(levs, i_lat, i_lon, vals):
+                    kk = level_to_idx[lev]
+                    delta_3d[kk, ii, jj] += vv
+
+                k = min(int(top_k), nz)
+                work = np.where(np.isfinite(delta_3d), delta_3d, -np.inf)
+                part = np.partition(work, kth=nz - k, axis=0)
+                topk_vals = part[-k:, :, :]
+                topk_vals = np.where(np.isfinite(topk_vals), topk_vals, 0.0)
+                return np.sum(topk_vals, axis=0)
+
+            else:
+                raise ValueError(vertical_mode)
+
+        def _build_fields(t_idx_actual):
+            ds_t = _get_boxm_time_slice(t_idx_actual)
+
+            bg_2d = _get_2d_from_coarse_da(ds_t["Y_bg_c"].sel(species_out=species))
+            coarse_del_2d = _get_2d_from_coarse_da(ds_t["Y_del_c"].sel(species_out=species))
+            patch_del_2d = _build_patch_delta_2d(t_idx_actual)
+
+            if mode == "background":
+                plot_2d = bg_2d
+            elif mode == "coarse_delta":
+                plot_2d = coarse_del_2d
+            elif mode == "patch_delta":
+                plot_2d = patch_del_2d
+            elif mode == "total":
+                plot_2d = bg_2d + coarse_del_2d
+            elif mode == "total_with_patch":
+                plot_2d = bg_2d + patch_del_2d
+            else:
+                raise ValueError(mode)
+
+            return plot_2d, bg_2d, coarse_del_2d, patch_del_2d
+
+        if dynamic_colorbar:
+            vmin = vmax = None
+        else:
+            mins = []
+            maxs = []
+            print("Precomputing fixed colour scale...")
+            for t_idx in time_indices:
+                vals, _, _, _ = _build_fields(int(t_idx))
+                finite = np.isfinite(vals)
+                if np.any(finite):
+                    mins.append(np.nanmin(vals))
+                    maxs.append(np.nanmax(vals))
+            if not mins:
+                raise ValueError("No finite values found across selected frames.")
+            vmin = float(np.min(mins))
+            vmax = float(np.max(maxs))
+            print(f"Fixed colour scale: vmin={vmin}, vmax={vmax}")
+
+        fig, ax = plt.subplots(figsize=(8, 6))
+        plt.subplots_adjust(bottom=0.20)
+
+        slider_ax = fig.add_axes([0.15, 0.06, 0.70, 0.05])
+        slider = Slider(
+            slider_ax,
+            "Time Index",
+            int(time_indices.min()),
+            int(time_indices.max()),
+            valinit=int(time_indices[0]),
+            valstep=1,
+        )
+
+        cbar = None
+
+        def _vertical_label():
+            if vertical_mode == "single":
+                return f"single level={level}"
+            if vertical_mode == "column":
+                return "full column"
+            if vertical_mode == "topk":
+                return f"top-{top_k} levels"
+            return vertical_mode
+
+        def draw_frame(t_idx_req):
+            nonlocal cbar
             ax.clear()
-            mesh = plot_for_time(int(val))
-            fig.colorbar(mesh, ax=ax)
-            ax.set_title(f"{data_var} {species}, time_idx={val}, level={level}")
+
+            t_idx_actual = _snap_time_index(t_idx_req)
+            vals, bg_2d, coarse_del_2d, patch_del_2d = _build_fields(t_idx_actual)
+
+            finite = np.isfinite(vals)
+            if not np.any(finite):
+                ax.set_title(f"No valid data for time_idx={t_idx_actual}")
+                fig.canvas.draw_idle()
+                return
+
+            if dynamic_colorbar:
+                vmin_loc = float(np.nanmin(vals))
+                vmax_loc = float(np.nanmax(vals))
+            else:
+                vmin_loc = vmin
+                vmax_loc = vmax
+
+            artist = ax.pcolormesh(
+                lon_bg,
+                lat_bg,
+                vals,
+                shading="auto",
+                cmap=cmap,
+                vmin=vmin_loc,
+                vmax=vmax_loc,
+            )
+
+            if cbar is not None:
+                cbar.remove()
+            cbar = fig.colorbar(artist, ax=ax)
+
+            ax.set_xlabel("Longitude")
+            ax.set_ylabel("Latitude")
+            ax.set_title(
+                f"{mode.upper()} | {species} | time_idx={t_idx_actual} | {_vertical_label()}\n"
+                f"plot min/max={np.nanmin(vals):.3e}/{np.nanmax(vals):.3e} | "
+                f"bg min/max={np.nanmin(bg_2d):.3e}/{np.nanmax(bg_2d):.3e} | "
+                f"coarse Δ min/max={np.nanmin(coarse_del_2d):.3e}/{np.nanmax(coarse_del_2d):.3e} | "
+                f"patch Δ sum={np.nansum(patch_del_2d):.3e}"
+            )
+
+            print(
+                f"[FRAME] mode={mode}, species={species}, time_idx={t_idx_actual}, vertical={_vertical_label()} | "
+                f"plot min/max={np.nanmin(vals):.6e}/{np.nanmax(vals):.6e} | "
+                f"bg min/max={np.nanmin(bg_2d):.6e}/{np.nanmax(bg_2d):.6e} | "
+                f"coarse delta min/max={np.nanmin(coarse_del_2d):.6e}/{np.nanmax(coarse_del_2d):.6e} | "
+                f"patch delta sum={np.nansum(patch_del_2d):.6e}"
+            )
+
             fig.canvas.draw_idle()
 
-        slider.on_changed(slider_update)
-        plt.show()
-
-    def plot_patch_heatmap_2d(
-        self,
-        time_idx,
-        level=None,
-        species="NO",
-        shared_color_scale=True,
-        overlay_plume_centers=False,
-        overlay_trajectories=False,
-        flight_ids=None,
-        plume_marker_size=20,
-        plume_marker_color="white",
-        plume_marker_edge_color="black",
-        plume_marker_alpha=0.9,
-        trajectory_color="black",
-        trajectory_linewidth=1.2,
-        trajectory_alpha=0.8,
-        subplot_ncols=4,
-        subplot_figsize=None,
-        _ax=None,
-        _show=True,
-    ):
-        if job_id is None:
-            if not self.pp_gpat.job_ids:
-                raise ValueError("No GPAT jobs are loaded.")
-            job_id = self.pp_gpat.job_ids[0]
-
-        # Determine which data variables to plot (default to all available)
-        boxm_out = self.pp_gpat.boxm_out_dict[job_id]
-        patch_table = self.pp_gpat.patch_table_dict[job_id]
-        available_vars = ({"Y_bg_c", "Y_del_c"}.intersection(set(boxm_out.data_vars))
-                          | {"Y_del_f"}.intersection(set(patch_table.data_vars)))
-        
-        if data_vars is None:
-            data_vars_to_plot = sorted(available_vars)  # Plot all available in sorted order
-        else:
-            data_vars_to_plot = [v for v in np.atleast_1d(data_vars) if v in available_vars]
-            if not data_vars_to_plot:
-                raise ValueError(
-                    f"No valid data_vars specified. Available: {sorted(available_vars)}. "
-                    f"Requested: {data_vars}"
-                )
-
-        if not np.isscalar(time_idx):
-            time_indices = [int(t) for t in time_idx]
-            if len(time_indices) == 0:
-                raise ValueError("time_idx iterable is empty.")
-
-            color_scale_use = color_scale
-            if shared_color_scale and color_scale is None:
-                # Build a shared scale from timestep-local rows to avoid loading all rows at once.
-                time_rows_all = np.asarray(patch_table["time_idx"].values, dtype=int)
-                all_vals = []
-                for t_idx in time_indices:
-                    row_sel = np.flatnonzero(time_rows_all == int(t_idx))
-                    if row_sel.size == 0:
-                        continue
-                    for var_name in data_vars_to_plot:
-                        if var_name in set(patch_table.data_vars):
-                            vals_t = np.asarray(
-                                patch_table[var_name].isel(row=row_sel).sel(species_out=species).values
-                            )
-                        else:
-                            _t_idx_arr = np.asarray(boxm_out["time_idx"].values, dtype=int)
-                            _bt_sel = np.flatnonzero(_t_idx_arr == int(t_idx))
-                            if _bt_sel.size == 0:
-                                continue
-                            _b_t = boxm_out.isel(time=_bt_sel).squeeze("time")
-                            if "cell" in _b_t.dims:
-                                vals_t = np.asarray(_b_t[var_name].sel(species_out=species).values)
-                            else:
-                                vals_t = np.asarray(
-                                    _b_t[var_name].sel(species_out=species).values
-                                ).ravel()
-                        vals_t = vals_t[self._patch_value_mask(vals_t)[0]]
-                        if vals_t.size > 0:
-                            all_vals.append(vals_t)
-
-                if all_vals:
-                    all_vals_flat = np.concatenate([v.flatten() for v in all_vals])
-                    finite_vals = all_vals_flat[np.isfinite(all_vals_flat)]
-                    if finite_vals.size > 0:
-                        vmax = float(np.nanmax(finite_vals))
-                        color_scale_use = (0.0, vmax)
-
-            ncols = max(1, min(int(subplot_ncols), len(time_indices) * len(data_vars_to_plot)))
-            nrows = int(np.ceil((len(time_indices) * len(data_vars_to_plot)) / ncols))
-
-            if subplot_figsize is None:
-                subplot_figsize = (5 * ncols, 4 * nrows)
-
-            fig, axes = plt.subplots(nrows, ncols, figsize=subplot_figsize, squeeze=False)
-            da_by_time_var = {}
-
-            idx = 0
-            for t_idx in time_indices:
-                for var_name in data_vars_to_plot:
-                    ax_i = axes.flat[idx]
-                    try:
-                        result = self.plot_patch_heatmap_2d(
-                            t_idx,
-                            level=level,
-                            job_id=job_id,
-                            species=species,
-                            data_vars=[var_name],
-                            shared_color_scale=shared_color_scale,
-                            color_scale=color_scale_use,
-                            overlay_plume_centers=overlay_plume_centers,
-                            overlay_trajectories=overlay_trajectories,
-                            flight_ids=flight_ids,
-                            plume_marker_size=plume_marker_size,
-                            plume_marker_color=plume_marker_color,
-                            plume_marker_edge_color=plume_marker_edge_color,
-                            plume_marker_alpha=plume_marker_alpha,
-                            trajectory_color=trajectory_color,
-                            trajectory_linewidth=trajectory_linewidth,
-                            trajectory_alpha=trajectory_alpha,
-                            subplot_ncols=subplot_ncols,
-                            subplot_figsize=subplot_figsize,
-                            _ax=ax_i,
-                            _show=False,
-                        )
-                        if (t_idx, var_name) not in da_by_time_var:
-                            da_by_time_var[(t_idx, var_name)] = result
-                    except ValueError as exc:
-                        ax_i.set_title(f"time_idx={t_idx}, {var_name}\n{exc}")
-                        ax_i.set_axis_off()
-                    idx += 1
-
-            for j in range(idx, nrows * ncols):
-                axes.flat[j].set_axis_off()
-
-            fig.tight_layout()
-            if _show:
-                plt.show()
-
-            return da_by_time_var
-
-        # Single time_idx, potentially multiple data_vars
-        patch_table = self.pp_gpat.patch_table_dict[job_id]
-        boxm_ds = self.pp_gpat.boxm_ds_dict[job_id]
-        params = self.pp_gpat.params_dict.get(job_id, {})
-        sim_raw = params.get("sim_params", params)
-
-        def _extract_sim_value(sim_obj, key):
-            if is_dataclass(sim_obj):
-                sim_obj = asdict(sim_obj)
-
-            if isinstance(sim_obj, dict):
-                if key in sim_obj:
-                    return float(sim_obj[key])
-                if "sim_params" in sim_obj:
-                    return _extract_sim_value(sim_obj["sim_params"], key)
-
-            if isinstance(sim_obj, str):
-                try:
-                    obj = json.loads(sim_obj)
-                    if isinstance(obj, dict) and key in obj:
-                        return float(obj[key])
-                except Exception:
-                    pass
-
-                try:
-                    obj = ast.literal_eval(sim_obj)
-                    if isinstance(obj, dict) and key in obj:
-                        return float(obj[key])
-                except Exception:
-                    pass
-
-                match = re.search(
-                    rf"{key}\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)",
-                    sim_obj,
-                )
-                if match:
-                    return float(match.group(1))
-
-            raise ValueError(f"Could not extract '{key}' from sim_params")
-
-        def _extract_sim_bounds(sim_obj, key):
-            if is_dataclass(sim_obj):
-                sim_obj = asdict(sim_obj)
-
-            if isinstance(sim_obj, dict):
-                if key in sim_obj:
-                    bounds = sim_obj[key]
-                    if len(bounds) != 2:
-                        raise ValueError(f"Expected '{key}' to have length 2.")
-                    return float(bounds[0]), float(bounds[1])
-                if "sim_params" in sim_obj:
-                    return _extract_sim_bounds(sim_obj["sim_params"], key)
-
-            if isinstance(sim_obj, str):
-                try:
-                    obj = json.loads(sim_obj)
-                    if isinstance(obj, dict) and key in obj:
-                        bounds = obj[key]
-                        return float(bounds[0]), float(bounds[1])
-                except Exception:
-                    pass
-
-                try:
-                    obj = ast.literal_eval(sim_obj)
-                    if isinstance(obj, dict) and key in obj:
-                        bounds = obj[key]
-                        return float(bounds[0]), float(bounds[1])
-                except Exception:
-                    pass
-
-                match = re.search(
-                    rf"{key}\s*=\s*\(([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?),\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\)",
-                    sim_obj,
-                )
-                if match:
-                    return float(match.group(1)), float(match.group(2))
-
-            raise ValueError(f"Could not extract '{key}' from sim_params")
-
-        def _filter_patch_rows_by_altitude(patch_subset, level_value):
-            altitude_all = np.asarray(patch_subset["altitude_f"].values, dtype=float)
-            altitude_valid = altitude_all[np.isfinite(altitude_all)]
-            if altitude_valid.size == 0:
-                raise ValueError("patch_table altitude_f contains no finite values.")
-
-            altitude_levels = np.unique(altitude_valid)
-            altitude_levels.sort()
-            nearest_altitude = float(
-                altitude_levels[np.argmin(np.abs(altitude_levels - float(level_value)))]
-            )
-
-            level_tol = 100.0
-            if altitude_levels.size > 1:
-                altitude_diffs = np.diff(altitude_levels)
-                altitude_diffs = altitude_diffs[altitude_diffs > 0.0]
-                if altitude_diffs.size > 0:
-                    level_tol = max(level_tol, 0.5 * float(np.nanmin(altitude_diffs)))
-            if vres_sim_f > 0.0:
-                level_tol = max(level_tol, 0.5 * float(vres_sim_f))
-
-            level_delta = abs(nearest_altitude - float(level_value))
-            if level_delta > level_tol + 1.0e-9:
-                raise ValueError(
-                    f"No patches found near level={level_value}. "
-                    f"Nearest fine altitude is {nearest_altitude:.1f} m "
-                    f"(delta {level_delta:.1f} m, tolerance ±{level_tol:.1f} m). "
-                    f"Available altitude range: {np.nanmin(altitude_valid):.1f} to {np.nanmax(altitude_valid):.1f} m."
-                )
-
-            altitude_mask = np.isfinite(altitude_all) & np.isclose(
-                altitude_all,
-                nearest_altitude,
-                rtol=0.0,
-                atol=max(1.0e-6, level_tol * 1.0e-6),
-            )
-            if not np.any(altitude_mask):
-                raise ValueError(
-                    f"Resolved level={level_value} to fine altitude {nearest_altitude:.1f} m, "
-                    "but no patch_table rows matched that slice."
-                )
-
-            return patch_subset.isel(row=altitude_mask)
-
-        hres_sim_c = _extract_sim_value(sim_raw, "hres_sim_c")
-        hres_sim_f = _extract_sim_value(sim_raw, "hres_sim_f")
-        vres_sim_c = _extract_sim_value(sim_raw, "vres_sim_c")
-        vres_sim_f = _extract_sim_value(sim_raw, "vres_sim_f")
-
-        time_rows = np.asarray(patch_table["time_idx"].values, dtype=int)
-        row_sel = np.flatnonzero(time_rows == int(time_idx))
-        if row_sel.size == 0:
-            raise ValueError(
-                f"No patch_table rows found for time_idx={time_idx}."
-            )
-
-        # Slice to the requested timestep first to avoid loading all rows from disk.
-        patch_t = patch_table.isel(row=row_sel)
-
-        # Filter by level if specified
-        if level is not None:
-            if "altitude_f" in patch_t.variables or "altitude_f" in patch_t.coords:
-                patch_t = _filter_patch_rows_by_altitude(patch_t, level)
-            elif "level_f" in patch_t.variables or "level_f" in patch_t.coords:
-                level_data = np.asarray(patch_t["level_f"].values, dtype=int)
-                level_mask = level_data == int(level)
-                if not np.any(level_mask):
-                    raise ValueError(
-                        f"No patches found at level={level}. "
-                        f"Available levels: {np.unique(level_data)}"
-                    )
-                patch_t = patch_t.isel(row=level_mask)
-            else:
-                raise ValueError(
-                    "Cannot filter by level: patch_t has neither 'altitude_f' nor 'level_f' coordinates."
-                )
-
-        def _get_var_data(var_name):
-            """Return (vals_1d, lat_1d, lon_1d, hres_deg) dispatching to the correct dataset."""
-            if var_name in set(patch_t.data_vars):
-                vals = np.asarray(patch_t[var_name].sel(species_out=species).values)
-                if {"latitude_f", "longitude_f"}.issubset(set(patch_t.variables) | set(patch_t.coords)):
-                    lat = np.asarray(patch_t["latitude_f"].values)
-                    lon = np.asarray(patch_t["longitude_f"].values)
-                else:
-                    _nx_f = max(1, int(np.rint(hres_sim_c / hres_sim_f)))
-                    _hres_f_deg = hres_sim_c / _nx_f
-                    _rc_c = np.asarray(patch_t["row_cell_c"].values, dtype=int)
-                    _rc_f = np.asarray(patch_t["row_cell_f"].values, dtype=int)
-                    _rem = (_rc_f - 1) % (_nx_f * _nx_f)
-                    _iy = _rem // _nx_f + 1
-                    _ix = _rem % _nx_f + 1
-                    _lat_c = boxm_ds["latitude_c"].values[_rc_c - 1]
-                    _lon_c = boxm_ds["longitude_c"].values[_rc_c - 1]
-                    lat = _lat_c - 0.5 * hres_sim_c + (_iy - 0.5) * _hres_f_deg
-                    lon = _lon_c - 0.5 * hres_sim_c + (_ix - 0.5) * _hres_f_deg
-                return vals, lat, lon, hres_sim_f
-            else:
-                # Coarse-grid variable (Y_bg_c / Y_del_c) from boxm_out
-                _t_idx_arr = np.asarray(boxm_out["time_idx"].values, dtype=int)
-                _t_sel = np.flatnonzero(_t_idx_arr == int(time_idx))
-                if _t_sel.size == 0:
-                    raise ValueError(f"No boxm_out data found for time_idx={time_idx}.")
-                _b_t = boxm_out.isel(time=_t_sel).squeeze("time")
-                if "cell" in _b_t.dims:
-                    # Stacked form: dims ("cell", "species_out")
-                    vals = np.asarray(_b_t[var_name].sel(species_out=species).values)
-                    lat = np.asarray(_b_t["latitude_c"].values)
-                    lon = np.asarray(_b_t["longitude_c"].values)
-                else:
-                    # Unstacked form: flatten spatial dims
-                    _b_s = _b_t[var_name].sel(species_out=species).stack(
-                        cell=["level_c", "longitude_c", "latitude_c"]
-                    )
-                    vals = np.asarray(_b_s.values)
-                    lat = np.asarray(_b_s["latitude_c"].values)
-                    lon = np.asarray(_b_s["longitude_c"].values)
-                return vals, lat, lon, hres_sim_c
-
-        # For multiple data_vars, create a subplot grid
-        if len(data_vars_to_plot) > 1:
-            ncols = min(2, len(data_vars_to_plot))
-            nrows = int(np.ceil(len(data_vars_to_plot) / ncols))
-            
-            if subplot_figsize is None:
-                subplot_figsize = (6 * ncols, 5 * nrows)
-            
-            fig, axes_grid = plt.subplots(nrows, ncols, figsize=subplot_figsize, squeeze=False)
-            da_results = {}
-            
-            for idx, var_name in enumerate(data_vars_to_plot):
-                ax = axes_grid.flat[idx]
-                
-                # Extract and process data for this variable
-                vals, _lat_all_v, _lon_all_v, _hres_v = _get_var_data(var_name)
-                mask, plot_floor = self._patch_value_mask(vals)
-                
-                if not np.any(mask):
-                    ax.set_title(f"{var_name}: No data above threshold")
-                    ax.set_axis_off()
-                    continue
-                
-                lat_plot = _lat_all_v[mask]
-                lon_plot = _lon_all_v[mask]
-                val_plot = vals[mask]
-                
-                try:
-                    lat_min, lat_max = _extract_sim_bounds(sim_raw, "lat_bounds")
-                    lon_min, lon_max = _extract_sim_bounds(sim_raw, "lon_bounds")
-                except ValueError:
-                    lat_min = float(np.nanmin(lat_plot) - 0.5 * _hres_v)
-                    lat_max = float(np.nanmax(lat_plot) + 0.5 * _hres_v)
-                    lon_min = float(np.nanmin(lon_plot) - 0.5 * _hres_v)
-                    lon_max = float(np.nanmax(lon_plot) + 0.5 * _hres_v)
-                
-                n_lat = max(1, int(np.rint((lat_max - lat_min) / _hres_v)))
-                n_lon = max(1, int(np.rint((lon_max - lon_min) / _hres_v)))
-                lat_centers = lat_min + (np.arange(n_lat) + 0.5) * _hres_v
-                lon_centers = lon_min + (np.arange(n_lon) + 0.5) * _hres_v
-                
-                j = np.floor((lat_plot - lat_min) / _hres_v).astype(int)
-                i = np.floor((lon_plot - lon_min) / _hres_v).astype(int)
-                
-                inside = (j >= 0) & (j < lat_centers.size) & (i >= 0) & (i < lon_centers.size)
-                if not np.any(inside):
-                    ax.set_title(f"{var_name}: No cells in bounds")
-                    ax.set_axis_off()
-                    continue
-                
-                grid = np.zeros((lat_centers.size, lon_centers.size), dtype=float)
-                np.add.at(grid, (j[inside], i[inside]), val_plot[inside])
-                
-                da_plot = xr.DataArray(
-                    grid,
-                    coords={"latitude_f": lat_centers, "longitude_f": lon_centers},
-                    dims=("latitude_f", "longitude_f"),
-                    name=f"{var_name}_{species}",
-                )
-                
-                lat_edges = lat_min + np.arange(n_lat + 1) * _hres_v
-                lon_edges = lon_min + np.arange(n_lon + 1) * _hres_v
-                
-                if color_scale is None:
-                    vmin, vmax = None, None
-                else:
-                    vmin, vmax = float(color_scale[0]), float(color_scale[1])
-                
-                mesh = ax.pcolormesh(
-                    lon_edges,
-                    lat_edges,
-                    da_plot.values,
-                    shading="auto",
-                    cmap="viridis",
-                    vmin=vmin,
-                    vmax=vmax,
-                )
-                cbar_label = f"{species} {var_name}"
-                if plot_floor is not None:
-                    cbar_label += f"\n(filtered: >= {plot_floor:.1e} mol/m^3)"
-                fig.colorbar(mesh, ax=ax, label=cbar_label)
-                
-                # Overlay trajectories if requested
-                if overlay_trajectories or overlay_plume_centers:
-                    self._overlay_plume_on_ax(
-                        ax,
-                        job_id,
-                        time_idx,
-                        flight_ids,
-                        overlay_plume_centers,
-                        overlay_trajectories,
-                        plume_marker_size,
-                        plume_marker_color,
-                        plume_marker_edge_color,
-                        plume_marker_alpha,
-                        trajectory_color,
-                        trajectory_linewidth,
-                        trajectory_alpha,
-                    )
-                
-                ax.set_xlabel("Longitude")
-                ax.set_ylabel("Latitude")
-                ax.set_title(f"{var_name}: {species}, time_idx={time_idx}")
-                
-                da_results[var_name] = da_plot
-            
-            # Hide unused subplots
-            for j in range(len(data_vars_to_plot), nrows * ncols):
-                axes_grid.flat[j].set_axis_off()
-            
-            fig.tight_layout()
-            if _show:
-                plt.show()
-            
-            return da_results
-        
-        # Single data variable case (original logic)
-        var_name = data_vars_to_plot[0]
-        vals, _lat_all_v, _lon_all_v, hres_v = _get_var_data(var_name)
-        mask, plot_floor = self._patch_value_mask(vals)
-
-        if not np.any(mask):
-            raise ValueError(
-                f"No {var_name} values found for species={species} at time_idx={time_idx} above the active plotting threshold."
-            )
-
-        lat_plot = _lat_all_v[mask]
-        lon_plot = _lon_all_v[mask]
-        val_plot = vals[mask]
-
-        try:
-            lat_min, lat_max = _extract_sim_bounds(sim_raw, "lat_bounds")
-            lon_min, lon_max = _extract_sim_bounds(sim_raw, "lon_bounds")
-        except ValueError:
-            lat_min = float(np.nanmin(lat_plot) - 0.5 * hres_v)
-            lat_max = float(np.nanmax(lat_plot) + 0.5 * hres_v)
-            lon_min = float(np.nanmin(lon_plot) - 0.5 * hres_v)
-            lon_max = float(np.nanmax(lon_plot) + 0.5 * hres_v)
-
-        n_lat = max(1, int(np.rint((lat_max - lat_min) / hres_v)))
-        n_lon = max(1, int(np.rint((lon_max - lon_min) / hres_v)))
-        lat_centers = lat_min + (np.arange(n_lat) + 0.5) * hres_v
-        lon_centers = lon_min + (np.arange(n_lon) + 0.5) * hres_v
-
-        j = np.floor((lat_plot - lat_min) / hres_v).astype(int)
-        i = np.floor((lon_plot - lon_min) / hres_v).astype(int)
-
-        inside = (j >= 0) & (j < lat_centers.size) & (i >= 0) & (i < lon_centers.size)
-        if not np.any(inside):
-            raise ValueError("No patch cells fall within the grid plotting bounds.")
-
-        grid = np.zeros((lat_centers.size, lon_centers.size), dtype=float)
-        np.add.at(grid, (j[inside], i[inside]), val_plot[inside])
-
-        da_plot = xr.DataArray(
-            grid,
-            coords={"latitude_f": lat_centers, "longitude_f": lon_centers},
-            dims=("latitude_f", "longitude_f"),
-            name=f"{var_name}_{species}",
-        )
-
-        lat_edges = lat_min + np.arange(n_lat + 1) * hres_v
-        lon_edges = lon_min + np.arange(n_lon + 1) * hres_v
-
-        if _ax is None:
-            fig, ax = plt.subplots(figsize=(8, 6))
-        else:
-            ax = _ax
-            fig = ax.figure
-
-        # Always use global color_scale_use if available
-        if color_scale is not None:
-            vmin, vmax = float(color_scale[0]), float(color_scale[1])
-        elif 'color_scale_use' in locals() and color_scale_use is not None:
-            vmin, vmax = float(color_scale_use[0]), float(color_scale_use[1])
-        else:
-            vmin, vmax = None, None
-
-        mesh = ax.pcolormesh(
-            lon_edges,
-            lat_edges,
-            da_plot.values,
-            shading="auto",
-            cmap="viridis",
-            vmin=color_scale[0],
-            vmax=color_scale[1],
-        )
-        cbar_label = f"{species} {var_name}"
-        if plot_floor is not None:
-            cbar_label += f"\n(filtered: >= {plot_floor:.1e} mol/m^3)"
-        fig.colorbar(mesh, ax=ax, label=cbar_label)
-
-        if overlay_plume_centers or overlay_trajectories:
-            self._overlay_plume_on_ax(
-                ax,
-                job_id,
-                time_idx,
-                flight_ids,
-                overlay_plume_centers,
-                overlay_trajectories,
-                plume_marker_size,
-                plume_marker_color,
-                plume_marker_edge_color,
-                plume_marker_alpha,
-                trajectory_color,
-                trajectory_linewidth,
-                trajectory_alpha,
-            )
-
-        ax.set_xlabel("Longitude")
-        ax.set_ylabel("Latitude")
-        ax.set_title(f"Patch plot: {var_name} {species}, time_idx={time_idx}")
-        if _show and _ax is None:
-            fig.tight_layout()
-            # plt.show()
-
-        return da_plot
-
-    def plot_patch_heatmap_2d_with_slider(self, time_indices, level=None, job_id=None, species="NO", color_scale=(None, None), data_vars="[Y_bg_c]", **kwargs):
-        """Interactive time slider for 2D heatmap plots using matplotlib widgets (for scripts, not notebooks)."""
-        import matplotlib.pyplot as plt
-        from matplotlib.widgets import Slider
-        import numpy as np
-
-        if job_id is None:
-            if not self.pp_gpat.job_ids:
-                raise ValueError("No GPAT jobs are loaded.")
-            job_id = self.pp_gpat.job_ids[0]
-
-        if data_vars is None:
-            boxm_out = self.pp_gpat.boxm_out_dict[job_id]
-            patch_table = self.pp_gpat.patch_table_dict[job_id]
-            available_vars = ({"Y_bg_c", "Y_del_c"}.intersection(set(boxm_out.data_vars)) | {"Y_del_f"}.intersection(set(patch_table.data_vars)))
-            data_vars_to_plot = sorted(available_vars)
-        else:
-            data_vars_to_plot = [v for v in np.atleast_1d(data_vars)]
-
-        # Only support single data_var for slider mode
-        if len(data_vars_to_plot) != 1:
-            raise ValueError("Slider mode only supports a single data_var.")
-        data_var = data_vars_to_plot[0]
-
-        fig, ax = plt.subplots()
-        plt.subplots_adjust(bottom=0.2)
-
-        slider_ax = fig.add_axes([0.15, 0.05, 0.7, 0.05])
-        slider = Slider(slider_ax, 'Time Index', int(min(time_indices)), int(max(time_indices)), valinit=int(time_indices[0]), valstep=1)
-        
-        # Initial plot
-        da_plot = self.plot_patch_heatmap_2d(
-            time_idx=int(slider.val),
-            level=level,
-            job_id=job_id,
-            species=species,
-            data_vars=[data_var],
-            _ax=None,
-            _show=False,
-            color_scale=color_scale,
-            **kwargs
-        )
-        lat_edges = da_plot["latitude_f"].values
-        lon_edges = da_plot["longitude_f"].values
-        mesh = ax.pcolormesh(
-            lon_edges,
-            lat_edges,
-            da_plot.values,
-            shading="auto",
-            cmap="viridis",
-            vmin=color_scale[0],
-            vmax=color_scale[1]
-        )
-        cbar = fig.colorbar(mesh, ax=ax, label=f"{species} {data_var}")
-        ax.set_xlabel("Longitude")
-        ax.set_ylabel("Latitude")
-        ax.set_title(f"Patch plot: {data_var} {species}, time_idx={slider.val}")
-
-
         def slider_update(val):
-            try:
-                da_plot = self.plot_patch_heatmap_2d(
-                    time_idx=int(val),
-                    level=level,
-                    job_id=job_id,
-                    species=species,
-                    data_vars=[data_var],
-                    _ax=None,
-                    _show=False,
-                    color_scale=color_scale,
-                    **kwargs
-                )
-                # Update mesh data (pcolormesh expects flattened array)
-                mesh.set_array(da_plot.values.ravel())
-                mesh.set_clim(np.nanmin(da_plot.values), np.nanmax(da_plot.values))
-                cbar.set_clim(np.nanmin(da_plot.values), np.nanmax(da_plot.values))
-                ax.set_title(f"Patch plot: {data_var} {species}, time_idx={val}")
-                fig.canvas.draw_idle()
-            except Exception as e:
-                ax.set_title(f"time_idx={val}\n{e}")
-                fig.canvas.draw_idle()
+            draw_frame(int(val))
 
         slider.on_changed(slider_update)
+        draw_frame(int(time_indices[0]))
         plt.show()
-
-    def plot_plumes_3d_pv(
-        self,
-        job_id,
-        time_idx=184,
-        overlay_patch=False,
-        patch_species="NO",
-        patch_opacity=0.18,
-        patch_cmap="plasma_r",
-        z_exaggeration=1.0,
-        axis_font_size=13,
-        flight_ids=None,
-    ):
-        pl_ds = self.pp_gpat.pl_ds_dict[job_id]
-        pl_out = self.pp_gpat.pl_out_dict[job_id]
-        boxm_ds = self.pp_gpat.boxm_ds_dict[job_id]
-        patch_table = self.pp_gpat.patch_table_dict[job_id]
-        params = self.pp_gpat.params_dict.get(job_id, {})
-
-        def _grid_attr(name):
-            if name in boxm_ds.attrs:
-                return float(boxm_ds.attrs[name])
-            return float(params[name])
-
-        hres_sim_c = _grid_attr("hres_sim_c")
-        hres_sim_f = _grid_attr("hres_sim_f")
-        vres_sim_c = _grid_attr("vres_sim_c")
-        vres_sim_f = _grid_attr("vres_sim_f")
-
-        nx_f = max(1, int(round(hres_sim_c / hres_sim_f)))
-        nz_f = max(1, int(round(vres_sim_c / vres_sim_f)))
-        hres_f_deg = hres_sim_c / nx_f
-        vres_f_m = vres_sim_c / nz_f
-
-        # Match the existing projected meter frame used by the GPAT plume geometry.
-        proj_ref_lon = float(boxm_ds["longitude_c"].min())
-        proj_ref_lat = float(boxm_ds["latitude_c"].min())
-
-        def _to_plot_m(lon_deg, lat_deg):
-            lon_m, lat_m = lonlat_to_m(lon_deg, lat_deg, proj_ref_lon, proj_ref_lat)
-            return lon_m, lat_m
-
-        def _fine_lengths_m(lat_deg):
-            lat_arr = np.asarray(lat_deg, dtype=float)
-            earth_radius_m = 6371000.0
-            dx_m = earth_radius_m * np.cos(np.deg2rad(lat_arr)) * np.deg2rad(hres_f_deg)
-            dy_m = np.full_like(lat_arr, earth_radius_m * np.deg2rad(hres_f_deg), dtype=float)
-            dz_m = np.full_like(lat_arr, vres_f_m, dtype=float)
-            return dx_m, dy_m, dz_m
-
-        def _build_hex_grid(xc, yc, zc, dx, dy, dz, z_scale=1.0):
-            centers = np.column_stack([xc, yc, np.asarray(zc) * z_scale])
-            if centers.size == 0:
-                return None
-
-            half = 0.5 * np.column_stack([dx, dy, np.asarray(dz) * z_scale])
-            offsets = np.array([
-                [-1.0, -1.0, -1.0],
-                [ 1.0, -1.0, -1.0],
-                [ 1.0,  1.0, -1.0],
-                [-1.0,  1.0, -1.0],
-                [-1.0, -1.0,  1.0],
-                [ 1.0, -1.0,  1.0],
-                [ 1.0,  1.0,  1.0],
-                [-1.0,  1.0,  1.0],
-            ])
-
-            points = (centers[:, None, :] + offsets[None, :, :] * half[:, None, :]).reshape(-1, 3)
-            n_cells = centers.shape[0]
-            cells = np.hstack([
-                np.full((n_cells, 1), 8, dtype=np.int64),
-                np.arange(n_cells * 8, dtype=np.int64).reshape(n_cells, 8),
-            ]).ravel()
-            celltypes = np.full(n_cells, pv.CellType.HEXAHEDRON, dtype=np.uint8)
-            return pv.UnstructuredGrid(cells, celltypes, points)
-
-        def _ellipse_center_m(ellipse_pts, row):
-            ellipse_arr = np.asarray(ellipse_pts, dtype=float)
-            if ellipse_arr.ndim == 2 and ellipse_arr.shape[0] == 3:
-                ellipse_arr = ellipse_arr.T
-            if ellipse_arr.ndim == 2 and ellipse_arr.shape[1] == 3:
-                finite = np.all(np.isfinite(ellipse_arr), axis=1)
-                if np.any(finite):
-                    return np.nanmean(ellipse_arr[finite], axis=0)
-
-            lon_m = row["longitude_m"].item()
-            lat_m = row["latitude_m"].item()
-            alt_m = row["altitude"].item()
-            return np.array([lon_m, lat_m, alt_m], dtype=float)
-
-        # --- Plotting with PyVista (all in meters) ---
-        pl_time_rows = np.asarray(pl_ds["time_idx"].values, dtype=int)
-        pl_fid_rows = np.asarray(pl_ds["flight_id"].values)
-        pl_seg_rows = np.asarray(pl_ds["seg_id"].values, dtype=int)
-
-        pl_out_time_rows = np.asarray(pl_out["time_idx"].values, dtype=int)
-        pl_out_fid_rows = np.asarray(pl_out["flight_id"].values)
-        pl_out_seg_rows = np.asarray(pl_out["seg_id"].values, dtype=int)
-
-        patch_time_rows = np.asarray(patch_table["time_idx"].values, dtype=int)
-
-        def _patch_subset_for_time(t_idx: int):
-            row_sel = np.flatnonzero(patch_time_rows == int(t_idx))
-            if row_sel.size == 0:
-                return patch_table.isel(row=slice(0, 0))
-            return patch_table.isel(row=row_sel)
-
-        time_sel_pl = np.flatnonzero(pl_time_rows == int(time_idx))
-        time_sel_out = np.flatnonzero(pl_out_time_rows == int(time_idx))
-        if time_sel_pl.size == 0 or time_sel_out.size == 0:
-            raise ValueError(
-                f"time_idx={time_idx} is not available in plume outputs. "
-                f"pl_ds time_idx range is {int(pl_time_rows.min())}-{int(pl_time_rows.max())}; "
-                f"pl_out time_idx range is {int(pl_out_time_rows.min())}-{int(pl_out_time_rows.max())}."
-            )
-
-        time_pos_pl = int(time_sel_pl[0])
-        time_pos_out = int(time_sel_out[0])
-        flight_ids_t = np.unique(pl_fid_rows)
-        if flight_ids is not None:
-            flight_ids_filter = np.atleast_1d(flight_ids)
-            flight_ids_t = np.array([fid for fid in flight_ids_t if fid in flight_ids_filter])
-
-        flight_styles = [
-            {"ellipse": "firebrick", "trajectory": "navy", "slice": "seagreen"},
-            {"ellipse": "darkorange", "trajectory": "purple", "slice": "teal"},
-            {"ellipse": "crimson", "trajectory": "royalblue", "slice": "olive"},
-            {"ellipse": "brown", "trajectory": "black", "slice": "limegreen"},
-        ]
-
-        _zs = float(z_exaggeration) if (z_exaggeration and float(z_exaggeration) > 0.0) else 1.0
-        ztitle = "Altitude (m)" if np.isclose(_zs, 1.0) else f"Altitude (m) [×{_zs:.0f} vert. exag.]"
-        zlabel_count = 3 if np.isclose(_zs, 1.0) else 5
-
-        plotter = pv.Plotter(window_size=(1600, 1000))
-        plotter.add_axes()
-        plotter.show_bounds(
-            grid=True,
-            location="outer",
-            xtitle="X (m)",
-            ytitle="Y (m)",
-            ztitle=ztitle,
-            n_xlabels=4,
-            n_ylabels=4,
-            n_zlabels=zlabel_count,
-            font_size=int(axis_font_size),
-            fmt="%.0f",
-            ticks="outside",
-            minor_ticks=False,
-        )
-
-        if overlay_patch:
-            required_vars = {"longitude_f", "latitude_f", "altitude_f", "Y_del_f"}
-            if required_vars.issubset(set(patch_table.variables) | set(patch_table.coords)):
-                if patch_species in patch_table["species_out"].values:
-                    patch_time_used = int(time_idx)
-                    patch_t = _patch_subset_for_time(patch_time_used)
-
-                    if patch_t.sizes.get("row", 0) > 0:
-                        patch_vals = patch_t["Y_del_f"].sel(species_out=patch_species).values
-                        lon_f = patch_t["longitude_f"].values
-                        lat_f = patch_t["latitude_f"].values
-                        alt_f = patch_t["altitude_f"].values
-
-                        value_mask, plot_floor = self._patch_value_mask(patch_vals)
-                        valid = (
-                            np.isfinite(patch_vals)
-                            & np.isfinite(lon_f)
-                            & np.isfinite(lat_f)
-                            & np.isfinite(alt_f)
-                            & value_mask
-                        )
-                    else:
-                        patch_vals = np.array([], dtype=float)
-                        lon_f = np.array([], dtype=float)
-                        lat_f = np.array([], dtype=float)
-                        alt_f = np.array([], dtype=float)
-                        valid = np.array([], dtype=bool)
-
-                    if not np.any(valid):
-                        rows_time = np.asarray(patch_table["time_idx"].values)
-                        vals_all = np.asarray(
-                            patch_table["Y_del_f"].sel(species_out=patch_species).values,
-                            dtype=float,
-                        )
-                        rows_with_data = rows_time[np.isfinite(vals_all) & (vals_all > 0.0)]
-
-                        if rows_with_data.size > 0:
-                            candidate_times = np.unique(rows_with_data.astype(int))
-                            patch_time_used = int(
-                                candidate_times[np.argmin(np.abs(candidate_times - int(time_idx)))]
-                            )
-                            patch_t = _patch_subset_for_time(patch_time_used)
-                            patch_vals = patch_t["Y_del_f"].sel(species_out=patch_species).values
-                            lon_f = patch_t["longitude_f"].values
-                            lat_f = patch_t["latitude_f"].values
-                            alt_f = patch_t["altitude_f"].values
-                            value_mask, plot_floor = self._patch_value_mask(patch_vals)
-                            valid = (
-                                np.isfinite(patch_vals)
-                                & np.isfinite(lon_f)
-                                & np.isfinite(lat_f)
-                                & np.isfinite(alt_f)
-                                & value_mask
-                            )
-                            print(
-                                f"No patch_table values for {patch_species} at time_idx={time_idx} above the active plotting threshold; "
-                                f"using nearest available patch timestep time_idx={patch_time_used}."
-                            )
-
-                    if np.any(valid):
-                        lon_m_f, lat_m_f = _to_plot_m(lon_f[valid], lat_f[valid])
-                        dx_f, dy_f, dz_f = _fine_lengths_m(lat_f[valid])
-                        cube_grid = _build_hex_grid(lon_m_f, lat_m_f, alt_f[valid], dx_f, dy_f, dz_f, z_scale=_zs)
-                        if cube_grid is not None:
-                            patch_vals_plot = patch_vals[valid].astype(float)
-                            cube_grid.cell_data["patch_vals"] = patch_vals_plot
-                            clim = [float(np.nanmin(patch_vals_plot)), float(np.nanmax(patch_vals_plot))]
-                            if clim[1] <= clim[0]:
-                                pad = max(abs(clim[0]) * 0.05, 1.0e-30)
-                                clim = [max(0.0, clim[0] - pad), clim[1] + pad]
-                            plotter.add_mesh(
-                                cube_grid,
-                                scalars="patch_vals",
-                                cmap=patch_cmap,
-                                opacity=patch_opacity,
-                                clim=clim,
-                                show_scalar_bar=True,
-                                scalar_bar_args={
-                                    "title": (
-                                        f"Y_del_f {patch_species}"
-                                        if plot_floor is None
-                                        else f"Y_del_f {patch_species}\n>= {plot_floor:.1e} mol/m^3"
-                                    ),
-                                    "fmt": "%.1e",
-                                    "n_labels": 5,
-                                },
-                            )
-                    else:
-                        print(
-                            f"No patch_table values found for {patch_species} in this dataset above the active plotting threshold."
-                        )
-                else:
-                    print(f"Species {patch_species} is unavailable in patch_table species_out.")
-            else:
-                print("patch_table is missing fine-grid coordinate variables. Re-run GPAT after rebuilding boxm.f90 to populate latitude_f/longitude_f/altitude_f.")
-
-        for flight_idx, fid in enumerate(flight_ids_t):
-            style = flight_styles[flight_idx % len(flight_styles)]
-            centres_m = []
-            ellipses_m = []
-            slice_polys_m = []
-            seg_ids_f = pl_seg_rows[pl_fid_rows == fid]
-            seg_ids_f = np.unique(seg_ids_f)
-
-            for seg_id in seg_ids_f:
-                seg_sel = np.flatnonzero((pl_seg_rows == int(seg_id)) & (pl_fid_rows == fid))
-                seg_out_sel = np.flatnonzero((pl_out_seg_rows == int(seg_id)) & (pl_out_fid_rows == fid))
-
-                if seg_sel.size == 0 or seg_out_sel.size == 0:
-                    continue
-
-                row = pl_ds.isel(seg_id=int(seg_sel[0]), time=time_pos_pl).squeeze(drop=True)
-                row_out = pl_out.isel(seg_id=int(seg_out_sel[0]), time=time_pos_out).squeeze(drop=True)
-
-                row_center = np.array(
-                    [
-                        row["longitude_m"].item(),
-                        row["latitude_m"].item(),
-                        row["altitude"].item(),
-                    ],
-                    dtype=float,
-                )
-                # Some terminal segments carry plume geometry but invalid source-center metadata.
-                # Skip them so ribbons/trajectories end on the last physically consistent segment.
-                if not np.all(np.isfinite(row_center)):
-                    continue
-
-                if row_out["ellipses_m"] is not None and hasattr(row_out["ellipses_m"], "__len__") and len(row_out["ellipses_m"]) > 0:
-                    ellipse_vals = row_out["ellipses_m"].values
-                    centre_m = _ellipse_center_m(ellipse_vals, row)
-
-                    if np.all(np.isfinite(centre_m)):
-                        centres_m.append(centre_m.tolist())
-                        ellipses_m.append(ellipse_vals)
-                        slice_polys_m.append(row_out["slice_polys_m"].values)
-
-            centres_m = np.array(centres_m)
-            ellipses_m = np.array(ellipses_m)
-            slice_polys_m = np.array(slice_polys_m)
-
-            if ellipses_m.ndim == 3 and ellipses_m.shape[1] == 3:
-                ellipses_m = np.transpose(ellipses_m, (0, 2, 1))
-
-            if slice_polys_m.ndim == 4 and slice_polys_m.shape[2] == 3:
-                slice_polys_m = np.transpose(slice_polys_m, (0, 1, 3, 2))
-
-            if _zs != 1.0:
-                if centres_m.ndim == 2 and centres_m.shape[1] == 3:
-                    centres_m[:, 2] *= _zs
-                if ellipses_m.ndim == 3 and ellipses_m.shape[2] == 3:
-                    ellipses_m[:, :, 2] *= _zs
-                if slice_polys_m.ndim == 4 and slice_polys_m.shape[3] == 3:
-                    slice_polys_m[:, :, :, 2] *= _zs
-
-            for i in range(len(ellipses_m) - 1):
-                e1 = ellipses_m[i]
-                e2 = ellipses_m[i+1]
-
-                if not (np.all(np.isfinite(e1)) and np.all(np.isfinite(e2))):
-                    continue
-
-                n = e1.shape[0]
-                points = np.vstack([e1, e2])
-                faces = []
-                for j in range(n):
-                    j2 = (j + 1) % n
-                    faces.extend([4, j, j2, n + j2, n + j])
-                faces = np.array(faces)
-                mesh = pv.PolyData(points, faces)
-                plotter.add_mesh(mesh, color=style["ellipse"], opacity=0.5)
-
-            if len(centres_m) > 1:
-                trajectory = np.array(centres_m)
-                valid_mask = np.all(np.isfinite(trajectory), axis=1)
-                trajectory = trajectory[valid_mask]
-
-                if trajectory.shape[0] > 1:
-                    plotter.add_lines(trajectory, color=style["trajectory"], width=3, connected=True)
-
-                if slice_polys_m.ndim == 4 and slice_polys_m.shape[0] > 1:
-                    num_segments = slice_polys_m.shape[0]
-                    num_slices = slice_polys_m.shape[1]
-
-                    if len(ellipses_m) == num_segments:
-                        for slice_idx in range(num_slices):
-                            for seg_idx in range(num_segments - 1):
-                                poly1 = slice_polys_m[seg_idx, slice_idx]
-                                poly2 = slice_polys_m[seg_idx + 1, slice_idx]
-
-                                if (
-                                    poly1.shape[0] >= 3
-                                    and poly2.shape[0] >= 3
-                                    and np.all(np.isfinite(poly1))
-                                    and np.all(np.isfinite(poly2))
-                                    and np.linalg.norm(poly1) > 1.0
-                                    and np.linalg.norm(poly2) > 1.0
-                                ):
-                                    n_corners = poly1.shape[0]
-                                    points = np.vstack([poly1, poly2])
-                                    faces = []
-                                    for corner_idx in range(n_corners):
-                                        next_corner = (corner_idx + 1) % n_corners
-                                        faces.extend([4, corner_idx, next_corner, n_corners + next_corner, n_corners + corner_idx])
-                                    faces = np.array(faces)
-                                    mesh = pv.PolyData(points, faces)
-                                    plotter.add_mesh(mesh, color=style["slice"], opacity=0.3)
-
-            plotter.enable_parallel_projection()
-            plotter.camera_position = "iso"
-        flight_note = "all flights" if flight_ids is None else f"flight_ids={list(np.atleast_1d(flight_ids))}"
-        plotter.add_text(
-            f"Flight Plumes at time_idx={time_idx} ({flight_note}, projected meters)\nPer-flight colors: ellipse / trajectory / slice",
-            position="upper_left",
-            font_size=10,
-            color="black",
-        )
-
-        plotter.show(
-            interactive=True,
-            auto_close=False,
-            full_screen=False,
-        )
 
     def animate_plumes_3d_plotly(
         self,
@@ -2212,6 +1369,7 @@ class GPATPlotting:
         fig = go.Figure(data=initial_traces, layout=layout, frames=frames)
         fig.write_html(output_path, include_plotlyjs="cdn")
         print(f"Plotly animation saved → {output_path}")
+
 
 class GPATValidation:
     """Validate GPAT model outputs."""
