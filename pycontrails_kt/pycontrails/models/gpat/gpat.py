@@ -87,9 +87,6 @@ class SimParams:
     run_path: Optional[str] = None  # path to run GPAT from
     data_path: Optional[str] = None  # path to data directory
     job_id: Optional[str] = None  # job ID
-    
-    # run_chem: bool = True  # whether to run chemistry model
-    # wind_effects: bool = True  # whether to include wind effects in plume dispersion
 
 @dataclass
 class FlParams:
@@ -161,11 +158,6 @@ class ChemParams:
     "HO2NO2", "PAN", "SO2"
     )
 
-# @dataclass
-# class ContrailParams:
-    # """Default contrail parameters."""
-    # run_contrails: bool = True
-
 
 class GPAT(Model):
     """Gridded Plume Analysis Tool (GPAT).
@@ -186,8 +178,6 @@ class GPAT(Model):
         Meteorological parameters.
     chem_params : ChemParams
         Chemistry parameters.
-    contrail_params : ContrailParams
-        Contrail parameters.
     """
 
     name = "GPAT"
@@ -240,7 +230,6 @@ class GPAT(Model):
         )
 
         # Generate time vectors
-        
         self.times_fl = pd.date_range(
             start=sim_params.t_fl[0],
             end=sim_params.t_fl[0] + sim_params.t_fl[2],
@@ -265,33 +254,18 @@ class GPAT(Model):
             freq=sim_params.t_out[1],
         )
 
-        if sim_params.run_path is None:
-            self.run_path = os.environ["PYCONTRAILSDIR"] + "models/gpat/"
+        # Set up paths and job ID
+        self.run_path = sim_params.run_path
+        self.data_path = sim_params.data_path
+        self.job_id = sim_params.job_id
 
-        else:
-            self.run_path = sim_params.run_path
-
-        if sim_params.data_path is None:
-            self.data_path = "/projects/Impact_of_aviation_on_climate/Kieran2024/"
-
-        else:
-            self.data_path = sim_params.data_path
-
-        if sim_params.job_id is None:
-            try:
-                self.job_id = os.environ["SLURM_JOB_ID"]
-            except KeyError:
-                # If SLURM_JOB_ID is not found, generate a random number as job ID
-                self.job_id = str(random.randint(100000, 999999))
-
-        else:
-            self.job_id = sim_params.job_id
-
+        # If running in direct mode with a specified flight file, derive job_id from the filename if not already set.
         if fl_params.mode == "direct" and fl_params.file is not None:
             self.job_id = os.path.splitext(os.path.basename(fl_params.file))[0]
 
         sim_params.date_created = pd.Timestamp.now()
 
+        # Grab species numbers from the input files for later use in indexing model outputs
         chem_params.species_emi_num = grab_species_num(self.run_path, chem_params.species_emi)
         chem_params.species_pl_num = grab_species_num(self.run_path, chem_params.species_pl)
         chem_params.species_out_num = grab_species_num(self.run_path, chem_params.species_out)
@@ -301,10 +275,12 @@ class GPAT(Model):
         validate_species_hierarchy(chem_params)
         validate_time_hierarchy(sim_params)
 
+        # Set up input and output directories for the job
         self.inputs_job = self.data_path + "inputs/" + self.job_id + "/"
         self.inputs_glob = self.data_path + "inputs/glob/"
         self.outputs_job = self.data_path + "outputs/" + self.job_id + "/"  
 
+        # If job dirs exist, clear and recreate
         if os.path.exists(self.inputs_job):
             shutil.rmtree(self.inputs_job)
 
@@ -330,14 +306,13 @@ class GPAT(Model):
         self.chem_params = chem_params
         self.all_params = all_params
 
+        # Set up the model classes for preprocessing and running GPAT
         self.setup = GPATSetup(self)
         self.run = GPATRun(self)
 
     def preprocess_gpat(self):
         """Preprocess inputs for GPAT FORTRAN implementation (BOXM and CONTRAIL in future)."""
         # Generate flight trajectory points
-        print(self.fl_params.n_ac)
-        
         if self.fl_params.n_ac > 0:
             self.fl = self.setup.traj_gen()
         
@@ -365,13 +340,8 @@ class GPAT(Model):
         """Run the GPAT FORTRAN implementation (BOXM and CONTRAIL in future)."""
         # Run BOXM model
         self.run.run_boxm()
-        # self.run.run_contrails
 
-    def postprocess_gpat(self):
-        """Postprocess outputs from GPAT FORTRAN implementation."""
-        # Load outputs
-        self.analysis.load_output_datasets()
-        
+
 class GPATSetup:
     """Setup the GPAT model, ready for FORTRAN computation."""
 
@@ -379,7 +349,6 @@ class GPATSetup:
         self.gpat = gpat
 
     # Setup methods
-
     def traj_gen(self) -> list[Flight]:
         """Generate flight trajectory points. Supports loading and plotting all test flights if requested."""
         fl_params = self.gpat.fl_params
@@ -478,7 +447,7 @@ class GPATSetup:
                 periods=len(lat_points),
             )
 
-            # create flight object for leader flight and resample points according to ts_fl
+            # create Flight object for leader flight and resample points according to ts_fl
             df = pd.DataFrame()
             df["longitude"] = lon_points
             df["latitude"] = lat_points
@@ -1547,10 +1516,6 @@ class GPATSetup:
         lats = np.asarray(self.gpat.lats, dtype=float)
         alts = np.asarray(self.gpat.alts, dtype=float)
 
-        dlon = sim_params.hres_sim_c
-        dlat = sim_params.hres_sim_c
-        dalt = sim_params.vres_sim_c
-
         lon_min = float(lons.min())
         lon_max = float(lons.max())
         lat_min = float(lats.min())
@@ -1574,15 +1539,11 @@ class GPATSetup:
         return new_flight
     
     def mask_plume_to_sim_domain(self, plume: GeoVectorDataset) -> GeoVectorDataset:
-        sim_params = self.gpat.sim_params
-        
+
+
         lons = np.asarray(self.gpat.lons, dtype=float)
         lats = np.asarray(self.gpat.lats, dtype=float)
         alts = np.asarray(self.gpat.alts, dtype=float)
-
-        dlon = sim_params.hres_sim_c
-        dlat = sim_params.hres_sim_c
-        dalt = sim_params.vres_sim_c
 
         lon_min = float(lons.min())
         lon_max = float(lons.max())
@@ -1606,6 +1567,7 @@ class GPATSetup:
             new_plume.attrs = getattr(plume, "attrs", {})
         return new_plume
 
+
 class GPATRun:
     """Run the GPAT model."""
    
@@ -1620,12 +1582,6 @@ class GPATRun:
             [self.gpat.run_path + "boxm", self.gpat.job_id, self.gpat.data_path],
         )
 
-    # def run_contrails(self) -> xr.Dataset:
-    #     # Run the contrail model
-    #     # subprocess.call(
-    #     #     [self.run_path + "contrails", self.job_id],
-    #     # )
-    #     pass
 
 # Helper functions for validation and setup
 def lonlat_to_m(lon, lat, global_ref_lon, global_ref_lat):
@@ -1700,7 +1656,6 @@ def grab_species_num_boxm(run_path) -> np.array:
     # Return all species numbers (1-indexed for FORTRAN)
     return np.arange(1, len(species_list) + 1)
 
-# Function to convert dictionary to dataclass instance
 def dict_to_dataclass(cls, dict_obj):
     """Convert a dictionary to a dataclass instance.
 
@@ -1718,7 +1673,6 @@ def dict_to_dataclass(cls, dict_obj):
     """
     return cls(**dict_obj)
 
-# Function to filter out inherited params from ModelParams
 def filter_inherited_params(instance, base_class):
     """Filter out inherited parameters from a dataclass instance.
 

@@ -24,13 +24,25 @@ boxm_out = pp_gpat.boxm_out_dict[pp_gpat.job_ids[0]]
 pl_out = pp_gpat.pl_out_dict[pp_gpat.job_ids[0]]
 patch_table = pp_gpat.patch_table_dict[pp_gpat.job_ids[0]]
 
-for t in range(60, 180, 1):
-    print(pl_out["pl_mass"].sel(species_pl="NO", seg_id=5).isel(time=t).values)
+def print_xr_summary(ds, name):
+    print(f"\n{name}:")
+    print("  Dimensions:", list(ds.dims))
+    print("  Coordinates:", list(ds.coords))
+    print("  Variables:", list(ds.data_vars))
 
-print(patch_table["Y_del_f"].sel(species_out="NO", row=slice(0,30)).values)
-print(pl_out["pl_mass"].sel(species_pl="NO").isel(time=60+60).values)
+# Example usage:
+print_xr_summary(boxm_ds, "boxm_ds")
+print_xr_summary(fl_ds, "fl_ds")
+print_xr_summary(pl_ds, "pl_ds")
+print_xr_summary(boxm_out, "boxm_out")
+print_xr_summary(pl_out, "pl_out")
+print_xr_summary(patch_table, "patch_table")
 
-pl_ds = pp_gpat.pl_ds_dict[pp_gpat.job_ids[0]]
+# for t in range(60, 180, 1):
+#     print(pl_out["pl_mass"].sel(species_pl="NO", seg_id=5).isel(time=t).values)
+
+# print(patch_table["Y_del_f"].sel(species_out="NO", row=slice(0,30)).values)
+# print(pl_out["pl_mass"].sel(species_pl="NO").isel(time=60+60).values)
 
 # print(pl_ds["emi_pl_mass"].sel(species_emi="NO").values)
 # print(pl_ds["age_s"].sel(seg_id=31).values)
@@ -49,21 +61,18 @@ pl_ds = pp_gpat.pl_ds_dict[pp_gpat.job_ids[0]]
 #     top_k=3,
 # )
 
-job_id = pp_gpat.job_ids[0]
-patch_table = pp_gpat.patch_table_dict[job_id]
+# t_idx = 1852  # or whatever frame the slider is on
 
-t_idx = 1852  # or whatever frame the slider is on
+# mask_t = np.asarray(patch_table["time_idx"].values, dtype=int) == t_idx
+# print("rows at t_idx:", mask_t.sum())
 
-mask_t = np.asarray(patch_table["time_idx"].values, dtype=int) == t_idx
-print("rows at t_idx:", mask_t.sum())
-
-if mask_t.sum() > 0:
-    ds_t = patch_table.isel(row=np.flatnonzero(mask_t))
-    y = np.asarray(ds_t["Y_del_f"].sel(species_out="NO").values, dtype=float)
-    print("NO min/max at t_idx:", np.nanmin(y), np.nanmax(y))
-    print("nonzero count:", np.count_nonzero(np.isfinite(y) & (y != 0.0)))
-    print("unique level_f sample:", np.unique(np.asarray(ds_t["level_f"].values, dtype=float))[:20])
-    print("row_cell_c min/max:", np.nanmin(ds_t["row_cell_c"].values), np.nanmax(ds_t["row_cell_c"].values))
+# if mask_t.sum() > 0:
+#     ds_t = patch_table.isel(row=np.flatnonzero(mask_t))
+#     y = np.asarray(ds_t["Y_del_f"].sel(species_out="NO").values, dtype=float)
+#     print("NO min/max at t_idx:", np.nanmin(y), np.nanmax(y))
+#     print("nonzero count:", np.count_nonzero(np.isfinite(y) & (y != 0.0)))
+#     print("unique level_f sample:", np.unique(np.asarray(ds_t["level_f"].values, dtype=float))[:20])
+#     print("row_cell_c min/max:", np.nanmin(ds_t["row_cell_c"].values), np.nanmax(ds_t["row_cell_c"].values))
 
 # pp_gpat.plotting.plot_boxm_patch_slider(
 #     job_id=pp_gpat.job_ids[0],
@@ -86,16 +95,16 @@ if mask_t.sum() > 0:
 
 # pp_gpat.plotting.plot_heatmap_slider(job_id=pp_gpat.job_ids[0], species="NO", data_var="Y_bg_c", level=11000)
 
-pp_gpat.plotting.animate_plumes_3d_plotly(
-    job_id=pp_gpat.job_ids[1],
-    patch_species="NO",
-    overlay_ellipses=False,
-    overlay_slices=False,
-    overlay_patch=True,
-    time_idx_start=181,
-    time_idx_end=181+3*180,
-    output_path="plume.html"
-)
+# pp_gpat.plotting.animate_plumes_3d_plotly(
+#     job_id=pp_gpat.job_ids[1],
+#     patch_species="NO",
+#     overlay_ellipses=False,
+#     overlay_slices=False,
+#     overlay_patch=True,
+#     time_idx_start=181,
+#     time_idx_end=181+3*180,
+#     output_path="plume.html"
+# )
 
 # print(f"boxm_ds: {boxm_ds['Y_bg_c'].sel(species_boxm='NO').isel(cell=0).values}")
 # #print(f"boxm_out: {boxm_out['Y_bg_c'].sel(species_out='NO').isel(latitude_c=1, longitude_c=1, level_c=1).values}")
