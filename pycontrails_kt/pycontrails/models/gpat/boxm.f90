@@ -6914,21 +6914,6 @@ CONTAINS
         INTEGER, ALLOCATABLE :: VALID_SEG_IDS(:), VALID_SLICE_IDS(:)
         INTEGER :: N_VALID_PAIR, PAIR_IDX
 
-        ! At entry to PROJECTION
-        IF (ALLOCATED(PL_STATE%PL_MASS)) THEN
-            PRINT *, 'DEBUG: TOTAL PLUME MASS AT ENTRY (PROJECTION) =', SUM(PL_STATE%PL_MASS)
-        END IF
-        CALL FLUSH(6)
-
-        IF (ALLOCATED(PATCH_STATE%Y_DEL_F)) THEN
-            TOTAL_PATCH_Y_DEL_F = 0.0_DP
-            DO I = 1, SIZE(PATCH_STATE%Y_DEL_F, 1)
-                TOTAL_PATCH_Y_DEL_F = TOTAL_PATCH_Y_DEL_F + PATCH_STATE%Y_DEL_F(I, 8)
-            END DO
-            PRINT *, 'DEBUG: TOTAL PATCH Y_DEL_F AT ENTRY (PROJECTION) = ', TOTAL_PATCH_Y_DEL_F
-            CALL FLUSH(6)
-        END IF
-
         ! CALCULATE FINE GRID SUBDIVISION
         NX_F = MAX(1, NINT(BOXM_DS%HRES_SIM_C / BOXM_DS%HRES_SIM_F)) ! NFINE IN X DIRECTION
         NY_F = NX_F ! MAINTAIN SQUARE CELLS IN HORIZONTAL
@@ -7094,7 +7079,7 @@ CONTAINS
             END DO
         END DO
         NNZ = TMP_NNZ
-        ! PRINT *, 'DEBUG: Finished projection loop, NNZ =', NNZ
+
         IF (NNZ <= 0) THEN
             PRINT *, 'DEBUG: NNZ <= 0, skipping allocation and returning early.'
             IF (ALLOCATED(ACTIVE_CELLS)) DEALLOCATE(ACTIVE_CELLS)
@@ -7105,7 +7090,7 @@ CONTAINS
             RETURN
         END IF
         PL_STATE%NNZ_MAP = NNZ
-        ! PRINT *, 'DEBUG: Finished projection loop, NNZ =', NNZ
+
         IF (NNZ <= 0) THEN
             PRINT *, 'DEBUG: NNZ <= 0, skipping allocation and returning early.'
             IF (ALLOCATED(ACTIVE_CELLS)) DEALLOCATE(ACTIVE_CELLS)
@@ -7155,21 +7140,6 @@ CONTAINS
 
         DEALLOCATE(TMP_SEG_ID, TMP_SLICE_ID, TMP_CELL_C, TMP_CELL_F, TMP_WEIGHT)
 
-        ! At exit from PROJECTION
-        IF (ALLOCATED(PL_STATE%PL_MASS)) THEN
-            PRINT *, 'DEBUG: TOTAL PLUME MASS AT EXIT (PROJECTION) =', SUM(PL_STATE%PL_MASS)
-        END IF
-        CALL FLUSH(6)
-
-        IF (ALLOCATED(PATCH_STATE%Y_DEL_F)) THEN
-            TOTAL_PATCH_Y_DEL_F = 0.0_DP
-            DO I = 1, SIZE(PATCH_STATE%Y_DEL_F, 1)
-                TOTAL_PATCH_Y_DEL_F = TOTAL_PATCH_Y_DEL_F + PATCH_STATE%Y_DEL_F(I, 8)
-            END DO
-            PRINT *, 'DEBUG: TOTAL PATCH Y_DEL_F AT EXIT (PROJECTION) = ', TOTAL_PATCH_Y_DEL_F
-            CALL FLUSH(6)
-        END IF
-
         IF (ROW_IDX /= NNZ) THEN
             PRINT *, "PL_STATE_PROJECT_TO_GRID: sparse map row mismatch", ROW_IDX, NNZ
             STOP 1
@@ -7215,21 +7185,6 @@ CONTAINS
         IF (.NOT. ALLOCATED(BOXM_STATE%LATITUDE_C)) RETURN
         IF (PL_STATE%NNZ_MAP <= 0) RETURN
         IF (PATCH_STATE%NROWS <= 0) RETURN
-
-        IF (ALLOCATED(PL_STATE%PL_MASS)) THEN
-            PRINT *, 'DEBUG: TOTAL PLUME MASS AT ENTRY (BACKPROJECTION) =', SUM(PL_STATE%PL_MASS)
-        END IF
-        CALL FLUSH(6)
-
-        IF (ALLOCATED(PATCH_STATE%Y_DEL_F)) THEN
-            TOTAL_PATCH_Y_DEL_F = 0.0_DP
-            DO I = 1, SIZE(PATCH_STATE%Y_DEL_F, 1)
-                TOTAL_PATCH_Y_DEL_F = TOTAL_PATCH_Y_DEL_F + PATCH_STATE%Y_DEL_F(I, 8)
-            END DO
-            PRINT *, 'DEBUG: TOTAL PATCH Y_DEL_F AT ENTRY (BACKPROJECTION) = ', TOTAL_PATCH_Y_DEL_F
-            CALL FLUSH(6)
-        END IF
-
 
         NX_F = MAX(1, NINT(BOXM_DS%HRES_SIM_C / BOXM_DS%HRES_SIM_F))
         NY_F = NX_F
@@ -7299,13 +7254,6 @@ CONTAINS
                 IF (BOXM_STATE%MOL_MASS_C(B) /= BOXM_STATE%MOL_MASS_C(B)) CYCLE
                 IF (BOXM_STATE%MOL_MASS_C(B) <= 0.0_DP) CYCLE
 
-                ! IF (PL_ID .EQ. 1) THEN !  .OR. PL_ID .EQ. 13 .OR. PL_ID .EQ. 16
-                !     PRINT *, 'DEBUG: K=', K, 'SEG_ID=', SEG_ID, 'CELL_C=', CELL_C, 'CELL_F=', CELL_F, 'PL_ID=', PL_ID, &
-                !         'MAP_W=', PL_STATE%MAP_W(K), 'Y_DEL_F=', PATCH_STATE%Y_DEL_F(ROW_IDX, B), 'MOL_MASS_C=', &
-                !         BOXM_STATE%MOL_MASS_C(B), 'VOL_F=', VOL_F
-                !     FLUSH(6)
-                ! END IF
-
                 PL_MASS_NEW(SEG_ID, PL_ID) = PL_MASS_NEW(SEG_ID, PL_ID) + (PL_STATE%MAP_W(K) / SUM_W_REV) * &
                 PATCH_STATE%Y_DEL_F(ROW_IDX, B) * BOXM_STATE%MOL_MASS_C(B) * VOL_F * 1.0E6_DP / 6.02214076E23_DP
             END DO
@@ -7315,20 +7263,6 @@ CONTAINS
 
         IF (ALLOCATED(PL_MASS_NEW)) DEALLOCATE(PL_MASS_NEW)
         IF (ALLOCATED(SEG_HAS_MAP)) DEALLOCATE(SEG_HAS_MAP)
-
-        IF (ALLOCATED(PL_STATE%PL_MASS)) THEN
-            PRINT *, 'DEBUG: TOTAL PLUME MASS AT EXIT (BACKPROJECTION) =', SUM(PL_STATE%PL_MASS)
-        END IF
-        CALL FLUSH(6)
-
-        IF (ALLOCATED(PATCH_STATE%Y_DEL_F)) THEN
-            TOTAL_PATCH_Y_DEL_F = 0.0_DP
-            DO I = 1, SIZE(PATCH_STATE%Y_DEL_F, 1)
-                TOTAL_PATCH_Y_DEL_F = TOTAL_PATCH_Y_DEL_F + PATCH_STATE%Y_DEL_F(I, 8)
-            END DO
-            PRINT *, 'DEBUG: TOTAL PATCH Y_DEL_F AT EXIT (BACKPROJECTION) = ', TOTAL_PATCH_Y_DEL_F
-            CALL FLUSH(6)
-        END IF
  
     END SUBROUTINE PL_STATE_BACKPROJECT_FROM_GRID
 
@@ -7497,32 +7431,35 @@ CONTAINS
         CLASS(BOXM_DS_TYPE),    INTENT(IN)    :: BOXM_DS
         CLASS(PATCH_STATE_TYPE), INTENT(IN)   :: PATCH_STATE
 
-        INTEGER :: CELL_ID, SPECIES_ID, ROW_IDX
-        REAL(DP) :: TOTAL_MASS, COARSE_VOL, FINE_VOL
+        INTEGER :: CELL_ID, SPECIES_ID, ROW_IDX, NXY_F
+        REAL(DP) :: TOTAL_MASS, COARSE_VOL, FINE_VOL, DEL_VAL
 
-        ! Mass-weighted averaging: sum fine cell mass, divide by coarse cell volume
+        ! Coarse delta is reconstructed directly from updated fine deltas.
+        ! No additional coarse chemistry is applied here.
         BOXM_STATE%Y_DEL_C(:,:) = 0.0_DP
+        NXY_F = MAX(1, NINT(BOXM_DS%HRES_SIM_C / BOXM_DS%HRES_SIM_F))
         
         DO CELL_ID = 1, BOXM_STATE%NCELL
             COARSE_VOL = BOXM_STATE%DX_C_M(CELL_ID) * BOXM_STATE%DY_C_M(CELL_ID) * BOXM_DS%VRES_SIM_C
             IF (COARSE_VOL <= 0.0_DP) CYCLE
+
+            FINE_VOL = (BOXM_STATE%DX_C_M(CELL_ID) / REAL(NXY_F, DP)) * &
+                       (BOXM_STATE%DY_C_M(CELL_ID) / REAL(NXY_F, DP)) * &
+                        BOXM_DS%VRES_SIM_F
+            IF (FINE_VOL <= 0.0_DP) CYCLE
+
             DO SPECIES_ID = 1, BOXM_STATE%NSBOXM
                 TOTAL_MASS = 0.0_DP
                 DO ROW_IDX = 1, PATCH_STATE%NROWS
                     IF (PATCH_STATE%ROW_CELL_C(ROW_IDX) == CELL_ID) THEN
-                        FINE_VOL = (BOXM_STATE%DX_C_M(CELL_ID) / MAX(1, NINT(BOXM_DS%HRES_SIM_C / BOXM_DS%HRES_SIM_F))) * &
-                                   (BOXM_STATE%DY_C_M(CELL_ID) / MAX(1, NINT(BOXM_DS%HRES_SIM_C / BOXM_DS%HRES_SIM_F))) * &
-                                    BOXM_DS%VRES_SIM_F
-                        TOTAL_MASS = TOTAL_MASS + PATCH_STATE%Y_DEL_F(ROW_IDX, SPECIES_ID) * FINE_VOL
+                        DEL_VAL = PATCH_STATE%Y_DEL_F(ROW_IDX, SPECIES_ID)
+                        IF (DEL_VAL /= DEL_VAL) CYCLE
+                        TOTAL_MASS = TOTAL_MASS + DEL_VAL * FINE_VOL
                     END IF
                 END DO
                 BOXM_STATE%Y_DEL_C(CELL_ID, SPECIES_ID) = TOTAL_MASS / COARSE_VOL
             END DO
         END DO
-
-        CALL RUN_LEGACY_CHEM(BOXM_STATE%Y_DEL_C, BOXM_STATE%TEMP, BOXM_STATE%H2O, BOXM_STATE%O2, &
-                            BOXM_STATE%N2, BOXM_STATE%M, BOXM_STATE%SZA, BOXM_STATE%DTS, BOXM_STATE%NCELL, &
-                            BOXM_DS%NSBOXM, BOXM_DS%NPP, BOXM_DS%NPC, BOXM_DS%NTC, BOXM_DS%NFL)
 
     END SUBROUTINE BOXM_STATE_RUN_COARSE_DELTA_CHEM
 
@@ -7663,18 +7600,21 @@ CONTAINS
 
     END SUBROUTINE PATCH_STATE_ACCUM_DELTAS_FROM_W
 
-    SUBROUTINE PATCH_STATE_RUN_FINE_DELTA_CHEM(PATCH_STATE, BOXM_DS, BOXM_STATE)
+    SUBROUTINE PATCH_STATE_RUN_FINE_DELTA_CHEM(PATCH_STATE, BOXM_DS, BOXM_STATE, Y_BG_C_PRE)
         CLASS(PATCH_STATE_TYPE), INTENT(INOUT) :: PATCH_STATE
         CLASS(BOXM_DS_TYPE),     INTENT(IN)    :: BOXM_DS
         CLASS(BOXM_STATE_TYPE),  INTENT(IN)    :: BOXM_STATE
+        REAL(DP),                INTENT(IN)    :: Y_BG_C_PRE(:,:)
 
-        INTEGER :: CELL_C, I, J, ROW_IDX
+        INTEGER :: CELL_C, I, J, ROW_IDX, S
         INTEGER :: NX_F, NY_F, NFINE_XY, NFINE_Z, NFINE_CELL
         INTEGER, ALLOCATABLE :: ROWS_CELL(:)
         REAL(DP), ALLOCATABLE :: Y_BG_F_CELL(:,:), Y_DEL_F_CELL(:,:), Y_TOT_F_CELL(:,:)
 
         REAL(DP), ALLOCATABLE :: TEMP_CELL(:), H2O_CELL(:), O2_CELL(:), N2_CELL(:), M_CELL(:), SZA_CELL(:)
         LOGICAL :: FOUND
+        INTEGER :: N_NEG_CLAMPED
+        REAL(DP) :: WORST_NEG
 
         ! Compute fine-grid subdivision factors once.
 
@@ -7712,9 +7652,12 @@ CONTAINS
             M_CELL(:) = BOXM_STATE%M(CELL_C)
             SZA_CELL(:) = BOXM_STATE%SZA(CELL_C)
 
-            ! LOCATE Y_BG_F VALUES FROM BOXM STATE
+            ! Use PRE-chemistry background to construct Y_TOT so that both
+            ! the total and the background are evolved from the same starting
+            ! point.  The evolved (post-chem) bg is subtracted AFTER the
+            ! chemistry step so that delta captures only the perturbation.
             DO I = 1, NFINE_CELL
-                Y_BG_F_CELL(I,:) = BOXM_STATE%Y_BG_C(CELL_C,:)
+                Y_BG_F_CELL(I,:) = Y_BG_C_PRE(CELL_C,:)
             END DO
 
             ! LOCATE Y_DEL_F VALUES FROM PATCH STATE
@@ -7734,13 +7677,30 @@ CONTAINS
             ! SUM TOTAL MASS INTO CELLS FOR CHEMISTRY
             Y_TOT_F_CELL = Y_BG_F_CELL + Y_DEL_F_CELL
 
+            ! Check for negative total concentrations before entering solver.
+            ! These indicate the delta has overshot the background — a sign of
+            ! mass conservation failure if large.  Small negatives (numerical
+            ! noise) are clamped to zero with a warning; large negatives halt.
+            N_NEG_CLAMPED = COUNT(Y_TOT_F_CELL < 0.0_DP)
+            IF (N_NEG_CLAMPED > 0) THEN
+                WORST_NEG = MINVAL(Y_TOT_F_CELL)
+                WRITE(*,'(A,I0,A,I0,A,ES12.4)') &
+                    'WARNING: negative Y_TOT in fine chem, cell_c=', CELL_C, &
+                    '  n_neg=', N_NEG_CLAMPED, '  worst=', WORST_NEG
+                WHERE (Y_TOT_F_CELL < 0.0_DP) Y_TOT_F_CELL = 0.0_DP
+            END IF
+
             ! ACCESS Y_TOT_F_CELL(I, :) FOR CHEMISTRY UPDATE
             CALL RUN_LEGACY_CHEM(Y_TOT_F_CELL, TEMP_CELL, H2O_CELL, O2_CELL, N2_CELL, M_CELL, &
                             SZA_CELL, BOXM_STATE%DTS, NFINE_CELL, BOXM_DS%NSBOXM, BOXM_DS%NPP, &
                             BOXM_DS%NPC, BOXM_DS%NTC, BOXM_DS%NFL)
 
-            ! SUBTRACT UPDATED BG CHEM FROM TOTAL TO GET REMAINING IN PLUME
-            Y_DEL_F_CELL = Y_TOT_F_CELL - Y_BG_F_CELL
+            ! Subtract the EVOLVED (post-chem) background to isolate the
+            ! perturbation delta.  Y_BG_C has already been updated by
+            ! RUN_COARSE_BG_CHEM before this routine was called.
+            DO I = 1, NFINE_CELL
+                Y_DEL_F_CELL(I,:) = Y_TOT_F_CELL(I,:) - BOXM_STATE%Y_BG_C(CELL_C,:)
+            END DO
 
             ! WRITE BACK RESULTS TO PATCH_STATE%Y_DEL_F
             DO I = 1, NFINE_CELL
@@ -8144,10 +8104,7 @@ CONTAINS
             DO SPECIES_ID = 1, PL_STATE%NSPL
                 IF (ANY(PL_DS%SPECIES_EMI_NUM(:) == PL_STATE%SPECIES_PL_NUM(SPECIES_ID))) THEN
                     PL_OUT%PL_MASS(:,SPECIES_ID,OUT_I) = PL_STATE%PL_MASS(:,SPECIES_ID)
-                    ! DO SEG_ID = 1, PL_OUT%NSEG
-                    !     PRINT *, "PL_OUT PL_MASS=", PL_OUT%PL_MASS(SEG_ID,SPECIES_ID,OUT_I), " FOR SPECIES ", &
-                    !             PL_STATE%SPECIES_PL_NUM(SPECIES_ID), "SEG ", SEG_ID, " AT TIME_IDX ", TIME_IDX
-                    ! END DO
+
                 END IF
             END DO
         
@@ -8759,6 +8716,8 @@ CONTAINS
         USE DEFINE_INPUT_TYPES
         USE DEFINE_STATE_TYPES
         USE RUN_CHEM_UTILS
+        USE VALIDATION_UTILS
+        USE HELPERS
         IMPLICIT NONE
 
         CLASS(BOXM_DS_TYPE),     INTENT(IN)    :: BOXM_DS
@@ -8771,16 +8730,37 @@ CONTAINS
         ! Local variables for RUN_LEGACY_CHEM
         INTEGER :: NCELL, NSBOXM, NPP, NPC, NTC, NFL
 
+        ! Pre-chemistry background snapshot for correct operator splitting.
+        ! Both the total (bg_pre + delta) and the background must be evolved
+        ! from the *same* starting point so that the delta captures only the
+        ! perturbation effect.
+        REAL(DP), ALLOCATABLE :: Y_BG_C_PRE(:,:)
+
+        ! Save a copy of the background BEFORE bg chemistry modifies it.
+        ALLOCATE(Y_BG_C_PRE(BOXM_STATE%NCELL, BOXM_DS%NSBOXM))
+        Y_BG_C_PRE(:,:) = BOXM_STATE%Y_BG_C(:,:)
+
         ! === LEGACY BACKGROUND CHEMISTRY ===
         CALL BOXM_STATE%RUN_COARSE_BG_CHEM(BOXM_DS)
         
         IF (BOXM_DS%N_AC > 0) THEN
             ! === FINE PLUME CHEMISTRY ===
-            CALL PATCH_STATE%RUN_FINE_DELTA_CHEM(BOXM_DS, BOXM_STATE)
+            ! Pass the pre-chem bg so that Y_TOT = bg_pre + delta (correct
+            ! starting point).  After chemistry the evolved bg (Y_BG_C) is
+            ! subtracted to isolate the perturbation delta.
+            CALL PATCH_STATE%RUN_FINE_DELTA_CHEM(BOXM_DS, BOXM_STATE, Y_BG_C_PRE)
+
+
+            ! Print diagnostics only on output-cadence timesteps to avoid repeated values
+            IF (MOD((TIME_IDX - 1) * BOXM_DS%TS_SIM, BOXM_DS%TS_OUT) == 0) THEN
+                CALL PRINT_PATCH_SPECIES_DIAG(PATCH_STATE, 8, 'NO', 1.0D-20)
+            END IF
         
             ! === COARSE PLUME CHEMISTRY ===
             CALL BOXM_STATE%RUN_COARSE_DELTA_CHEM(BOXM_DS, PATCH_STATE)
         END IF
+
+        DEALLOCATE(Y_BG_C_PRE)
         
     END SUBROUTINE RUN_CHEM
 
@@ -8879,9 +8859,11 @@ CONTAINS
 
         IF (ALLOCATED(BOXM_STATE%ACTIVE_FLAG)) BOXM_STATE%ACTIVE_FLAG(:) = .FALSE.
 
+        ! Keep patch row mapping between projection updates. Rows are rebuilt in
+        ! PATCH_STATE_BUILD_ROWS_FROM_W on projection steps; clearing them here
+        ! causes diagnostics and coarse aggregation to lose row-cell linkage on
+        ! intermediate chemistry-only timesteps.
         IF (ALLOCATED(PATCH_STATE%TIME_REL_S)) PATCH_STATE%TIME_REL_S(:) = 0
-        IF (ALLOCATED(PATCH_STATE%ROW_CELL_C)) PATCH_STATE%ROW_CELL_C(:) = 0
-        IF (ALLOCATED(PATCH_STATE%ROW_CELL_F)) PATCH_STATE%ROW_CELL_F(:) = 0
 
     END SUBROUTINE RESET_STATES
 
@@ -8922,6 +8904,7 @@ MODULE VALIDATION_UTILS
 
     PRIVATE
     PUBLIC :: PRINT_TOTAL_PLUME_MASS, PRINT_TOTAL_PATCH_MASS, CHECK_SEGMENT_MASS_RECOVERY
+    PUBLIC :: PRINT_PATCH_SPECIES_DIAG
 
 CONTAINS
     SUBROUTINE CHECK_SEGMENT_MASS_RECOVERY(PL_STATE, PATCH_STATE, BOXM_STATE, BOXM_DS, SEG_ID)
@@ -9065,6 +9048,86 @@ CONTAINS
         END DO
         PRINT *, 'Total patch (grid) mass:', TOTAL_PATCH_MASS
     END SUBROUTINE PRINT_TOTAL_PATCH_MASS
+
+    SUBROUTINE PRINT_PATCH_SPECIES_DIAG(PATCH_STATE, SPECIES_ID, SPECIES_NAME, THRESHOLD)
+        IMPLICIT NONE
+
+        CLASS(PATCH_STATE_TYPE), INTENT(IN) :: PATCH_STATE
+        INTEGER,                 INTENT(IN) :: SPECIES_ID
+        CHARACTER(LEN=*),        INTENT(IN) :: SPECIES_NAME
+        REAL(DP),                INTENT(IN) :: THRESHOLD
+
+        INTEGER :: P
+        INTEGER :: N_ACTIVE
+        INTEGER :: P_MAX, P_MIN
+        REAL(DP) :: VAL, ABS_VAL
+        REAL(DP) :: MAX_VAL, MIN_VAL
+        REAL(DP) :: SUM_ACTIVE, MEAN_ACTIVE
+        REAL(DP) :: MAX_ABS_VAL
+
+        IF (.NOT. ALLOCATED(PATCH_STATE%Y_DEL_F)) THEN
+            PRINT *, 'PATCH DIAG: Y_DEL_F not allocated'
+            RETURN
+        END IF
+
+        IF (SPECIES_ID < 1 .OR. SPECIES_ID > SIZE(PATCH_STATE%Y_DEL_F, 2)) THEN
+            PRINT *, 'PATCH DIAG: invalid SPECIES_ID =', SPECIES_ID
+            RETURN
+        END IF
+
+        N_ACTIVE   = 0
+        SUM_ACTIVE = 0.0_DP
+        MAX_VAL    = -HUGE(1.0_DP)
+        MIN_VAL    =  HUGE(1.0_DP)
+        MAX_ABS_VAL = 0.0_DP
+        P_MAX      = 1
+        P_MIN      = 1
+
+        DO P = 1, SIZE(PATCH_STATE%Y_DEL_F, 1)
+            VAL = PATCH_STATE%Y_DEL_F(P, SPECIES_ID)
+            ABS_VAL = ABS(VAL)
+
+            IF (VAL > MAX_VAL) THEN
+                MAX_VAL = VAL
+                P_MAX = P
+            END IF
+
+            IF (VAL < MIN_VAL) THEN
+                MIN_VAL = VAL
+                P_MIN = P
+            END IF
+
+            IF (ABS_VAL > MAX_ABS_VAL) MAX_ABS_VAL = ABS_VAL
+
+            IF (ABS_VAL > THRESHOLD) THEN
+                N_ACTIVE = N_ACTIVE + 1
+                SUM_ACTIVE = SUM_ACTIVE + VAL
+            END IF
+        END DO
+
+        IF (N_ACTIVE > 0) THEN
+            MEAN_ACTIVE = SUM_ACTIVE / REAL(N_ACTIVE, DP)
+        ELSE
+            RETURN
+        END IF
+
+        PRINT *, '--------------------------------------------------'
+        PRINT *, 'PATCH DIAG: ', TRIM(SPECIES_NAME), ' species_id=', SPECIES_ID
+        PRINT *, '  NROWS         = ', SIZE(PATCH_STATE%Y_DEL_F, 1)
+        PRINT *, '  THRESHOLD     = ', THRESHOLD
+        PRINT *, '  N_ACTIVE      = ', N_ACTIVE
+        PRINT *, '  MAX_VAL       = ', MAX_VAL, ' at row ', P_MAX
+        PRINT *, '  MIN_VAL       = ', MIN_VAL, ' at row ', P_MIN
+        PRINT *, '  MAX_ABS_VAL   = ', MAX_ABS_VAL
+        PRINT *, '  MEAN_ACTIVE   = ', MEAN_ACTIVE
+
+        IF (ALLOCATED(PATCH_STATE%ROW_CELL_C) .AND. ALLOCATED(PATCH_STATE%ROW_CELL_F)) THEN
+            PRINT *, '  MAX row coarse/fine cell = ', PATCH_STATE%ROW_CELL_C(P_MAX), PATCH_STATE%ROW_CELL_F(P_MAX)
+            PRINT *, '  MIN row coarse/fine cell = ', PATCH_STATE%ROW_CELL_C(P_MIN), PATCH_STATE%ROW_CELL_F(P_MIN)
+        END IF
+
+        PRINT *, '--------------------------------------------------'
+    END SUBROUTINE PRINT_PATCH_SPECIES_DIAG
 
 END MODULE VALIDATION_UTILS
 

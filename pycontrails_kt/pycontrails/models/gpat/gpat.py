@@ -1437,7 +1437,7 @@ class GPATSetup:
         # Save to NetCDF file
         self.gpat.patch_table.to_netcdf(nc_path, mode="w", unlimited_dims=["row"])
         print(f"Saved {nc_path}")
-             
+
     # Helper functions used in GPAT Setup
     def calc_heading(self, pl_df: pd.DataFrame) -> pd.DataFrame:
         """Calculate heading for each plume at each timestep."""

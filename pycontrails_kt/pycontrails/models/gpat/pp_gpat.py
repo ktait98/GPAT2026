@@ -203,21 +203,21 @@ class GPATAnalysis:
 
     def print_input_ds(self, job_id, ds_type):
         if ds_type == "fl":
-            print(self.pp_gpat.fl_ds_dict[job_id])
+            print(self.pp_gpat.fl_ds_dict[job_id], "\n")
         elif ds_type == "pl":
-            print(self.pp_gpat.pl_ds_dict[job_id])
+            print(self.pp_gpat.pl_ds_dict[job_id], "\n")
         elif ds_type == "boxm":
-            print(self.pp_gpat.boxm_ds_dict[job_id])
+            print(self.pp_gpat.boxm_ds_dict[job_id], "\n")
         else:
             print("Invalid dataset type. Please choose from 'fl', 'pl', or 'boxm'.")
 
     def print_output_ds(self, job_id, ds_type):
         if ds_type == "boxm_out":
-            print(self.pp_gpat.boxm_out_dict[job_id])
+            print(self.pp_gpat.boxm_out_dict[job_id], "\n")
         elif ds_type == "patch_table":
-            print(self.pp_gpat.patch_table_dict[job_id])
+            print(self.pp_gpat.patch_table_dict[job_id], "\n")
         elif ds_type == "pl_out":
-            print(self.pp_gpat.pl_out_dict[job_id])
+            print(self.pp_gpat.pl_out_dict[job_id], "\n")
         else:
             print("Invalid dataset type. Please choose from 'boxm_out', 'patch_table', or 'pl_out'.")
 
@@ -243,6 +243,205 @@ class GPATAnalysis:
 
         print(f"DataArray '{da_name}' not found in {ds_type} for job_id {job_id}.")
 
+    def summarize_pl_out_species(self, job_id, species="NO", filter_active=False):
+        """Return time-indexed summary stats for plume mass and delta mass for one species.
+        
+        Parameters
+        ----------
+        job_id : str
+            Job ID
+        species : str
+            Species name (default "NO")
+        filter_active : bool
+            If True, only return timesteps where max_pl_mass > 0 (polluted timesteps)
+        """
+        pl_out = self.pp_gpat.pl_out_dict[job_id]
+        pl_mass = pl_out["pl_mass"].sel(species_pl=species)
+
+        summary = pd.DataFrame(
+            {
+                "time_idx": np.asarray(pl_out["time_idx"].values, dtype=int),
+                "max_pl_mass": pl_mass.max(dim="seg_id", skipna=True).values,
+                "min_pl_mass": pl_mass.min(dim="seg_id", skipna=True).values,
+            }
+        )
+        
+        if filter_active:
+            summary = summary[summary["max_pl_mass"] > 0].reset_index(drop=True)
+        
+        return summary
+
+    def summarize_boxm_species(self, job_id, species="NO", filter_active=False, activity_threshold=0.0):
+        """Return time-indexed summary stats for coarse bg/delta/total for one species."""
+        boxm_out = self.pp_gpat.boxm_out_dict[job_id]
+
+        y_bg = boxm_out["Y_bg_c"].sel(species_out=species)
+        y_del = boxm_out["Y_del_c"].sel(species_out=species)
+        # Treat missing delta values as zero when forming total.
+        y_tot = y_bg + xr.where(np.isfinite(y_del), y_del, 0.0)
+
+        reduce_dims = [d for d in y_bg.dims if d != "time"]
+        neg_count = (y_tot < 0).sum(dim=reduce_dims)
+        y_del_finite_count = np.isfinite(y_del).sum(dim=reduce_dims)
+        y_del_all_nan = (y_del_finite_count == 0)
+
+        summary = pd.DataFrame(
+            {
+                "time_idx": np.asarray(boxm_out["time_idx"].values, dtype=int),
+                "bg_min": y_bg.min(dim=reduce_dims, skipna=True).values,
+                "bg_max": y_bg.max(dim=reduce_dims, skipna=True).values,
+                "del_min": y_del.min(dim=reduce_dims, skipna=True).values,
+                "del_max": y_del.max(dim=reduce_dims, skipna=True).values,
+                "tot_min": y_tot.min(dim=reduce_dims, skipna=True).values,
+                "tot_max": y_tot.max(dim=reduce_dims, skipna=True).values,
+                "tot_neg_count": np.asarray(neg_count.values, dtype=int),
+                "del_finite_count": np.asarray(y_del_finite_count.values, dtype=int),
+                "del_all_nan": np.asarray(y_del_all_nan.values, dtype=bool),
+            }
+        )
+
+        if filter_active:
+            thr = float(activity_threshold)
+            active_mask = (
+                (~summary["del_all_nan"]) &
+                ((summary["del_max"] > thr) | (summary["del_min"] < -thr))
+            )
+            summary = summary[active_mask].reset_index(drop=True)
+        return summary
+
+    def find_negative_total_cells(self, job_id, species="NO", time_idx=None, max_rows=20):
+        """Return rows where total concentration (Y_bg_c + Y_del_c) is negative."""
+        boxm_out = self.pp_gpat.boxm_out_dict[job_id]
+        y_bg = boxm_out["Y_bg_c"].sel(species_out=species)
+        y_del = boxm_out["Y_del_c"].sel(species_out=species)
+        y_tot = y_bg + y_del
+
+        if time_idx is not None and "time_idx" in boxm_out.coords:
+            all_tidx = np.asarray(boxm_out["time_idx"].values, dtype=int)
+            t_sel = int(all_tidx[np.argmin(np.abs(all_tidx - int(time_idx)))])
+            t_loc = np.flatnonzero(all_tidx == t_sel)
+            if t_loc.size == 0:
+                return pd.DataFrame()
+            y_bg = y_bg.isel(time=t_loc).squeeze("time")
+            y_del = y_del.isel(time=t_loc).squeeze("time")
+            y_tot = y_tot.isel(time=t_loc).squeeze("time")
+
+        neg_mask = xr.apply_ufunc(np.isfinite, y_tot, dask="parallelized") & (y_tot < 0)
+        neg_mask = neg_mask.compute()
+        neg_ds = xr.Dataset({"y_tot": y_tot, "y_bg": y_bg, "y_del": y_del}).where(neg_mask, drop=True)
+        if neg_ds.sizes.get("time", 0) == 0 and "time" in neg_ds.sizes:
+            return pd.DataFrame()
+
+        out = neg_ds.to_dataframe().reset_index()
+        out = out[np.isfinite(out["y_tot"])].copy()
+        out = out.sort_values("y_tot")
+        if max_rows is not None:
+            out = out.head(int(max_rows))
+        return out
+
+    def summarize_patch_species(self, job_id, species="NO", threshold=1.0e-20, chunk_rows=200000):
+        """Return patch-table summary by time_idx for one species.
+
+        Uses chunked aggregation over rows to avoid memory spikes on large patch tables.
+        """
+        patch_table = self.pp_gpat.patch_table_dict.get(job_id)
+        if patch_table is None:
+            return pd.DataFrame()
+
+        y_del = patch_table["Y_del_f"].sel(species_out=species)
+        if "row" not in y_del.dims or "time_idx" not in patch_table:
+            return pd.DataFrame()
+
+        n_rows_total = int(y_del.sizes["row"])
+        if n_rows_total <= 0:
+            return pd.DataFrame()
+
+        thr = float(threshold)
+        chunk_rows = max(1, int(chunk_rows))
+
+        nrows_by_t = {}
+        nactive_by_t = {}
+        neg_by_t = {}
+        sum_active_by_t = {}
+        max_by_t = {}
+        min_by_t = {}
+
+        for i0 in range(0, n_rows_total, chunk_rows):
+            i1 = min(n_rows_total, i0 + chunk_rows)
+            t_chunk = np.asarray(patch_table["time_idx"].isel(row=slice(i0, i1)).values, dtype=int)
+            y_chunk = np.asarray(y_del.isel(row=slice(i0, i1)).values, dtype=float)
+
+            if t_chunk.size == 0:
+                continue
+
+            unique_t = np.unique(t_chunk)
+            for t in unique_t:
+                mask_t = (t_chunk == t)
+                vals = y_chunk[mask_t]
+                if vals.size == 0:
+                    continue
+
+                finite = np.isfinite(vals)
+                if not np.any(finite):
+                    nrows_inc = 0
+                    nactive_inc = 0
+                    neg_inc = 0
+                    sum_active_inc = 0.0
+                    max_inc = -np.inf
+                    min_inc = np.inf
+                else:
+                    vals_f = vals[finite]
+                    nrows_inc = int(vals_f.size)
+
+                    active = np.abs(vals_f) > thr
+                    nactive_inc = int(np.sum(active))
+                    neg_inc = int(np.sum(vals_f < 0.0))
+                    sum_active_inc = float(np.sum(vals_f[active])) if nactive_inc > 0 else 0.0
+
+                    max_inc = float(np.max(vals_f))
+                    min_inc = float(np.min(vals_f))
+
+                nrows_by_t[t] = nrows_by_t.get(t, 0) + nrows_inc
+                nactive_by_t[t] = nactive_by_t.get(t, 0) + nactive_inc
+                neg_by_t[t] = neg_by_t.get(t, 0) + neg_inc
+                sum_active_by_t[t] = sum_active_by_t.get(t, 0.0) + sum_active_inc
+
+                if t in max_by_t:
+                    max_by_t[t] = max(max_by_t[t], max_inc)
+                    min_by_t[t] = min(min_by_t[t], min_inc)
+                else:
+                    max_by_t[t] = max_inc
+                    min_by_t[t] = min_inc
+
+        if not nrows_by_t:
+            return pd.DataFrame()
+
+        times = np.array(sorted(nrows_by_t.keys()), dtype=int)
+        nrows = np.array([nrows_by_t[t] for t in times], dtype=int)
+        n_active = np.array([nactive_by_t.get(t, 0) for t in times], dtype=int)
+        neg_count = np.array([neg_by_t.get(t, 0) for t in times], dtype=int)
+        max_val = np.array([max_by_t.get(t, np.nan) for t in times], dtype=float)
+        min_val = np.array([min_by_t.get(t, np.nan) for t in times], dtype=float)
+        sum_active = np.array([sum_active_by_t.get(t, 0.0) for t in times], dtype=float)
+
+        mean_active = np.zeros_like(sum_active, dtype=float)
+        nz = n_active > 0
+        mean_active[nz] = sum_active[nz] / n_active[nz]
+
+        out = pd.DataFrame(
+            {
+                "time_idx": times,
+                "nrows": nrows,
+                "n_active": n_active,
+                "max_val": max_val,
+                "min_val": min_val,
+                "mean_active": mean_active,
+                "neg_count": neg_count,
+            }
+        )
+
+        return out.reset_index(drop=True)
+
 class GPATPlotting:
     """Plot GPAT model outputs."""
 
@@ -250,6 +449,96 @@ class GPATPlotting:
         self.pp_gpat = pp_gpat
         self.patch_plot_min_value = None
         self.patch_plot_max_log10_span = 3.0
+
+    def plot_species_budget_timeseries(self, job_id, species="NO", level=None, metric="mean"):
+        """Plot bg, delta and total coarse fields through time for one species."""
+        boxm_out = self.pp_gpat.boxm_out_dict[job_id]
+        y_bg = boxm_out["Y_bg_c"].sel(species_out=species)
+        y_del = boxm_out["Y_del_c"].sel(species_out=species)
+
+        if level is not None and "level_c" in y_bg.dims:
+            lev = np.asarray(y_bg["level_c"].values, dtype=float)
+            k = int(np.argmin(np.abs(lev - float(level))))
+            y_bg = y_bg.isel(level_c=k)
+            y_del = y_del.isel(level_c=k)
+            print(f"Using nearest level_c={lev[k]} for requested level={level}")
+
+        y_tot = y_bg + y_del
+        reduce_dims = [d for d in y_bg.dims if d != "time"]
+        if metric == "sum":
+            bg_s = y_bg.sum(dim=reduce_dims)
+            del_s = y_del.sum(dim=reduce_dims)
+            tot_s = y_tot.sum(dim=reduce_dims)
+            y_label = "domain sum"
+        else:
+            bg_s = y_bg.mean(dim=reduce_dims)
+            del_s = y_del.mean(dim=reduce_dims)
+            tot_s = y_tot.mean(dim=reduce_dims)
+            y_label = "domain mean"
+
+        x = np.asarray(boxm_out["time_idx"].values, dtype=int)
+        fig, ax = plt.subplots(figsize=(9, 4.5))
+        ax.plot(x, bg_s.values, label="Y_bg_c")
+        ax.plot(x, del_s.values, label="Y_del_c")
+        ax.plot(x, tot_s.values, label="Y_total = Y_bg_c + Y_del_c")
+        ax.axhline(0.0, color="black", lw=0.8, alpha=0.6)
+        ax.set_xlabel("time_idx")
+        ax.set_ylabel(y_label)
+        ax.set_title(f"Coarse species budget: {species}")
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        plt.tight_layout()
+        plt.show()
+
+    def plot_negative_total_map(self, job_id, species="NO", time_idx=None, level=None):
+        """Plot total coarse field and overlay cells where total < 0."""
+        boxm_out = self.pp_gpat.boxm_out_dict[job_id]
+        y_bg = boxm_out["Y_bg_c"].sel(species_out=species)
+        y_del = boxm_out["Y_del_c"].sel(species_out=species)
+        y_tot = y_bg + y_del
+
+        all_tidx = np.asarray(boxm_out["time_idx"].values, dtype=int)
+        if time_idx is None:
+            neg_any = ((y_tot < 0).sum(dim=[d for d in y_tot.dims if d != "time"]) > 0).values
+            if np.any(neg_any):
+                t_sel = int(all_tidx[np.flatnonzero(neg_any)[0]])
+            else:
+                t_sel = int(all_tidx[0])
+        else:
+            t_sel = int(all_tidx[np.argmin(np.abs(all_tidx - int(time_idx)))])
+
+        t_loc = np.flatnonzero(all_tidx == t_sel)
+        ds_t = y_tot.isel(time=t_loc).squeeze("time")
+        if level is not None and "level_c" in ds_t.dims:
+            lev = np.asarray(ds_t["level_c"].values, dtype=float)
+            k = int(np.argmin(np.abs(lev - float(level))))
+            ds_t = ds_t.isel(level_c=k)
+            print(f"Using nearest level_c={lev[k]} for requested level={level}")
+        elif "level_c" in ds_t.dims:
+            ds_t = ds_t.isel(level_c=0)
+
+        vals = np.asarray(ds_t.values, dtype=float)
+        if vals.ndim == 2:
+            vals = vals.T  # (lat, lon)
+        lon = np.asarray(boxm_out["longitude_c"].values, dtype=float)
+        lat = np.asarray(boxm_out["latitude_c"].values, dtype=float)
+
+        neg_mask = np.isfinite(vals) & (vals < 0)
+        n_neg = int(np.sum(neg_mask))
+        print(f"time_idx={t_sel}: negative total cells={n_neg}")
+
+        fig, ax = plt.subplots(figsize=(8, 6))
+        mesh = ax.pcolormesh(lon, lat, vals, shading="auto", cmap="RdBu_r")
+        fig.colorbar(mesh, ax=ax, label="Y_total")
+        if n_neg > 0:
+            iy, ix = np.where(neg_mask)
+            ax.scatter(lon[ix], lat[iy], s=12, c="k", alpha=0.6, label="total < 0")
+            ax.legend(loc="best")
+        ax.set_xlabel("Longitude")
+        ax.set_ylabel("Latitude")
+        ax.set_title(f"Total coarse field for {species} at time_idx={t_sel}")
+        plt.tight_layout()
+        plt.show()
 
     # Time series line plotting
     def plot_time_series(self, job_id, species="NO", level=None, lat=None, lon=None, data_var="Y_bg_c", avg_over_domain=False):
@@ -767,6 +1056,21 @@ class GPATPlotting:
         slider.on_changed(slider_update)
         draw_frame(int(time_indices[0]))
         plt.show()
+
+    def _patch_value_mask(self, arr):
+        """Return (mask, min_finite_positive_value) for valid patch values (finite and > 0)."""
+        arr = np.asarray(arr, dtype=float)
+        mask = np.isfinite(arr) & (arr > 0)
+        plot_floor = np.nanmin(arr[mask]) if np.any(mask) else None
+        return mask, plot_floor
+    
+    def _resolve_patch_plot_floor(self, arr):
+        """Return the minimum finite, positive value in arr, or None if not found."""
+        arr = np.asarray(arr, dtype=float)
+        mask = np.isfinite(arr) & (arr > 0)
+        if np.any(mask):
+            return np.nanmin(arr[mask])
+        return None
 
     def animate_plumes_3d_plotly(
         self,
@@ -1370,7 +1674,6 @@ class GPATPlotting:
         fig.write_html(output_path, include_plotlyjs="cdn")
         print(f"Plotly animation saved → {output_path}")
 
-
 class GPATValidation:
     """Validate GPAT model outputs."""
 
@@ -1511,7 +1814,6 @@ class GPATValidation:
         )
 
         return update_chem_ds(data_path, chem_ds, job_id)
-
 
 # Helper functions for PP GPAT
 def lonlat_to_m(lon, lat, global_ref_lon, global_ref_lat):
