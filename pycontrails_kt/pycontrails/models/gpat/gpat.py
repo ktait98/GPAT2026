@@ -79,6 +79,8 @@ class SimParams:
     lat_bounds: tuple[float, float] = (0.0, 1.0)  # lat bounds [deg]
     lon_bounds: tuple[float, float] = (0.0, 1.0)  # lon bounds [deg]
     alt_bounds: tuple[float, float] = (12000, 13000)  # alt bounds [m]
+    domain_mode: Literal["fixed", "auto"] = "fixed"  # "auto" derives bounds from flight start/end points
+    domain_margin_deg: float = 0.0  # extra horizontal buffer [deg] added to auto bounds for plume advection
     hres_sim_c: float = 0.01  # horizontal resolution [deg]
     vres_sim_c: float = 500  # vertical resolution [m]
     hres_sim_f: float = 0.001  # horizontal resolution [deg]
@@ -130,6 +132,7 @@ class ChemParams:
     """Default chemistry parameters."""
 
     run_chem: bool = True  # whether to run chemistry model
+    delta_chem_mode: int = 0  # 0=fine only, 1=fine+coarse delta chemistry
 
     species_emi: tuple[str, ...] = ("NO",)
     
@@ -193,41 +196,8 @@ class GPAT(Model):
                  chem_params: ChemParams):
         super().__init__()
 
-        # Generate the coarse grid vectors
-        self.lats = np.arange(
-            sim_params.lat_bounds[0] + sim_params.hres_sim_c / 2,
-            sim_params.lat_bounds[1],
-            sim_params.hres_sim_c,
-        )
-        self.lons = np.arange(
-            sim_params.lon_bounds[0] + sim_params.hres_sim_c / 2,
-            sim_params.lon_bounds[1],
-            sim_params.hres_sim_c,
-        )
-        self.alts = np.arange(
-            sim_params.alt_bounds[0] + sim_params.vres_sim_c / 2,
-            sim_params.alt_bounds[1],
-            sim_params.vres_sim_c,
-        )
-
-        self.levels = units.m_to_pl(self.alts)
-
-        # Convert 1D lon/lat axes to meter axes in a way that also works
-        # for rectangular grids where len(lons) != len(lats).
-        ref_lon = float(self.lons.min())
-        ref_lat = float(self.lats.min())
-        self.lons_m, _ = lonlat_to_m(
-            self.lons,
-            np.full_like(self.lons, ref_lat, dtype=float),
-            ref_lon,
-            ref_lat,
-        )
-        _, self.lats_m = lonlat_to_m(
-            np.full_like(self.lats, ref_lon, dtype=float),
-            self.lats,
-            ref_lon,
-            ref_lat,
-        )
+        # Build spatial grid from current bounds
+        self._build_grid(sim_params)
 
         # Generate time vectors
         self.times_fl = pd.date_range(
@@ -310,12 +280,106 @@ class GPAT(Model):
         self.setup = GPATSetup(self)
         self.run = GPATRun(self)
 
+    def _build_grid(self, sim_params):
+        """Build coarse grid vectors and meter axes from sim_params bounds."""
+        self.lats = np.arange(
+            sim_params.lat_bounds[0] + sim_params.hres_sim_c / 2,
+            sim_params.lat_bounds[1],
+            sim_params.hres_sim_c,
+        )
+        self.lons = np.arange(
+            sim_params.lon_bounds[0] + sim_params.hres_sim_c / 2,
+            sim_params.lon_bounds[1],
+            sim_params.hres_sim_c,
+        )
+        self.alts = np.arange(
+            sim_params.alt_bounds[0] + sim_params.vres_sim_c / 2,
+            sim_params.alt_bounds[1],
+            sim_params.vres_sim_c,
+        )
+
+        self.levels = units.m_to_pl(self.alts)
+
+        # Convert 1D lon/lat axes to meter axes
+        ref_lon = float(self.lons.min())
+        ref_lat = float(self.lats.min())
+        self.lons_m, _ = lonlat_to_m(
+            self.lons,
+            np.full_like(self.lons, ref_lat, dtype=float),
+            ref_lon,
+            ref_lat,
+        )
+        _, self.lats_m = lonlat_to_m(
+            np.full_like(self.lats, ref_lon, dtype=float),
+            self.lats,
+            ref_lon,
+            ref_lat,
+        )
+
+    def _auto_bounds_from_flights(self, flights):
+        """Derive domain bounds from flight start/end waypoints.
+
+        Sets ``sim_params.*_bounds`` to the bounding box of all first and
+        last waypoints, plus a configurable horizontal margin, snapped
+        outward to the nearest coarse grid cell boundary.
+
+        The margin (``sim_params.domain_margin_deg``) should account for
+        plume advection and dispersion so that plumes blown by wind are
+        not clipped at the domain edge.
+        """
+        lats, lons, alts = [], [], []
+        for fl in flights:
+            df = fl.dataframe
+            for idx in [0, -1]:  # first and last waypoint
+                lats.append(float(df["latitude"].iloc[idx]))
+                lons.append(float(df["longitude"].iloc[idx]))
+                alts.append(float(df["altitude"].iloc[idx]))
+
+        lat_min, lat_max = min(lats), max(lats)
+        lon_min, lon_max = min(lons), max(lons)
+        alt_min, alt_max = min(alts), max(alts)
+
+        # Apply horizontal margin for plume advection/dispersion
+        margin = self.sim_params.domain_margin_deg
+        lat_min -= margin
+        lat_max += margin
+        lon_min -= margin
+        lon_max += margin
+
+        # Snap bounds outward to coarse grid resolution
+        hres = self.sim_params.hres_sim_c
+        lat_min = np.floor(lat_min / hres) * hres
+        lat_max = np.ceil(lat_max / hres) * hres
+        lon_min = np.floor(lon_min / hres) * hres
+        lon_max = np.ceil(lon_max / hres) * hres
+
+        # Pad altitude and snap to vertical resolution
+        vres = self.sim_params.vres_sim_c
+        alt_min = np.floor(alt_min / vres) * vres
+        alt_max = np.ceil(alt_max / vres) * vres
+
+        self.sim_params.lat_bounds = (lat_min, lat_max)
+        self.sim_params.lon_bounds = (lon_min, lon_max)
+        self.sim_params.alt_bounds = (alt_min, alt_max)
+
+        print(
+            f"Auto domain bounds (margin={margin:.4f} deg, snapped to hres={hres}, vres={vres}):\n"
+            f"  lat_bounds = ({lat_min:.6f}, {lat_max:.6f})\n"
+            f"  lon_bounds = ({lon_min:.6f}, {lon_max:.6f})\n"
+            f"  alt_bounds = ({alt_min:.1f}, {alt_max:.1f})"
+        )
+
     def preprocess_gpat(self):
         """Preprocess inputs for GPAT FORTRAN implementation (BOXM and CONTRAIL in future)."""
         # Generate flight trajectory points
         if self.fl_params.n_ac > 0:
             self.fl = self.setup.traj_gen()
-        
+
+        # Auto-derive domain bounds from flight endpoints if requested
+        if self.sim_params.domain_mode == "auto" and self.fl_params.n_ac > 0:
+            self._auto_bounds_from_flights(self.fl)
+            self._build_grid(self.sim_params)
+
         # Generate meteorological data
         self.met = self.setup.gen_met()
 
@@ -1082,8 +1146,6 @@ class GPATSetup:
         drop_vars = [
             "specific_humidity",
             "relative_humidity",
-            "eastward_wind",
-            "northward_wind",
             "lagrangian_tendency_of_air_pressure",
             "month",
         ]
@@ -1109,7 +1171,13 @@ class GPATSetup:
             flux_species=130,
 
             run_chem=int(chem_params.run_chem),
+            delta_chem_mode=int(chem_params.delta_chem_mode),
             n_ac=fl_params.n_ac,
+
+            # grid topology for advection
+            nlon=len(self.gpat.boxm_ds.longitude),
+            nlat=len(self.gpat.boxm_ds.latitude),
+            nlev=len(self.gpat.boxm_ds.level),
 
             description="BOXM coarse-grid meteorology and background chemistry fields",
             note="Emissions and plume segments handled separately via PL_DS.NC and FL_DS.NC",
@@ -1512,16 +1580,9 @@ class GPATSetup:
         
         sim_params = self.gpat.sim_params
         
-        lons = np.asarray(self.gpat.lons, dtype=float)
-        lats = np.asarray(self.gpat.lats, dtype=float)
-        alts = np.asarray(self.gpat.alts, dtype=float)
-
-        lon_min = float(lons.min())
-        lon_max = float(lons.max())
-        lat_min = float(lats.min())
-        lat_max = float(lats.max())
-        alt_min = float(alts.min())
-        alt_max = float(alts.max())
+        lon_min, lon_max = sim_params.lon_bounds
+        lat_min, lat_max = sim_params.lat_bounds
+        alt_min, alt_max = sim_params.alt_bounds
 
         mask = (
             (flight.dataframe["longitude"] >= lon_min)
@@ -1540,17 +1601,11 @@ class GPATSetup:
     
     def mask_plume_to_sim_domain(self, plume: GeoVectorDataset) -> GeoVectorDataset:
 
+        sim_params = self.gpat.sim_params
 
-        lons = np.asarray(self.gpat.lons, dtype=float)
-        lats = np.asarray(self.gpat.lats, dtype=float)
-        alts = np.asarray(self.gpat.alts, dtype=float)
-
-        lon_min = float(lons.min())
-        lon_max = float(lons.max())
-        lat_min = float(lats.min())
-        lat_max = float(lats.max())
-        alt_min = float(alts.min())
-        alt_max = float(alts.max())
+        lon_min, lon_max = sim_params.lon_bounds
+        lat_min, lat_max = sim_params.lat_bounds
+        alt_min, alt_max = sim_params.alt_bounds
 
         mask = (
             (plume.dataframe["longitude"] >= lon_min)

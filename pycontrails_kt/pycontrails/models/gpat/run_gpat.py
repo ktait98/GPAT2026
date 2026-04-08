@@ -10,7 +10,7 @@ import holoviews as hv
 # global simulation parameters
 sim_params = {
     "t_fl": (pd.to_datetime("2022-01-20 13:00:00"), pd.Timedelta(seconds=60), pd.Timedelta(minutes=60)),# (start time, time step, run time)
-    "t_pl": (pd.to_datetime("2022-01-20 13:00:00"), pd.Timedelta(seconds=60), pd.Timedelta(hours=10)),# (start time, time step, max age)
+    "t_pl": (pd.to_datetime("2022-01-20 13:00:00"), pd.Timedelta(seconds=60), pd.Timedelta(hours=8)),# (start time, time step, max age)
     "t_sim": (pd.to_datetime("2022-01-20 12:00:00"), pd.Timedelta(seconds=20), pd.Timedelta(hours=24)),# (start time, time step, run time)
     "t_out": (pd.to_datetime("2022-01-20 12:00:00"), pd.Timedelta(seconds=60), pd.Timedelta(hours=24)),# (start time, time step, run time)
     "lat_bounds": (0, 1),  # lat bounds [deg]
@@ -20,6 +20,8 @@ sim_params = {
     "vres_sim_c": 500,  # coarse vertical resolution [m]
     "hres_sim_f": 0.025,  # fine horizontal resolution [deg]
     "vres_sim_f": 500,  # fine vertical resolution [m]
+    "domain_mode": "fixed",  # "fixed" or "auto"
+    "domain_margin_deg": 0.01,  # extra horizontal buffer [deg] added to auto bounds for plume advection
 
     "run_path": "/home/ktait98/GPAT2026/pycontrails_kt/pycontrails/models/gpat/",
     "data_path": "/home/ktait98/GPAT2026/pycontrails_kt/pycontrails/models/gpat/data/", # "/projects/Impact_of_aviation_on_climate
@@ -28,7 +30,7 @@ sim_params = {
 
 #flight trajectory parameters
 fl_params = {
-    "mode": "synthetic",
+    "mode": "direct",
     "file": "data/flights/2_flights_origin.csv",  # flight trajectory file
 
     "ac_type": "A320",  # aircraft type

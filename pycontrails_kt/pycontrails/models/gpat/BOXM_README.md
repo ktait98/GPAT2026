@@ -415,8 +415,6 @@ Projection proceeds broadly as:
 4. Store only nonzero mappings in sparse arrays.
 5. Convert plume mass into fine-grid concentration perturbations using the overlap weights and fine-cell volume.
 
-This avoids solving chemistry on an everywhere-refined domain.
-
 ### Fine-grid chemistry
 For each active coarse cell:
 
@@ -435,8 +433,7 @@ Finally, the fine-grid perturbation field is mapped back to segment species mass
 
 This is what gives BOXM its coupled plume/grid character.
 
-## Main Design Ideas in BOXM
-
+## BOXM Features
 A few design choices define the structure of the code:
 
 ### Sparse fine-grid storage
@@ -445,10 +442,8 @@ The code does not store a full refined grid. It stores only touched fine cells t
 ### Separation of concerns
 - NetCDF I/O lives in dataset/output modules.
 - Evolving concentrations and geometry live in state modules.
-- Chemistry lives in `RUN_CHEM_UTILS`.
+- Chemistry model lives in `RUN_CHEM_UTILS`.
 - Orchestration lives in `BOXM_RUN_UTILS`.
-
-That makes the code much easier to reason about.
 
 ### Coarse background plus plume perturbation split
 The model distinguishes between:

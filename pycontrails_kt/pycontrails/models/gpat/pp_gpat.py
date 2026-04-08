@@ -1,4 +1,6 @@
 """GPATPostProcessor class for post-processing GPAT model outputs."""
+import pathlib
+import subprocess
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -16,7 +18,9 @@ from IPython.display import display, clear_output
 class GPATPostProcessor:
     """Post-process GPAT model outputs."""
 
-    def __init__(self, data_path, criteria):
+    def __init__(self, run_path, data_path, criteria):
+        self.run_path = run_path
+        self.data_path = data_path
         
         self.params_dict = {}
         self.fl_ds_dict = {}
@@ -442,6 +446,68 @@ class GPATAnalysis:
 
         return out.reset_index(drop=True)
 
+    def rank_fine_cells(self, job_id, species="NO", time_indices=None, n=5):
+        """Rank fine cells by |Y_del_f| into high/mid/low/background tiers.
+
+        Parameters
+        ----------
+        job_id : str
+        species : str
+        time_indices : list[int] or None
+            Specific time indices to consider.  None = all timesteps.
+        n : int
+            Number of cells to show per tier.
+        """
+        pt = self.pp_gpat.patch_table_dict[job_id]
+        t_all = pt["time_idx"].values.astype(int)
+
+        if time_indices is not None:
+            mask = np.isin(t_all, time_indices)
+            pt = pt.isel(row=np.flatnonzero(mask))
+
+        y = pt["Y_del_f"].sel(species_out=species).values.astype(float).ravel()
+        lat = pt["latitude_f"].values.astype(float).ravel()
+        lon = pt["longitude_f"].values.astype(float).ravel()
+        alt = pt["altitude_f"].values.astype(float).ravel()
+        cc = pt["row_cell_c"].values.astype(int).ravel()
+        cf = pt["row_cell_f"].values.astype(int).ravel()
+        ti = pt["time_idx"].values.astype(int).ravel()
+
+        df = pd.DataFrame({
+            "time_idx": ti, "cell_c": cc, "cell_f": cf,
+            "lat": lat, "lon": lon, "alt": alt, "Y_del_f": y,
+        })
+
+        grp = df.groupby(["cell_c", "cell_f", "lat", "lon", "alt"]).agg(
+            mean_abs=("Y_del_f", lambda x: np.abs(x).mean()),
+            peak=("Y_del_f", "max"),
+            trough=("Y_del_f", "min"),
+            n_times=("Y_del_f", "count"),
+        ).reset_index().sort_values("mean_abs", ascending=False)
+
+        nonzero = grp[grp["mean_abs"] > 0]
+        bg = grp[grp["mean_abs"] == 0]
+
+        tiers = {}
+        tiers["high"] = grp.head(n)
+        if len(nonzero) > n:
+            mid_start = len(nonzero) // 2
+            tiers["mid"] = nonzero.iloc[mid_start : mid_start + n]
+        tiers["low"] = nonzero.tail(n) if len(nonzero) > 0 else pd.DataFrame()
+        tiers["background"] = bg.head(n) if len(bg) > 0 else pd.DataFrame()
+
+        label = f"time_indices={time_indices}" if time_indices else "all timesteps"
+        print(f"\n=== Fine cell ranking for {species} ({label}) ===")
+        print(f"Total unique fine cells: {len(grp)}, nonzero: {len(nonzero)}, pure bg: {len(bg)}")
+        for name, tier_df in tiers.items():
+            print(f"\n--- {name.upper()} (n={len(tier_df)}) ---")
+            if len(tier_df) > 0:
+                print(tier_df.to_string(index=False))
+            else:
+                print("  (none)")
+
+        return tiers
+
 class GPATPlotting:
     """Plot GPAT model outputs."""
 
@@ -682,7 +748,7 @@ class GPATPlotting:
         self,
         job_id,
         species="NO",
-        mode="total",                    # "background", "coarse_delta", "patch_delta", "total", "total_with_patch"
+        mode="total",                    # "background", "coarse_delta", "patch_delta", "patch_delta_fine", "total", "total_with_patch"
         level=None,                      # required for vertical_mode="single"
         time_indices=None,
         vertical_mode="single",          # "single", "column", "topk"
@@ -727,7 +793,7 @@ class GPATPlotting:
         import matplotlib.pyplot as plt
         from matplotlib.widgets import Slider
 
-        allowed_modes = {"background", "coarse_delta", "patch_delta", "total", "total_with_patch"}
+        allowed_modes = {"background", "coarse_delta", "patch_delta", "patch_delta_fine", "total", "total_with_patch", "total_with_patch_fine"}
         if mode not in allowed_modes:
             raise ValueError(f"mode must be one of {allowed_modes}, got {mode!r}")
 
@@ -945,6 +1011,8 @@ class GPATPlotting:
                 plot_2d = coarse_del_2d
             elif mode == "patch_delta":
                 plot_2d = patch_del_2d
+            elif mode in ("patch_delta_fine", "total_with_patch_fine"):
+                plot_2d = None  # handled separately in draw_frame
             elif mode == "total":
                 plot_2d = bg_2d + coarse_del_2d
             elif mode == "total_with_patch":
@@ -957,25 +1025,66 @@ class GPATPlotting:
         if dynamic_colorbar:
             vmin = vmax = None
         else:
-            mins = []
-            maxs = []
-            print("Precomputing fixed colour scale...")
-            for t_idx in time_indices:
-                vals, _, _, _ = _build_fields(int(t_idx))
-                finite = np.isfinite(vals)
-                if np.any(finite):
-                    mins.append(np.nanmin(vals))
-                    maxs.append(np.nanmax(vals))
-            if not mins:
-                raise ValueError("No finite values found across selected frames.")
-            vmin = float(np.min(mins))
-            vmax = float(np.max(maxs))
+            if mode == "patch_delta_fine":
+                # Precompute from raw fine-cell delta values
+                mins = []
+                maxs = []
+                print("Precomputing fixed colour scale (fine cells)...")
+                for t_idx in time_indices:
+                    df_p = _patch_rows_dataframe(int(t_idx))
+                    if not df_p.empty:
+                        if vertical_mode == "single" and patch_level_req is not None:
+                            levs = df_p["level_f"].values
+                            df_p = df_p[np.isclose(levs, patch_level_req)]
+                        if not df_p.empty:
+                            mins.append(float(df_p["y_del"].min()))
+                            maxs.append(float(df_p["y_del"].max()))
+                if not mins:
+                    raise ValueError("No finite fine-cell values across selected frames.")
+                vmin = float(np.min(mins))
+                vmax = float(np.max(maxs))
+            elif mode == "total_with_patch_fine":
+                # Precompute from bg + delta (total) values
+                mins = []
+                maxs = []
+                print("Precomputing fixed colour scale (total fine cells)...")
+                for t_idx in time_indices:
+                    ds_t = _get_boxm_time_slice(int(t_idx))
+                    bg_2d_t = _get_2d_from_coarse_da(ds_t["Y_bg_c"].sel(species_out=species))
+                    mins.append(float(np.nanmin(bg_2d_t)))
+                    maxs.append(float(np.nanmax(bg_2d_t)))
+                    df_p = _patch_rows_dataframe(int(t_idx))
+                    if not df_p.empty:
+                        if vertical_mode == "single" and patch_level_req is not None:
+                            levs = df_p["level_f"].values
+                            df_p = df_p[np.isclose(levs, patch_level_req)]
+                        if not df_p.empty:
+                            # Peak total = max bg + max delta
+                            maxs.append(float(np.nanmax(bg_2d_t)) + float(df_p["y_del"].max()))
+                if not mins:
+                    raise ValueError("No finite values across selected frames.")
+                vmin = float(np.min(mins))
+                vmax = float(np.max(maxs))
+            else:
+                mins = []
+                maxs = []
+                print("Precomputing fixed colour scale...")
+                for t_idx in time_indices:
+                    vals, _, _, _ = _build_fields(int(t_idx))
+                    finite = np.isfinite(vals)
+                    if np.any(finite):
+                        mins.append(np.nanmin(vals))
+                        maxs.append(np.nanmax(vals))
+                if not mins:
+                    raise ValueError("No finite values found across selected frames.")
+                vmin = float(np.min(mins))
+                vmax = float(np.max(maxs))
             print(f"Fixed colour scale: vmin={vmin}, vmax={vmax}")
 
         fig, ax = plt.subplots(figsize=(8, 6))
-        plt.subplots_adjust(bottom=0.20)
+        plt.subplots_adjust(bottom=0.20, right=0.85)
 
-        slider_ax = fig.add_axes([0.15, 0.06, 0.70, 0.05])
+        slider_ax = fig.add_axes([0.15, 0.06, 0.55, 0.05])
         slider = Slider(
             slider_ax,
             "Time Index",
@@ -985,7 +1094,7 @@ class GPATPlotting:
             valstep=1,
         )
 
-        cbar = None
+        cbar_ax = fig.add_axes([0.87, 0.20, 0.03, 0.68])
 
         def _vertical_label():
             if vertical_mode == "single":
@@ -997,56 +1106,203 @@ class GPATPlotting:
             return vertical_mode
 
         def draw_frame(t_idx_req):
-            nonlocal cbar
             ax.clear()
 
             t_idx_actual = _snap_time_index(t_idx_req)
             vals, bg_2d, coarse_del_2d, patch_del_2d = _build_fields(t_idx_actual)
 
-            finite = np.isfinite(vals)
-            if not np.any(finite):
-                ax.set_title(f"No valid data for time_idx={t_idx_actual}")
-                fig.canvas.draw_idle()
-                return
+            if mode in ("patch_delta_fine", "total_with_patch_fine"):
+                # vals is None for these modes; skip the coarse-grid path
+                pass
+            else:
+                finite = np.isfinite(vals)
+                if not np.any(finite):
+                    ax.set_title(f"No valid data for time_idx={t_idx_actual}")
+                    fig.canvas.draw_idle()
+                    return
 
             if dynamic_colorbar:
-                vmin_loc = float(np.nanmin(vals))
-                vmax_loc = float(np.nanmax(vals))
+                if vals is not None:
+                    vmin_loc = float(np.nanmin(vals))
+                    vmax_loc = float(np.nanmax(vals))
+                else:
+                    vmin_loc = None
+                    vmax_loc = None
             else:
                 vmin_loc = vmin
                 vmax_loc = vmax
 
-            artist = ax.pcolormesh(
-                lon_bg,
-                lat_bg,
-                vals,
-                shading="auto",
-                cmap=cmap,
-                vmin=vmin_loc,
-                vmax=vmax_loc,
-            )
+            if mode in ("patch_delta_fine", "total_with_patch_fine"):
+                # pcolormesh on fine-resolution grid
+                boxm_ds = self.pp_gpat.boxm_ds_dict[job_id]
+                hres_f = float(boxm_ds.attrs["hres_sim_f"])
 
-            if cbar is not None:
-                cbar.remove()
-            cbar = fig.colorbar(artist, ax=ax)
+                df_p = _patch_rows_dataframe(t_idx_actual)
+                if vertical_mode == "single" and patch_level_req is not None and not df_p.empty:
+                    levs = df_p["level_f"].values
+                    df_p = df_p[np.isclose(levs, patch_level_req)]
 
-            ax.set_xlabel("Longitude")
-            ax.set_ylabel("Latitude")
-            ax.set_title(
-                f"{mode.upper()} | {species} | time_idx={t_idx_actual} | {_vertical_label()}\n"
-                f"plot min/max={np.nanmin(vals):.3e}/{np.nanmax(vals):.3e} | "
-                f"bg min/max={np.nanmin(bg_2d):.3e}/{np.nanmax(bg_2d):.3e} | "
-                f"coarse Δ min/max={np.nanmin(coarse_del_2d):.3e}/{np.nanmax(coarse_del_2d):.3e} | "
-                f"patch Δ sum={np.nansum(patch_del_2d):.3e}"
-            )
+                # Build regular fine grid from domain edges
+                hres_c = float(lon_bg[1] - lon_bg[0]) if lon_bg.size > 1 else float(boxm_ds.attrs.get("hres_sim_c", hres_f))
+                vres_c_lat = float(lat_bg[1] - lat_bg[0]) if lat_bg.size > 1 else hres_c
+                lon_min = float(lon_bg.min()) - hres_c / 2 + hres_f / 2
+                lon_max = float(lon_bg.max()) + hres_c / 2 - hres_f / 2
+                lat_min = float(lat_bg.min()) - vres_c_lat / 2 + hres_f / 2
+                lat_max = float(lat_bg.max()) + vres_c_lat / 2 - hres_f / 2
 
-            print(
-                f"[FRAME] mode={mode}, species={species}, time_idx={t_idx_actual}, vertical={_vertical_label()} | "
-                f"plot min/max={np.nanmin(vals):.6e}/{np.nanmax(vals):.6e} | "
-                f"bg min/max={np.nanmin(bg_2d):.6e}/{np.nanmax(bg_2d):.6e} | "
-                f"coarse delta min/max={np.nanmin(coarse_del_2d):.6e}/{np.nanmax(coarse_del_2d):.6e} | "
-                f"patch delta sum={np.nansum(patch_del_2d):.6e}"
-            )
+                lon_fine = np.arange(lon_min, lon_max + hres_f * 0.5, hres_f)
+                lat_fine = np.arange(lat_min, lat_max + hres_f * 0.5, hres_f)
+                lon_edges = np.concatenate([lon_fine - hres_f / 2, [lon_fine[-1] + hres_f / 2]])
+                lat_edges = np.concatenate([lat_fine - hres_f / 2, [lat_fine[-1] + hres_f / 2]])
+
+                if mode == "total_with_patch_fine":
+                    # Layer 1: coarse background everywhere
+                    ax.pcolormesh(
+                        lon_bg, lat_bg, bg_2d,
+                        shading="auto", cmap=cmap, vmin=vmin_loc, vmax=vmax_loc,
+                    )
+
+                    # Layer 2: fine cells (bg + delta) only where plume is active
+                    fine_grid = np.full((lat_fine.size, lon_fine.size), np.nan, dtype=float)
+
+                    if not df_p.empty:
+                        lat_vals = df_p["latitude_f"].values
+                        lon_vals = df_p["longitude_f"].values
+                        y_vals = df_p["y_del"].values
+
+                        i_lat = np.round((lat_vals - lat_fine[0]) / hres_f).astype(int)
+                        i_lon = np.round((lon_vals - lon_fine[0]) / hres_f).astype(int)
+                        i_lat = np.clip(i_lat, 0, lat_fine.size - 1)
+                        i_lon = np.clip(i_lon, 0, lon_fine.size - 1)
+
+                        # Accumulate deltas into the fine grid
+                        for ii, jj, vv in zip(i_lat, i_lon, y_vals):
+                            if np.isnan(fine_grid[ii, jj]):
+                                fine_grid[ii, jj] = vv
+                            else:
+                                fine_grid[ii, jj] += vv
+
+                        # Add background to active fine cells only
+                        active = np.isfinite(fine_grid)
+                        fi, fj = np.where(active)
+                        bg_i = _nearest_index_1d(lat_bg, lat_fine[fi])
+                        bg_j = _nearest_index_1d(lon_bg, lon_fine[fj])
+                        for k in range(len(fi)):
+                            fine_grid[fi[k], fj[k]] += bg_2d[bg_i[k], bg_j[k]]
+
+                    artist = ax.pcolormesh(
+                        lon_edges, lat_edges, fine_grid,
+                        shading="flat", cmap=cmap, vmin=vmin_loc, vmax=vmax_loc,
+                    )
+                    ax.set_xlim(lon_edges[0], lon_edges[-1])
+                    ax.set_ylim(lat_edges[0], lat_edges[-1])
+
+                    cbar_ax.clear()
+                    fig.colorbar(artist, cax=cbar_ax)
+
+                    sc_vals = fine_grid[np.isfinite(fine_grid)]
+                    n_active = int(np.sum(np.isfinite(fine_grid)))
+                    ax.set_xlabel("Longitude")
+                    ax.set_ylabel("Latitude")
+                    ax.set_title(
+                        f"TOTAL WITH PATCH FINE | {species} | time_idx={t_idx_actual} | {_vertical_label()}\n"
+                        f"bg min/max={np.nanmin(bg_2d):.3e}/{np.nanmax(bg_2d):.3e} | "
+                        f"n_active_fine={n_active} | fine min/max="
+                        + (f"{np.nanmin(sc_vals):.3e}/{np.nanmax(sc_vals):.3e}" if sc_vals.size > 0 else "N/A")
+                    )
+                    print(
+                        f"[FRAME] total_with_patch_fine, {species}, time_idx={t_idx_actual}, "
+                        f"bg_min={np.nanmin(bg_2d):.6e}, bg_max={np.nanmax(bg_2d):.6e}, "
+                        f"n_active_fine={n_active}"
+                        + (f", fine_min={np.nanmin(sc_vals):.6e}, fine_max={np.nanmax(sc_vals):.6e}" if sc_vals.size > 0 else "")
+                    )
+
+                else:
+                    # patch_delta_fine: only fine deltas, no background
+                    fine_grid = np.full((lat_fine.size, lon_fine.size), np.nan, dtype=float)
+
+                    if df_p.empty:
+                        ax.set_title(f"No fine cells at time_idx={t_idx_actual}")
+                        fig.canvas.draw_idle()
+                        return
+
+                    lat_vals = df_p["latitude_f"].values
+                    lon_vals = df_p["longitude_f"].values
+                    y_vals = df_p["y_del"].values
+
+                    i_lat = np.round((lat_vals - lat_fine[0]) / hres_f).astype(int)
+                    i_lon = np.round((lon_vals - lon_fine[0]) / hres_f).astype(int)
+                    i_lat = np.clip(i_lat, 0, lat_fine.size - 1)
+                    i_lon = np.clip(i_lon, 0, lon_fine.size - 1)
+
+                    for ii, jj, vv in zip(i_lat, i_lon, y_vals):
+                        if np.isnan(fine_grid[ii, jj]):
+                            fine_grid[ii, jj] = vv
+                        else:
+                            fine_grid[ii, jj] += vv
+
+                    sc_vals = fine_grid[np.isfinite(fine_grid)]
+                    if sc_vals.size == 0:
+                        ax.set_title(f"No finite fine cells at time_idx={t_idx_actual}")
+                        fig.canvas.draw_idle()
+                        return
+
+                    if dynamic_colorbar:
+                        vmin_loc = float(np.nanmin(sc_vals))
+                        vmax_loc = float(np.nanmax(sc_vals))
+
+                    artist = ax.pcolormesh(
+                        lon_edges, lat_edges, fine_grid,
+                        shading="flat", cmap=cmap, vmin=vmin_loc, vmax=vmax_loc,
+                    )
+                    ax.set_xlim(lon_edges[0], lon_edges[-1])
+                    ax.set_ylim(lat_edges[0], lat_edges[-1])
+
+                    cbar_ax.clear()
+                    fig.colorbar(artist, cax=cbar_ax)
+
+                    ax.set_xlabel("Longitude")
+                    ax.set_ylabel("Latitude")
+                    n_filled = int(np.sum(np.isfinite(fine_grid)))
+                    ax.set_title(
+                        f"PATCH DELTA FINE | {species} | time_idx={t_idx_actual} | {_vertical_label()}\n"
+                        f"n_cells={n_filled} | min/max={np.nanmin(sc_vals):.3e}/{np.nanmax(sc_vals):.3e}"
+                    )
+                    print(
+                        f"[FRAME] patch_delta_fine, {species}, time_idx={t_idx_actual}, "
+                        f"n_cells={n_filled}, min={np.nanmin(sc_vals):.6e}, max={np.nanmax(sc_vals):.6e}"
+                    )
+            else:
+                artist = ax.pcolormesh(
+                    lon_bg,
+                    lat_bg,
+                    vals,
+                    shading="auto",
+                    cmap=cmap,
+                    vmin=vmin_loc,
+                    vmax=vmax_loc,
+                )
+
+                cbar_ax.clear()
+                fig.colorbar(artist, cax=cbar_ax)
+
+                ax.set_xlabel("Longitude")
+                ax.set_ylabel("Latitude")
+                ax.set_title(
+                    f"{mode.upper()} | {species} | time_idx={t_idx_actual} | {_vertical_label()}\n"
+                    f"plot min/max={np.nanmin(vals):.3e}/{np.nanmax(vals):.3e} | "
+                    f"bg min/max={np.nanmin(bg_2d):.3e}/{np.nanmax(bg_2d):.3e} | "
+                    f"coarse Δ min/max={np.nanmin(coarse_del_2d):.3e}/{np.nanmax(coarse_del_2d):.3e} | "
+                    f"patch Δ sum={np.nansum(patch_del_2d):.3e}"
+                )
+
+                print(
+                    f"[FRAME] mode={mode}, species={species}, time_idx={t_idx_actual}, vertical={_vertical_label()} | "
+                    f"plot min/max={np.nanmin(vals):.6e}/{np.nanmax(vals):.6e} | "
+                    f"bg min/max={np.nanmin(bg_2d):.6e}/{np.nanmax(bg_2d):.6e} | "
+                    f"coarse delta min/max={np.nanmin(coarse_del_2d):.6e}/{np.nanmax(coarse_del_2d):.6e} | "
+                    f"patch delta sum={np.nansum(patch_del_2d):.6e}"
+                )
 
             fig.canvas.draw_idle()
 
@@ -1781,39 +2037,398 @@ class GPATValidation:
 
         return vecmass, gridmass, mc
 
-    def boxm_test(run_path, data_path, job_id, chem_ds):
-        """Run the box model for selected cells and job_id.
+    # EMI species mapping: (EMI index 0-based, Y index 1-based, species name)
+    EMI_SPECIES_MAP = [
+        (0, 8,  "NO"),
+        (1, 4,  "NO2"),
+        (2, 11, "CO"),
+        (3, 39, "HCHO"),
+        (4, 42, "CH3CHO"),
+        (5, 30, "C2H4"),
+        (6, 32, "C3H6"),
+        (7, 59, "C2H2"),
+        (8, 61, "BENZENE"),
+    ]
+
+    def boxm_test(self, job_id, cell):
+        """Two-tier validation of the new box model against boxm_orig.
+
+        Tier 1 — Chemistry kernel: run boxm_orig with zero emissions for a
+        single cell and compare its Y time series against boxm_out.nc Y_bg_c.
+        Both codes call the identical CHEMCO/PHOTOL/DERIV routines, so the
+        results should match to floating-point precision.
+
+        Tier 2 — Emission response: extract Y_del_c from the new model for
+        the selected cell, feed it as EMI to boxm_orig (with the EMI injection
+        lines now uncommented), and compare the resulting Y_total time series
+        against boxm_out.nc (Y_bg_c + Y_del_c).
 
         Parameters
         ----------
-        run_path : str
-            Path to the box model executable.
-        data_path : str
-            Path to the data directory.
         job_id : str
             Job ID.
-        chem_ds : xr.Dataset
-            Dataset containing chemical data.
+        cell : int or dict
+            Cell index (int) or dict with latitude, longitude, altitude keys.
 
         Returns
         -------
-        xr.Dataset
-            Dataset containing chemical data for the selected cells.
+        dict
+            ``{"tier1_chemistry": {...}, "tier2_emissions": {...}}``
         """
+        if isinstance(cell, int):
+            boxm_ds = self.pp_gpat.boxm_ds_dict[job_id]
+            cell_ds = boxm_ds.isel(cell=cell)
+            cell = {
+                "latitude": cell_ds["latitude_c"],
+                "longitude": cell_ds["longitude_c"],
+                "altitude": cell_ds["altitude_c"],
+            }
 
-        # create input file for original boxm
-        gen_boxm_orig_input(data_path, chem_ds, job_id)
-
-        gen_zen_file(data_path, chem_ds, job_id)
-
-        gen_emi_file(data_path, chem_ds, job_id)
-
-        # # calls fortran with input file and generates .OUT files
-        subprocess.call(
-            [run_path + "boxm_orig", data_path, job_id],
+        boxm_ds_cell = self.pp_gpat.boxm_ds_dict[job_id].sel(
+            latitude=cell["latitude"].item(),
+            longitude=cell["longitude"].item(),
+            altitude=cell["altitude"].item(),
+            method="nearest",
         )
 
-        return update_chem_ds(data_path, chem_ds, job_id)
+        # ── Tier 1: Chemistry kernel (zero emissions) ──
+        self.gen_boxm_orig_input(boxm_ds_cell, job_id)
+        self.gen_zen_file(boxm_ds_cell, job_id)
+        self.gen_emi_file(boxm_ds_cell, cell, job_id, with_emissions=False)
+
+        subprocess.call(
+            [self.pp_gpat.run_path + "boxm_orig", self.pp_gpat.data_path, job_id],
+        )
+
+        tier1 = self.compare_chemistry_kernel(job_id, boxm_ds_cell, cell)
+
+        # ── Tier 2: Emission response (Y_del_c fed as EMI) ──
+        self.gen_emi_file(boxm_ds_cell, cell, job_id, with_emissions=True)
+
+        subprocess.call(
+            [self.pp_gpat.run_path + "boxm_orig", self.pp_gpat.data_path, job_id],
+        )
+
+        tier2 = self.compare_emission_response(job_id, boxm_ds_cell, cell)
+
+        return {"tier1_chemistry": tier1, "tier2_emissions": tier2}
+
+    def gen_boxm_orig_input(self, boxm_ds_cell, job_id):
+        """Generate the input file for the original box model."""
+
+        # delete any existing input files
+        if pathlib.Path(f"inputs/{job_id}/boxm_orig_input.txt").exists():
+            pathlib.Path(f"inputs/{job_id}/boxm_orig_input.txt").unlink()
+
+        # open file using a context manager
+        with open(f"inputs/{job_id}/boxm_orig_input.txt", "w") as boxm_input:
+            start_time = pd.to_datetime(boxm_ds_cell["time"].values[0])
+            end_time = pd.to_datetime(boxm_ds_cell["time"].values[-1])
+            runtime = int((end_time - start_time) / np.timedelta64(1, "D")) % 365
+            day = start_time.day
+            month = start_time.month
+            year = start_time.year
+            altitude = boxm_ds_cell["altitude"].item()
+            plevel = boxm_ds_cell["level"].item()
+            level = get_pressure_level(altitude)
+            longitude = boxm_ds_cell["longitude"].item()
+            longbox = longitude_to_longbox(longitude)
+            latitude = boxm_ds_cell["latitude"].item()
+            latbox = latitude_to_latbox(latitude)
+            M = boxm_ds_cell["M"].values[0]
+            # P = boxm_ds_cell["air_pressure"].item()
+            H2O = boxm_ds_cell["H2O"].values[0]
+            temp = boxm_ds_cell["air_temperature"].values[0]
+
+            boxm_input.write(
+                f"{day}\n{month}\n{year}\n{level}\n{longbox}\n{latbox}\n{runtime}\n{M}\n{plevel}"
+                f"\n{H2O}\n{temp}\n"
+            )
+        for s in [
+            "NO2",
+            "NO",
+            "O3",
+            "CO",
+            "CH4",
+            "HCHO",
+            "CH3CHO",
+            "CH3COCH3",
+            "C2H6",
+            "C2H4",
+            "C3H8",
+            "C3H6",
+            "C2H2",
+            "NC4H10",
+            "TBUT2ENE",
+            "BENZENE",
+            "TOLUENE",
+            "OXYL",
+            "C5H8",
+            "H2O2",
+            "HNO3",
+            "C2H5CHO",
+            "CH3OH",
+            "MEK",
+            "CH3OOH",
+            "PAN",
+            "MPAN",
+        ]:
+            boxm_input.write(f"{boxm_ds_cell['Y_bg_c'].sel(species=s).item()}\n")
+
+        boxm_input.close()
+
+    def gen_zen_file(self, boxm_ds_cell, job_id):
+        """Generate the ZEN file for the original box model."""
+
+        # delete any existing input files
+        zen_file_path = pathlib.Path(f"inputs/{job_id}/zen.csv")
+        if zen_file_path.exists():
+            zen_file_path.unlink()
+
+        # Extract the sza data and convert it to a DataFrame
+        sza_data = boxm_ds_cell["sza"].values
+        sza_df = pd.DataFrame(sza_data, columns=["sza"])
+
+        # Write the DataFrame to a CSV file
+        sza_df.to_csv(zen_file_path, index=False, header=False)
+
+    def gen_emi_file(self, boxm_ds_cell, cell, job_id, with_emissions=False):
+        """Generate the EMI file for boxm_orig.
+
+        Parameters
+        ----------
+        boxm_ds_cell : xr.Dataset
+            Input dataset sliced to the cell under test.
+        cell : dict
+            Cell selector with latitude, longitude, altitude.
+        job_id : str
+            Job ID.
+        with_emissions : bool
+            If False, write zeros (Tier 1 bg-only run).  If True, extract
+            Y_del_c from boxm_out.nc for the 9 EMI species and write those
+            as the emission perturbation (molec/cm³) per timestep.
+        """
+        emi_file_path = pathlib.Path(f"inputs/{job_id}/emi.csv")
+        if emi_file_path.exists():
+            emi_file_path.unlink()
+
+        n_timesteps = len(boxm_ds_cell["time"])
+
+        if not with_emissions:
+            zeros = np.zeros((n_timesteps, 9))
+            pd.DataFrame(zeros).to_csv(emi_file_path, index=False, header=False)
+            return
+
+        # Extract Y_del_c for this cell from boxm_out
+        boxm_out = self.pp_gpat.boxm_out_dict[job_id]
+        out_cell = boxm_out.sel(
+            latitude_c=cell["latitude"].item(),
+            longitude_c=cell["longitude"].item(),
+            method="nearest",
+        )
+        if "level_c" in out_cell.dims:
+            level = boxm_ds_cell["level"].item() if "level" in boxm_ds_cell else cell["altitude"].item()
+            out_cell = out_cell.sel(level_c=level, method="nearest")
+
+        emi_array = np.zeros((len(out_cell["time"]), 9))
+        for emi_idx, _y_idx, sp_name in self.EMI_SPECIES_MAP:
+            if sp_name in out_cell["species_out"].values:
+                emi_array[:, emi_idx] = out_cell["Y_del_c"].sel(species_out=sp_name).values
+
+        # boxm_orig may run at finer timestep (DTS=20s) than boxm_out;
+        # interpolate to match the number of timesteps boxm_orig expects.
+        if len(out_cell["time"]) != n_timesteps:
+            from scipy.interpolate import interp1d
+            x_out = np.linspace(0, 1, len(out_cell["time"]))
+            x_in = np.linspace(0, 1, n_timesteps)
+            interp_fn = interp1d(x_out, emi_array, axis=0, kind="linear", fill_value="extrapolate")
+            emi_array = interp_fn(x_in)
+
+        pd.DataFrame(emi_array).to_csv(emi_file_path, index=False, header=False)
+
+    def compare_chemistry_kernel(self, job_id, boxm_ds_cell, cell):
+        """Tier 1: Compare boxm_orig Y.OUT against boxm_out.nc Y_bg_c.
+
+        Both codes run the same CHEMCO/PHOTOL/DERIV routines on the same
+        initial state with no emissions, so the time series should match
+        to floating-point precision.
+
+        Parameters
+        ----------
+        job_id : str
+            Job ID.
+        boxm_ds_cell : xr.Dataset
+            Input dataset sliced to the cell under test.
+        cell : dict
+            Cell selector with latitude, longitude, altitude.
+
+        Returns
+        -------
+        dict
+            Per-species metrics: NRMSE, correlation, RMSE.
+        """
+        # Y index (1-based Fortran) → species name, matching boxm_orig.for
+        # initialization block (line ~280).
+        orig_species_idx = {
+            "O3": 6, "NO2": 4, "NO": 8, "CO": 11, "CH4": 21,
+            "HCHO": 39, "CH3CHO": 42, "H2O2": 12, "HNO3": 14,
+            "PAN": 198, "C2H6": 23, "C3H8": 25, "C2H4": 30,
+            "C3H6": 32, "C2H2": 59, "BENZENE": 61, "TOLUENE": 64,
+        }
+
+        # Read Y.OUT — header row then CSV data.
+        # Format: TIME, Y1_ppb, Y2_ppb, ..., Y219_ppb
+        outputs_dir = pathlib.Path(f"{self.pp_gpat.data_path}outputs/{job_id}")
+        y_df = pd.read_csv(outputs_dir / "Y.OUT")
+        orig_time = y_df.iloc[:, 0].values.astype(float)  # seconds
+        orig_y = y_df.iloc[:, 1:].values  # (nsteps, 219) in ppb
+
+        # Read boxm_out.nc for the same cell
+        boxm_out = self.pp_gpat.boxm_out_dict[job_id]
+        new_cell = boxm_out.sel(
+            latitude_c=cell["latitude"].item(),
+            longitude_c=cell["longitude"].item(),
+            method="nearest",
+        )
+        # Select nearest level
+        if "level_c" in new_cell.dims:
+            boxm_ds_level = boxm_ds_cell["level"].item() if "level" in boxm_ds_cell else cell["altitude"].item()
+            new_cell = new_cell.sel(level_c=boxm_ds_level, method="nearest")
+
+        new_species = new_cell["species_out"].values
+        # M from input dataset (for converting new model molec/cm³ → ppb)
+        M_val = boxm_ds_cell["M"].values[0]
+
+        print(f"\n{'='*60}")
+        print(f"Tier 1: Chemistry kernel comparison (cell lat={cell['latitude'].item():.2f}, "
+              f"lon={cell['longitude'].item():.2f}, alt={cell['altitude'].item():.0f})")
+        print(f"{'='*60}")
+        print(f"  boxm_orig timesteps: {len(orig_time)}")
+        print(f"  boxm_out  timesteps: {len(new_cell['time'])}")
+        print(f"  {'Species':>10s}  {'NRMSE':>12s}  {'Correlation':>12s}  {'Max Abs Err':>12s}")
+        print(f"  {'-'*10}  {'-'*12}  {'-'*12}  {'-'*12}")
+
+        results = {}
+        for sp, idx in orig_species_idx.items():
+            # idx is 1-based; Y.OUT columns are 0-based after TIME column
+            orig_vals = orig_y[:, idx - 1]  # ppb
+
+            if sp not in new_species:
+                continue
+
+            # Y_bg_c is in molec/cm³ in boxm_out; convert to ppb
+            new_vals_raw = new_cell["Y_bg_c"].sel(species_out=sp).values
+            new_vals = new_vals_raw / M_val * 1.0e9  # → ppb
+
+            # Interpolate original (DTS=20s) onto new time grid
+            new_times = np.arange(len(new_vals), dtype=float)
+            orig_times_norm = np.linspace(0, len(new_vals) - 1, len(orig_vals))
+            orig_interp = np.interp(new_times, orig_times_norm, orig_vals)
+
+            diff = orig_interp - new_vals
+            rmse = np.sqrt(np.mean(diff**2))
+            mean_val = np.mean(np.abs(orig_interp)) + 1e-30
+            nrmse = rmse / mean_val
+            max_err = np.max(np.abs(diff))
+            corr = np.corrcoef(orig_interp, new_vals)[0, 1] if len(new_vals) > 1 else np.nan
+
+            results[sp] = {"nrmse": nrmse, "correlation": corr, "rmse": rmse, "max_abs_error": max_err}
+            print(f"  {sp:>10s}  {nrmse:12.4e}  {corr:12.6f}  {max_err:12.4e}")
+
+        return results
+
+    def compare_emission_response(self, job_id, boxm_ds_cell, cell):
+        """Tier 2: Compare boxm_orig Y.OUT (with EMI) against boxm_out.nc Y_total.
+
+        boxm_orig was run with Y_del_c fed as the EMI perturbation, so its
+        Y output = bg + emission response.  The new model's equivalent is
+        Y_bg_c + Y_del_c.  We compare the two for the 9 EMI species.
+
+        Parameters
+        ----------
+        job_id : str
+            Job ID.
+        boxm_ds_cell : xr.Dataset
+            Input dataset sliced to the cell under test.
+        cell : dict
+            Cell selector with latitude, longitude, altitude.
+
+        Returns
+        -------
+        dict
+            Per-species comparison metrics and physical-consistency checks.
+        """
+        # Read boxm_orig Y.OUT (now with emissions applied)
+        outputs_dir = pathlib.Path(f"{self.pp_gpat.data_path}outputs/{job_id}")
+        y_df = pd.read_csv(outputs_dir / "Y.OUT")
+        orig_time = y_df.iloc[:, 0].values.astype(float)
+        orig_y = y_df.iloc[:, 1:].values  # (nsteps, 219) in ppb
+
+        # Read boxm_out.nc Y_total = Y_bg_c + Y_del_c for the same cell
+        boxm_out = self.pp_gpat.boxm_out_dict[job_id]
+        out_cell = boxm_out.sel(
+            latitude_c=cell["latitude"].item(),
+            longitude_c=cell["longitude"].item(),
+            method="nearest",
+        )
+        if "level_c" in out_cell.dims:
+            level = boxm_ds_cell["level"].item() if "level" in boxm_ds_cell else cell["altitude"].item()
+            out_cell = out_cell.sel(level_c=level, method="nearest")
+
+        M_val = boxm_ds_cell["M"].values[0]
+
+        print(f"\n{'='*60}")
+        print(f"Tier 2: Emission response comparison (same cell)")
+        print(f"{'='*60}")
+        print(f"  {'Species':>10s}  {'NRMSE':>12s}  {'Correlation':>12s}  {'Max Abs Err':>12s}")
+        print(f"  {'-'*10}  {'-'*12}  {'-'*12}  {'-'*12}")
+
+        results = {}
+        new_species = out_cell["species_out"].values
+
+        for emi_idx, y_idx, sp in self.EMI_SPECIES_MAP:
+            # boxm_orig Y.OUT column (0-based after TIME) = y_idx - 1
+            orig_vals = orig_y[:, y_idx - 1]  # ppb
+
+            if sp not in new_species:
+                continue
+
+            # New model total = Y_bg_c + Y_del_c, in molec/cm³ → ppb
+            y_bg = out_cell["Y_bg_c"].sel(species_out=sp).values
+            y_del = out_cell["Y_del_c"].sel(species_out=sp).values if "Y_del_c" in out_cell else np.zeros_like(y_bg)
+            new_total_ppb = (y_bg + y_del) / M_val * 1.0e9
+
+            # Interpolate original onto new model time grid
+            new_times = np.arange(len(new_total_ppb), dtype=float)
+            orig_times_norm = np.linspace(0, len(new_total_ppb) - 1, len(orig_vals))
+            orig_interp = np.interp(new_times, orig_times_norm, orig_vals)
+
+            diff = orig_interp - new_total_ppb
+            rmse = np.sqrt(np.mean(diff**2))
+            mean_val = np.mean(np.abs(orig_interp)) + 1e-30
+            nrmse = rmse / mean_val
+            max_err = np.max(np.abs(diff))
+            corr = np.corrcoef(orig_interp, new_total_ppb)[0, 1] if len(new_total_ppb) > 1 else np.nan
+
+            results[sp] = {"nrmse": nrmse, "correlation": corr, "rmse": rmse, "max_abs_error": max_err}
+            print(f"  {sp:>10s}  {nrmse:12.4e}  {corr:12.6f}  {max_err:12.4e}")
+
+        # Physical consistency checks on new model
+        if "Y_del_c" in out_cell:
+            y_del_all = out_cell["Y_del_c"]
+            y_bg_all = out_cell["Y_bg_c"]
+            y_total_all = y_bg_all + y_del_all
+            n_negative = int((y_total_all < -1e-20).sum().item())
+            results["n_negative_total"] = n_negative
+            if n_negative > 0:
+                worst = float(y_total_all.min().item())
+                print(f"  WARNING: {n_negative} negative Y_total values, worst = {worst:.4e}")
+            else:
+                print(f"  All Y_total values non-negative: PASS")
+
+        return results
+
+
 
 # Helper functions for PP GPAT
 def lonlat_to_m(lon, lat, global_ref_lon, global_ref_lat):
@@ -1858,4 +2473,72 @@ def m_to_lonlat(lon_m, lat_m, global_ref_lon, global_ref_lat):
 
     return lon, lat
 
+def latitude_to_latbox(latitude):
+    """Convert latitude to latbox for the original box model.
+
+    Parameters
+    ----------
+    latitude : float
+        The latitude value.
+
+    Returns
+    -------
+    int
+        The latbox value.
+    """
+
+    # Map the latitude to the range 0-1
+    normalized_latitude = (latitude + 87.5) / 180
+
+    # Map the normalized latitude to the range 1-72
+    latbox = normalized_latitude * 36 + 1
+
+    # Round to the nearest integer and return
+    return round(latbox)
+
+def longitude_to_longbox(longitude):
+    """Convert longitude to longbox for the original box model.
+
+    Parameters
+    ----------
+    longitude : float
+        The longitude value.
+
+    Returns
+    -------
+    int
+        The longbox value.
+    """
+
+    # Map the longitude to the range 0-1
+    normalized_longitude = (longitude + 177.5) / 360
+
+    # Map the normalized longitude to the range 1-144
+    longbox = normalized_longitude * 72 + 1
+
+    # Round to the nearest integer and return
+    return round(longbox)
+
+def get_pressure_level(alt):
+    """Get the pressure level for the original box model.
+
+    Parameters
+    ----------
+    alt : float
+        The altitude value.
+
+    Returns
+    -------
+    int
+        The pressure level.
+    """
+
+    # Convert alt to pressure level (hPa)``
+    chem_pressure_levels = np.array([962, 861, 759, 658, 556, 454, 353, 251, 150.5])
+
+    # Convert altitude to pressure using a standard atmosphere model
+    pressure = units.m_to_pl(alt)
+
+    # Find the index of the closest value in the array
+    return (np.abs(chem_pressure_levels - pressure)).argmin()
 

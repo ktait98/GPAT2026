@@ -5282,6 +5282,8 @@ MODULE DEFINE_INPUT_TYPES
         REAL(DP), ALLOCATABLE :: N2(:,:)
         REAL(DP), ALLOCATABLE :: SZA(:,:)
         REAL(DP), ALLOCATABLE :: Y_BG_C(:,:)
+        REAL(DP), ALLOCATABLE :: U_WIND(:,:)   ! (NCELL, NTBOXM) eastward wind m/s
+        REAL(DP), ALLOCATABLE :: V_WIND(:,:)   ! (NCELL, NTBOXM) northward wind m/s
 
         ! ATTRIBUTES
         INTEGER :: TS_FL
@@ -5300,7 +5302,13 @@ MODULE DEFINE_INPUT_TYPES
         INTEGER :: NFL ! FLUXES
 
         INTEGER :: RUN_CHEM
+        INTEGER :: DELTA_CHEM_MODE = 0  ! 0=fine only, 1=fine+coarse
         INTEGER :: N_AC
+
+        ! Grid topology
+        INTEGER :: NLON = 0
+        INTEGER :: NLAT = 0
+        INTEGER :: NLEV = 0
 
         ! ---------- PRIVATE NETCDF PLUMBING ----------
 
@@ -5333,6 +5341,8 @@ MODULE DEFINE_INPUT_TYPES
         INTEGER, PRIVATE :: VARID_N2 = -1
         INTEGER, PRIVATE :: VARID_SZA = -1
         INTEGER, PRIVATE :: VARID_Y_BG_C = -1
+        INTEGER, PRIVATE :: VARID_U_WIND = -1
+        INTEGER, PRIVATE :: VARID_V_WIND = -1
 
         LOGICAL, PRIVATE :: IS_OPEN = .FALSE.
 
@@ -5993,6 +6003,12 @@ CONTAINS
         STATUS = NF90_INQ_VARID(BOXM_DS%BOXM_NCID, "mol_mass_c", BOXM_DS%VARID_MOL_MASS_C)
         CALL NC_CHECK(STATUS, "NF90_INQ_VARID(mol_mass_c)")
 
+        STATUS = NF90_INQ_VARID(BOXM_DS%BOXM_NCID, "eastward_wind", BOXM_DS%VARID_U_WIND)
+        CALL NC_CHECK(STATUS, "NF90_INQ_VARID(eastward_wind)")
+
+        STATUS = NF90_INQ_VARID(BOXM_DS%BOXM_NCID, "northward_wind", BOXM_DS%VARID_V_WIND)
+        CALL NC_CHECK(STATUS, "NF90_INQ_VARID(northward_wind)")
+
     END SUBROUTINE BOXM_INIT
 
     SUBROUTINE BOXM_READ_STATIC(BOXM_DS)
@@ -6000,6 +6016,7 @@ CONTAINS
         INTEGER :: STATUS, I, SPECIES_ID
 
         REAL(DP), ALLOCATABLE :: TEMP_TMP(:,:), H2O_TMP(:,:), M_TMP(:,:), O2_TMP(:,:), N2_TMP(:,:), SZA_TMP(:,:)
+        REAL(DP), ALLOCATABLE :: U_WIND_TMP(:,:), V_WIND_TMP(:,:)
         REAL(DP), ALLOCATABLE :: Y_BG_C_TMP(:,:)
 
         IF (.NOT. BOXM_DS%IS_OPEN) STOP "BOXM_READ_STATIC: FILE NOT OPEN (CALL INIT FIRST)"
@@ -6025,6 +6042,8 @@ CONTAINS
         IF (.NOT. ALLOCATED(BOXM_DS%O2)) ALLOCATE(BOXM_DS%O2(BOXM_DS%NCELL, BOXM_DS%NTBOXM))
         IF (.NOT. ALLOCATED(BOXM_DS%N2)) ALLOCATE(BOXM_DS%N2(BOXM_DS%NCELL, BOXM_DS%NTBOXM))
         IF (.NOT. ALLOCATED(BOXM_DS%SZA)) ALLOCATE(BOXM_DS%SZA(BOXM_DS%NCELL, BOXM_DS%NTBOXM))
+        IF (.NOT. ALLOCATED(BOXM_DS%U_WIND)) ALLOCATE(BOXM_DS%U_WIND(BOXM_DS%NCELL, BOXM_DS%NTBOXM))
+        IF (.NOT. ALLOCATED(BOXM_DS%V_WIND)) ALLOCATE(BOXM_DS%V_WIND(BOXM_DS%NCELL, BOXM_DS%NTBOXM))
         IF (.NOT. ALLOCATED(BOXM_DS%Y_BG_C)) ALLOCATE(BOXM_DS%Y_BG_C(BOXM_DS%NCELL, BOXM_DS%NSBOXM))
         IF (.NOT. ALLOCATED(BOXM_DS%MOL_MASS_C)) ALLOCATE(BOXM_DS%MOL_MASS_C(BOXM_DS%NSBOXM))
 
@@ -6068,11 +6087,24 @@ CONTAINS
         STATUS = NF90_GET_ATT(BOXM_DS%BOXM_NCID, NF90_GLOBAL, "run_chem", BOXM_DS%RUN_CHEM)
         CALL NC_CHECK(STATUS, "NF90_GET_ATT(run_chem)")
 
+        STATUS = NF90_GET_ATT(BOXM_DS%BOXM_NCID, NF90_GLOBAL, "delta_chem_mode", BOXM_DS%DELTA_CHEM_MODE)
+        CALL NC_CHECK(STATUS, "NF90_GET_ATT(delta_chem_mode)")
+
         STATUS = NF90_GET_ATT(BOXM_DS%BOXM_NCID, NF90_GLOBAL, "n_ac", BOXM_DS%N_AC)
         CALL NC_CHECK(STATUS, "NF90_GET_ATT(n_ac)")
 
+        STATUS = NF90_GET_ATT(BOXM_DS%BOXM_NCID, NF90_GLOBAL, "nlon", BOXM_DS%NLON)
+        CALL NC_CHECK(STATUS, "NF90_GET_ATT(nlon)")
+
+        STATUS = NF90_GET_ATT(BOXM_DS%BOXM_NCID, NF90_GLOBAL, "nlat", BOXM_DS%NLAT)
+        CALL NC_CHECK(STATUS, "NF90_GET_ATT(nlat)")
+
+        STATUS = NF90_GET_ATT(BOXM_DS%BOXM_NCID, NF90_GLOBAL, "nlev", BOXM_DS%NLEV)
+        CALL NC_CHECK(STATUS, "NF90_GET_ATT(nlev)")
+
         PRINT *, BOXM_DS%N_AC
-        print *, BOXM_DS%RUN_CHEM
+        PRINT *, BOXM_DS%RUN_CHEM
+        PRINT *, 'DELTA_CHEM_MODE =', BOXM_DS%DELTA_CHEM_MODE
 
         ! BOXM COORDS
         STATUS = NF90_GET_VAR(BOXM_DS%BOXM_NCID, BOXM_DS%VARID_TIME_REL_S, BOXM_DS%TIME_REL_S)
@@ -6144,6 +6176,20 @@ CONTAINS
         CALL NC_CHECK(STATUS, "NF90_GET_VAR(sza)")
         BOXM_DS%SZA(:,:) = TRANSPOSE(SZA_TMP(:,:))
         DEALLOCATE(SZA_TMP)
+
+        ALLOCATE(U_WIND_TMP(BOXM_DS%NTBOXM, BOXM_DS%NCELL))
+        STATUS = NF90_GET_VAR(BOXM_DS%BOXM_NCID, BOXM_DS%VARID_U_WIND, U_WIND_TMP, &
+                              START=[1, 1], COUNT=[BOXM_DS%NTBOXM, BOXM_DS%NCELL])
+        CALL NC_CHECK(STATUS, "NF90_GET_VAR(eastward_wind)")
+        BOXM_DS%U_WIND(:,:) = TRANSPOSE(U_WIND_TMP(:,:))
+        DEALLOCATE(U_WIND_TMP)
+
+        ALLOCATE(V_WIND_TMP(BOXM_DS%NTBOXM, BOXM_DS%NCELL))
+        STATUS = NF90_GET_VAR(BOXM_DS%BOXM_NCID, BOXM_DS%VARID_V_WIND, V_WIND_TMP, &
+                              START=[1, 1], COUNT=[BOXM_DS%NTBOXM, BOXM_DS%NCELL])
+        CALL NC_CHECK(STATUS, "NF90_GET_VAR(northward_wind)")
+        BOXM_DS%V_WIND(:,:) = TRANSPOSE(V_WIND_TMP(:,:))
+        DEALLOCATE(V_WIND_TMP)
 
         ALLOCATE(Y_BG_C_TMP(BOXM_DS%NSBOXM, BOXM_DS%NCELL))
         STATUS = NF90_GET_VAR(BOXM_DS%BOXM_NCID, BOXM_DS%VARID_Y_BG_C, Y_BG_C_TMP, &
@@ -6331,6 +6377,8 @@ MODULE DEFINE_STATE_TYPES
         REAL(DP), ALLOCATABLE :: O2(:)  ! (NCELL) OXYGEN CONCS mol/m3
         REAL(DP), ALLOCATABLE :: N2(:)  ! (NCELL) NITROGEN CONCS mol/m3
         REAL(DP), ALLOCATABLE :: SZA(:)      ! (NCELL) SOLAR ZENITH ANGLE deg
+        REAL(DP), ALLOCATABLE :: U_WIND(:)   ! (NCELL) eastward wind m/s
+        REAL(DP), ALLOCATABLE :: V_WIND(:)   ! (NCELL) northward wind m/s
 
         ! Chemistry state on coarse grid, in concentrations (analysis-friendly)
         REAL(DP), ALLOCATABLE :: Y_BG_C(:,:)    ! (NCELL, NSBOXM) mol/m3
@@ -6339,11 +6387,19 @@ MODULE DEFINE_STATE_TYPES
 
         INTEGER, ALLOCATABLE :: DTS
 
+        ! Grid topology
+        INTEGER :: NLON = 0
+        INTEGER :: NLAT = 0
+        INTEGER :: NLEV = 0
+
     CONTAINS
         PROCEDURE, PASS :: INIT_FROM_BOXM_DS => BOXM_STATE_INIT_FROM_BOXM_DS
         PROCEDURE, PASS :: ADVANCE_MET => BOXM_STATE_ADVANCE_MET
         PROCEDURE, PASS :: RUN_COARSE_BG_CHEM => BOXM_STATE_RUN_COARSE_BG_CHEM
         PROCEDURE, PASS :: RUN_COARSE_DELTA_CHEM => BOXM_STATE_RUN_COARSE_DELTA_CHEM
+        PROCEDURE, PASS :: RUN_COARSE_DELTA_CHEM_EVOLVE => BOXM_STATE_RUN_COARSE_DELTA_CHEM_EVOLVE
+        PROCEDURE, PASS :: RUN_PERSISTENT_DELTA_CHEM => BOXM_STATE_RUN_PERSISTENT_DELTA_CHEM
+        PROCEDURE, PASS :: ADVECT_Y_DEL_C => BOXM_STATE_ADVECT_Y_DEL_C
 
     END TYPE BOXM_STATE_TYPE
 
@@ -7296,6 +7352,8 @@ CONTAINS
         IF (.NOT. ALLOCATED(BOXM_STATE%O2)) ALLOCATE(BOXM_STATE%O2(BOXM_STATE%NCELL))
         IF (.NOT. ALLOCATED(BOXM_STATE%N2)) ALLOCATE(BOXM_STATE%N2(BOXM_STATE%NCELL))
         IF (.NOT. ALLOCATED(BOXM_STATE%SZA)) ALLOCATE(BOXM_STATE%SZA(BOXM_STATE%NCELL))
+        IF (.NOT. ALLOCATED(BOXM_STATE%U_WIND)) ALLOCATE(BOXM_STATE%U_WIND(BOXM_STATE%NCELL))
+        IF (.NOT. ALLOCATED(BOXM_STATE%V_WIND)) ALLOCATE(BOXM_STATE%V_WIND(BOXM_STATE%NCELL))
 
         IF (.NOT. ALLOCATED(BOXM_STATE%Y_BG_C)) ALLOCATE(BOXM_STATE%Y_BG_C(BOXM_STATE%NCELL, BOXM_STATE%NSBOXM))
         IF (.NOT. ALLOCATED(BOXM_STATE%Y_DEL_C)) ALLOCATE(BOXM_STATE%Y_DEL_C(BOXM_STATE%NCELL, BOXM_STATE%NSBOXM))
@@ -7319,9 +7377,14 @@ CONTAINS
         BOXM_STATE%O2(:) = BOXM_DS%O2(:,1)
         BOXM_STATE%N2(:) = BOXM_DS%N2(:,1)
         BOXM_STATE%SZA(:) = BOXM_DS%SZA(:,1)
+        BOXM_STATE%U_WIND(:) = BOXM_DS%U_WIND(:,1)
+        BOXM_STATE%V_WIND(:) = BOXM_DS%V_WIND(:,1)
         BOXM_STATE%Y_BG_C(:,:) = BOXM_DS%Y_BG_C(:,:)
         BOXM_STATE%Y_DEL_C(:,:) = 0.0_DP
         BOXM_STATE%ACTIVE_FLAG(:) = .FALSE.
+        BOXM_STATE%NLON = BOXM_DS%NLON
+        BOXM_STATE%NLAT = BOXM_DS%NLAT
+        BOXM_STATE%NLEV = BOXM_DS%NLEV
 
     END SUBROUTINE BOXM_STATE_INIT_FROM_BOXM_DS
 
@@ -7413,6 +7476,8 @@ CONTAINS
         BOXM_STATE%O2(:) = BOXM_DS%O2(:,TIME_IDX)
         BOXM_STATE%N2(:) = BOXM_DS%N2(:,TIME_IDX)
         BOXM_STATE%SZA(:) = BOXM_DS%SZA(:,TIME_IDX)
+        BOXM_STATE%U_WIND(:) = BOXM_DS%U_WIND(:,TIME_IDX)
+        BOXM_STATE%V_WIND(:) = BOXM_DS%V_WIND(:,TIME_IDX)
 
     END SUBROUTINE BOXM_STATE_ADVANCE_MET
 
@@ -7434,9 +7499,13 @@ CONTAINS
         INTEGER :: CELL_ID, SPECIES_ID, ROW_IDX, NXY_F
         REAL(DP) :: TOTAL_MASS, COARSE_VOL, FINE_VOL, DEL_VAL
 
-        ! Coarse delta is reconstructed directly from updated fine deltas.
-        ! No additional coarse chemistry is applied here.
-        BOXM_STATE%Y_DEL_C(:,:) = 0.0_DP
+        ! Coarse delta is reconstructed from updated fine deltas for active cells.
+        ! Inactive cells retain their persistent perturbation.
+        DO CELL_ID = 1, BOXM_STATE%NCELL
+            IF (BOXM_STATE%ACTIVE_FLAG(CELL_ID)) THEN
+                BOXM_STATE%Y_DEL_C(CELL_ID,:) = 0.0_DP
+            END IF
+        END DO
         NXY_F = MAX(1, NINT(BOXM_DS%HRES_SIM_C / BOXM_DS%HRES_SIM_F))
         
         DO CELL_ID = 1, BOXM_STATE%NCELL
@@ -7462,6 +7531,195 @@ CONTAINS
         END DO
 
     END SUBROUTINE BOXM_STATE_RUN_COARSE_DELTA_CHEM
+
+    SUBROUTINE BOXM_STATE_RUN_COARSE_DELTA_CHEM_EVOLVE(BOXM_STATE, BOXM_DS, Y_BG_C_PRE)
+        CLASS(BOXM_STATE_TYPE), INTENT(INOUT) :: BOXM_STATE
+        CLASS(BOXM_DS_TYPE),    INTENT(IN)    :: BOXM_DS
+        REAL(DP),               INTENT(IN)    :: Y_BG_C_PRE(:,:)
+
+        INTEGER :: N_NEG_CLAMPED
+        REAL(DP) :: WORST_NEG
+        REAL(DP), ALLOCATABLE :: Y_TOT_C(:,:)
+
+        ! Run chemistry on coarse total (bg_pre + del_c).
+        ! Y_DEL_C must already be reconstructed (e.g. by RUN_COARSE_DELTA_CHEM).
+        ALLOCATE(Y_TOT_C(BOXM_STATE%NCELL, BOXM_DS%NSBOXM))
+        Y_TOT_C(:,:) = Y_BG_C_PRE(:,:) + BOXM_STATE%Y_DEL_C(:,:)
+
+        ! Clamp negative totals
+        N_NEG_CLAMPED = COUNT(Y_TOT_C < 0.0_DP)
+        IF (N_NEG_CLAMPED > 0) THEN
+            WORST_NEG = MINVAL(Y_TOT_C)
+            WRITE(*,'(A,I0,A,ES12.4)') &
+                'WARNING: negative Y_TOT in coarse delta chem, n_neg=', &
+                N_NEG_CLAMPED, '  worst=', WORST_NEG
+            WHERE (Y_TOT_C < 0.0_DP) Y_TOT_C = 0.0_DP
+        END IF
+
+        CALL RUN_LEGACY_CHEM(Y_TOT_C, BOXM_STATE%TEMP, BOXM_STATE%H2O, BOXM_STATE%O2, &
+                            BOXM_STATE%N2, BOXM_STATE%M, BOXM_STATE%SZA, BOXM_STATE%DTS, &
+                            BOXM_STATE%NCELL, BOXM_DS%NSBOXM, BOXM_DS%NPP, BOXM_DS%NPC, &
+                            BOXM_DS%NTC, BOXM_DS%NFL)
+
+        ! Extract delta: subtract evolved background
+        BOXM_STATE%Y_DEL_C(:,:) = Y_TOT_C(:,:) - BOXM_STATE%Y_BG_C(:,:)
+
+        DEALLOCATE(Y_TOT_C)
+
+    END SUBROUTINE BOXM_STATE_RUN_COARSE_DELTA_CHEM_EVOLVE
+
+    ! --------------------------------------------------------------------------
+    ! Evolve chemistry on persistent Y_DEL_C in inactive cells.
+    ! Active cells have their Y_DEL_C managed by fine-cell chemistry and are
+    ! left untouched.
+    ! --------------------------------------------------------------------------
+    SUBROUTINE BOXM_STATE_RUN_PERSISTENT_DELTA_CHEM(BOXM_STATE, BOXM_DS, Y_BG_C_PRE)
+        USE RUN_CHEM_UTILS
+        CLASS(BOXM_STATE_TYPE), INTENT(INOUT) :: BOXM_STATE
+        CLASS(BOXM_DS_TYPE),    INTENT(IN)    :: BOXM_DS
+        REAL(DP),               INTENT(IN)    :: Y_BG_C_PRE(:,:)
+
+        INTEGER :: IC
+        LOGICAL :: HAS_PERSISTENT
+        REAL(DP), ALLOCATABLE :: Y_TOT_C(:,:), Y_DEL_SAVE(:,:)
+
+        ! Quick check: any inactive cell with non-zero perturbation?
+        HAS_PERSISTENT = .FALSE.
+        DO IC = 1, BOXM_STATE%NCELL
+            IF (.NOT. BOXM_STATE%ACTIVE_FLAG(IC) .AND. &
+                ANY(BOXM_STATE%Y_DEL_C(IC,:) /= 0.0_DP)) THEN
+                HAS_PERSISTENT = .TRUE.
+                EXIT
+            END IF
+        END DO
+        IF (.NOT. HAS_PERSISTENT) RETURN
+
+        ! Save active-cell deltas (already handled by fine-cell chemistry).
+        ALLOCATE(Y_DEL_SAVE(BOXM_STATE%NCELL, BOXM_DS%NSBOXM))
+        Y_DEL_SAVE(:,:) = BOXM_STATE%Y_DEL_C(:,:)
+
+        ! Build Y_TOT = Y_BG_PRE + Y_DEL_C for all cells.
+        ALLOCATE(Y_TOT_C(BOXM_STATE%NCELL, BOXM_DS%NSBOXM))
+        Y_TOT_C(:,:) = Y_BG_C_PRE(:,:) + BOXM_STATE%Y_DEL_C(:,:)
+        WHERE (Y_TOT_C < 0.0_DP) Y_TOT_C = 0.0_DP
+
+        ! Evolve total concentrations with chemistry.
+        CALL RUN_LEGACY_CHEM(Y_TOT_C, BOXM_STATE%TEMP, BOXM_STATE%H2O, BOXM_STATE%O2, &
+                            BOXM_STATE%N2, BOXM_STATE%M, BOXM_STATE%SZA, BOXM_STATE%DTS, &
+                            BOXM_STATE%NCELL, BOXM_DS%NSBOXM, BOXM_DS%NPP, BOXM_DS%NPC, &
+                            BOXM_DS%NTC, BOXM_DS%NFL)
+
+        ! Extract updated delta by subtracting evolved background.
+        BOXM_STATE%Y_DEL_C(:,:) = Y_TOT_C(:,:) - BOXM_STATE%Y_BG_C(:,:)
+
+        ! Restore active-cell deltas — their chemistry was handled at fine level.
+        DO IC = 1, BOXM_STATE%NCELL
+            IF (BOXM_STATE%ACTIVE_FLAG(IC)) THEN
+                BOXM_STATE%Y_DEL_C(IC,:) = Y_DEL_SAVE(IC,:)
+            END IF
+        END DO
+
+        DEALLOCATE(Y_TOT_C, Y_DEL_SAVE)
+
+    END SUBROUTINE BOXM_STATE_RUN_PERSISTENT_DELTA_CHEM
+
+    ! --------------------------------------------------------------------------
+    ! First-order upwind advection of Y_DEL_C on the coarse Eulerian grid.
+    ! Operates in 2D (horizontal) only; each pressure level is independent.
+    ! Cell ordering: latitude varies fastest, then longitude, then level.
+    !   cell = (i_lev-1)*NLON*NLAT + (i_lon-1)*NLAT + i_lat    (1-based)
+    ! --------------------------------------------------------------------------
+    SUBROUTINE BOXM_STATE_ADVECT_Y_DEL_C(BOXM_STATE, BOXM_DS)
+        CLASS(BOXM_STATE_TYPE), INTENT(INOUT) :: BOXM_STATE
+        CLASS(BOXM_DS_TYPE),    INTENT(IN)    :: BOXM_DS
+
+        INTEGER :: IC, I_LAT, I_LON, IS, IC_UPWIND
+        INTEGER :: NLAT, NLON
+        REAL(DP) :: DT, CX, CY
+        REAL(DP), ALLOCATABLE :: Y_NEW(:,:)
+
+        IF (BOXM_STATE%NLAT <= 0 .OR. BOXM_STATE%NLON <= 0) RETURN
+
+        NLAT = BOXM_STATE%NLAT
+        NLON = BOXM_STATE%NLON
+        DT   = REAL(BOXM_STATE%DTS, DP)
+
+        ALLOCATE(Y_NEW(BOXM_STATE%NCELL, BOXM_STATE%NSBOXM))
+        Y_NEW(:,:) = BOXM_STATE%Y_DEL_C(:,:)
+
+        DO IC = 1, BOXM_STATE%NCELL
+            IF (BOXM_STATE%U_WIND(IC) == 0.0_DP .AND. &
+                BOXM_STATE%V_WIND(IC) == 0.0_DP) CYCLE
+
+            I_LAT = MOD(IC - 1, NLAT) + 1
+            I_LON = MOD((IC - 1) / NLAT, NLON) + 1
+
+            ! --- Longitude (X) advection: eastward_wind ---
+            CX = BOXM_STATE%U_WIND(IC) * DT / BOXM_STATE%DX_C_M(IC)
+            IF (CX >= 0.0_DP) THEN
+                ! Upwind = west neighbour
+                IF (I_LON > 1) THEN
+                    IC_UPWIND = IC - NLAT
+                    DO IS = 1, BOXM_STATE%NSBOXM
+                        Y_NEW(IC,IS) = Y_NEW(IC,IS) - CX * &
+                            (BOXM_STATE%Y_DEL_C(IC,IS) - BOXM_STATE%Y_DEL_C(IC_UPWIND,IS))
+                    END DO
+                ELSE
+                    DO IS = 1, BOXM_STATE%NSBOXM
+                        Y_NEW(IC,IS) = Y_NEW(IC,IS) - CX * BOXM_STATE%Y_DEL_C(IC,IS)
+                    END DO
+                END IF
+            ELSE
+                ! Upwind = east neighbour
+                IF (I_LON < NLON) THEN
+                    IC_UPWIND = IC + NLAT
+                    DO IS = 1, BOXM_STATE%NSBOXM
+                        Y_NEW(IC,IS) = Y_NEW(IC,IS) - CX * &
+                            (BOXM_STATE%Y_DEL_C(IC_UPWIND,IS) - BOXM_STATE%Y_DEL_C(IC,IS))
+                    END DO
+                ELSE
+                    DO IS = 1, BOXM_STATE%NSBOXM
+                        Y_NEW(IC,IS) = Y_NEW(IC,IS) + CX * BOXM_STATE%Y_DEL_C(IC,IS)
+                    END DO
+                END IF
+            END IF
+
+            ! --- Latitude (Y) advection: northward_wind ---
+            CY = BOXM_STATE%V_WIND(IC) * DT / BOXM_STATE%DY_C_M(IC)
+            IF (CY >= 0.0_DP) THEN
+                ! Upwind = south neighbour
+                IF (I_LAT > 1) THEN
+                    IC_UPWIND = IC - 1
+                    DO IS = 1, BOXM_STATE%NSBOXM
+                        Y_NEW(IC,IS) = Y_NEW(IC,IS) - CY * &
+                            (BOXM_STATE%Y_DEL_C(IC,IS) - BOXM_STATE%Y_DEL_C(IC_UPWIND,IS))
+                    END DO
+                ELSE
+                    DO IS = 1, BOXM_STATE%NSBOXM
+                        Y_NEW(IC,IS) = Y_NEW(IC,IS) - CY * BOXM_STATE%Y_DEL_C(IC,IS)
+                    END DO
+                END IF
+            ELSE
+                ! Upwind = north neighbour
+                IF (I_LAT < NLAT) THEN
+                    IC_UPWIND = IC + 1
+                    DO IS = 1, BOXM_STATE%NSBOXM
+                        Y_NEW(IC,IS) = Y_NEW(IC,IS) - CY * &
+                            (BOXM_STATE%Y_DEL_C(IC_UPWIND,IS) - BOXM_STATE%Y_DEL_C(IC,IS))
+                    END DO
+                ELSE
+                    DO IS = 1, BOXM_STATE%NSBOXM
+                        Y_NEW(IC,IS) = Y_NEW(IC,IS) + CY * BOXM_STATE%Y_DEL_C(IC,IS)
+                    END DO
+                END IF
+            END IF
+
+        END DO
+
+        BOXM_STATE%Y_DEL_C(:,:) = Y_NEW(:,:)
+        DEALLOCATE(Y_NEW)
+
+    END SUBROUTINE BOXM_STATE_ADVECT_Y_DEL_C
 
     ! ---------- PATCH STATE METHODS ----------
     SUBROUTINE PATCH_STATE_INIT_FROM_BOXM_DS(PATCH_STATE, BOXM_DS)
@@ -8586,316 +8844,6 @@ CONTAINS
 
 END MODULE DEFINE_OUTPUT_TYPES
 
-MODULE BOXM_RUN_UTILS
-    USE RUN_CHEM_UTILS
-    IMPLICIT NONE
-    
-    PRIVATE
-    PUBLIC :: BOXM_RUN_INIT, ADVANCE_MET, PROJECT_PLUMES_TO_GRID, RUN_CHEM, BACKPROJECT_GRID_TO_PLUMES
-    PUBLIC :: WRITE_OUTPUTS, CLOSE_DATASETS, RESET_STATES
-    
-CONTAINS
-    SUBROUTINE BOXM_RUN_INIT(FL_DS, PL_DS, BOXM_DS, PL_STATE, BOXM_STATE, PATCH_STATE, &
-                            PL_OUT, BOXM_OUT, PATCH_TABLE, JOB_ID, DATA_PATH)
-        USE HELPERS
-        USE RUN_CHEM_UTILS
-        USE DEFINE_INPUT_TYPES
-        USE DEFINE_STATE_TYPES
-        USE DEFINE_OUTPUT_TYPES
-        IMPLICIT NONE
-
-        CLASS(FL_DS_TYPE),       INTENT(INOUT) :: FL_DS
-        CLASS(PL_DS_TYPE),       INTENT(INOUT) :: PL_DS
-        CLASS(BOXM_DS_TYPE),     INTENT(INOUT) :: BOXM_DS
-
-        CLASS(PL_STATE_TYPE),    INTENT(INOUT) :: PL_STATE
-        CLASS(BOXM_STATE_TYPE),  INTENT(INOUT) :: BOXM_STATE
-        CLASS(PATCH_STATE_TYPE), INTENT(INOUT) :: PATCH_STATE
-
-        CLASS(PL_OUT_TYPE),      INTENT(INOUT) :: PL_OUT
-        CLASS(BOXM_OUT_TYPE),    INTENT(INOUT) :: BOXM_OUT
-        CLASS(PATCH_TABLE_TYPE), INTENT(INOUT) :: PATCH_TABLE
-
-        CHARACTER(LEN=*), INTENT(IN) :: JOB_ID
-        CHARACTER(LEN=*), INTENT(IN) :: DATA_PATH
-        INTEGER :: SEG_ID
-
-        ! INITIALIZE AND READ INPUT DATASETS
-        CALL BOXM_DS%INIT(TRIM(DATA_PATH)//'inputs/'//TRIM(JOB_ID)//'/boxm_ds.nc')
-        CALL BOXM_DS%READ_STATIC()
-        CALL BOXM_DS%SUMMARY()
-        
-        IF (BOXM_DS%N_AC > 0) THEN
-            CALL FL_DS%INIT(TRIM(DATA_PATH)//'inputs/'//TRIM(JOB_ID)//'/fl_ds.nc')
-            CALL FL_DS%READ_STATIC()
-            CALL FL_DS%SUMMARY()
-
-            CALL PL_DS%INIT(TRIM(DATA_PATH)//'inputs/'//TRIM(JOB_ID)//'/pl_ds.nc')
-            CALL PL_DS%READ_STATIC()
-            CALL PL_DS%SUMMARY()
-        END IF
-
-        IF (BOXM_DS%N_AC > 0) THEN
-            ! STATE TYPE INITIALIZATION FROM INPUT DATASETS
-            CALL PL_STATE%INIT_FROM_PL_DS(PL_DS)
-            CALL PL_STATE%INIT_FROM_PL_OUT(PL_DS, SEG_ID=1)
-            CALL PATCH_STATE%INIT_FROM_BOXM_DS(BOXM_DS)
-        END IF
-        CALL BOXM_STATE%INIT_FROM_BOXM_DS(BOXM_DS)
-        
-        IF (BOXM_DS%N_AC > 0) THEN
-            ! INITIALISE OUTPUT DATASETS
-            CALL PL_OUT%INIT(PL_DS, TRIM(DATA_PATH)//'outputs/'//TRIM(JOB_ID)//'/pl_out.nc')
-            CALL PL_OUT%READ_STATIC(PL_DS)
-
-            ! Align plume state species with PL_OUT species list
-            PL_STATE%NSPL = PL_OUT%NSPL
-            IF (ALLOCATED(PL_STATE%SPECIES_PL_NUM)) DEALLOCATE(PL_STATE%SPECIES_PL_NUM)
-            ALLOCATE(PL_STATE%SPECIES_PL_NUM(PL_STATE%NSPL))
-            PL_STATE%SPECIES_PL_NUM = PL_OUT%SPECIES_PL_NUM
-
-            IF (ALLOCATED(PL_STATE%PL_MASS)) DEALLOCATE(PL_STATE%PL_MASS)
-            ALLOCATE(PL_STATE%PL_MASS(PL_STATE%NSEG, PL_STATE%NSPL))
-            PL_STATE%PL_MASS(:,:) = 0.0_DP
-
-            CALL PATCH_TABLE%INIT(TRIM(DATA_PATH)//'outputs/'//TRIM(JOB_ID)//'/patch_table.nc')
-            CALL PATCH_TABLE%READ_STATIC()
-        END IF
-
-        CALL BOXM_OUT%INIT(TRIM(DATA_PATH)//'outputs/'//TRIM(JOB_ID)//'/boxm_out.nc')
-        CALL BOXM_OUT%READ_STATIC()
-
-        IF (BOXM_DS%RUN_CHEM == 1) THEN
-            CALL CHEM_ALLOC(BOXM_DS%NCELL, BOXM_DS%NSBOXM, BOXM_DS%NPP, BOXM_DS%NPC, BOXM_DS%NTC, BOXM_DS%NFL)
-        END IF
-
-    END SUBROUTINE BOXM_RUN_INIT
-
-    SUBROUTINE PROJECT_PLUMES_TO_GRID(FL_DS, PL_DS, BOXM_DS, PL_STATE, BOXM_STATE, PATCH_STATE, TIME_IDX)
-        USE DEFINE_INPUT_TYPES
-        USE DEFINE_STATE_TYPES
-        IMPLICIT NONE
-        
-        CLASS(FL_DS_TYPE),       INTENT(IN)    :: FL_DS
-        CLASS(PL_DS_TYPE),       INTENT(IN)    :: PL_DS
-        CLASS(BOXM_DS_TYPE),     INTENT(IN)    :: BOXM_DS
-
-        CLASS(PL_STATE_TYPE),    INTENT(INOUT) :: PL_STATE
-        CLASS(BOXM_STATE_TYPE),  INTENT(INOUT) :: BOXM_STATE
-        CLASS(PATCH_STATE_TYPE), INTENT(INOUT) :: PATCH_STATE
-
-        INTEGER, INTENT(IN) :: TIME_IDX
-        
-        IF (MOD((TIME_IDX-1)*BOXM_DS%TS_SIM, BOXM_DS%TS_PL) == 0) THEN
-            CALL PL_STATE%ADVANCE_GEOM(PL_DS, BOXM_DS, TIME_IDX)
-            CALL PL_STATE%BUILD_ACTIVE(BOXM_DS, BOXM_STATE)
-            CALL PL_STATE%EMI_TO_PLUMES(FL_DS, PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
-            CALL PL_STATE%PROJECT_TO_GRID(PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
-            CALL PATCH_STATE%BUILD_ROWS_FROM_W(PL_STATE, BOXM_STATE)
-        END IF
-
-        CALL PATCH_STATE%ACCUM_DELTAS_FROM_W(PL_STATE, BOXM_DS, BOXM_STATE)
-
-    END SUBROUTINE PROJECT_PLUMES_TO_GRID
-
-    SUBROUTINE ADVANCE_MET(BOXM_DS, BOXM_STATE, TIME_IDX)
-        USE DEFINE_INPUT_TYPES
-        USE DEFINE_STATE_TYPES
-        IMPLICIT NONE
-
-        CLASS(BOXM_DS_TYPE),     INTENT(IN)    :: BOXM_DS
-        CLASS(BOXM_STATE_TYPE),  INTENT(INOUT) :: BOXM_STATE
-
-        INTEGER, INTENT(IN) :: TIME_IDX
-
-        CALL BOXM_STATE%ADVANCE_MET(BOXM_DS, TIME_IDX)
-
-    END SUBROUTINE ADVANCE_MET
-
-    SUBROUTINE RUN_CHEM(BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
-        USE DEFINE_INPUT_TYPES
-        USE DEFINE_STATE_TYPES
-        USE RUN_CHEM_UTILS
-        USE VALIDATION_UTILS
-        USE HELPERS
-        IMPLICIT NONE
-
-        CLASS(BOXM_DS_TYPE),     INTENT(IN)    :: BOXM_DS
-
-        CLASS(BOXM_STATE_TYPE),  INTENT(INOUT) :: BOXM_STATE
-        CLASS(PATCH_STATE_TYPE), INTENT(INOUT) :: PATCH_STATE
-
-        INTEGER, INTENT(IN) :: TIME_IDX
-
-        ! Local variables for RUN_LEGACY_CHEM
-        INTEGER :: NCELL, NSBOXM, NPP, NPC, NTC, NFL
-
-        ! Pre-chemistry background snapshot for correct operator splitting.
-        ! Both the total (bg_pre + delta) and the background must be evolved
-        ! from the *same* starting point so that the delta captures only the
-        ! perturbation effect.
-        REAL(DP), ALLOCATABLE :: Y_BG_C_PRE(:,:)
-
-        ! Save a copy of the background BEFORE bg chemistry modifies it.
-        ALLOCATE(Y_BG_C_PRE(BOXM_STATE%NCELL, BOXM_DS%NSBOXM))
-        Y_BG_C_PRE(:,:) = BOXM_STATE%Y_BG_C(:,:)
-
-        ! === LEGACY BACKGROUND CHEMISTRY ===
-        CALL BOXM_STATE%RUN_COARSE_BG_CHEM(BOXM_DS)
-        
-        IF (BOXM_DS%N_AC > 0) THEN
-            ! === FINE PLUME CHEMISTRY ===
-            ! Pass the pre-chem bg so that Y_TOT = bg_pre + delta (correct
-            ! starting point).  After chemistry the evolved bg (Y_BG_C) is
-            ! subtracted to isolate the perturbation delta.
-            CALL PATCH_STATE%RUN_FINE_DELTA_CHEM(BOXM_DS, BOXM_STATE, Y_BG_C_PRE)
-
-
-            ! Print diagnostics only on output-cadence timesteps to avoid repeated values
-            IF (MOD((TIME_IDX - 1) * BOXM_DS%TS_SIM, BOXM_DS%TS_OUT) == 0) THEN
-                CALL PRINT_PATCH_SPECIES_DIAG(PATCH_STATE, 8, 'NO', 1.0D-20)
-            END IF
-        
-            ! === COARSE PLUME CHEMISTRY ===
-            CALL BOXM_STATE%RUN_COARSE_DELTA_CHEM(BOXM_DS, PATCH_STATE)
-        END IF
-
-        DEALLOCATE(Y_BG_C_PRE)
-        
-    END SUBROUTINE RUN_CHEM
-
-    SUBROUTINE BACKPROJECT_GRID_TO_PLUMES(FL_DS, PL_DS, BOXM_DS, PL_STATE, BOXM_STATE, PATCH_STATE, TIME_IDX)
-        USE DEFINE_INPUT_TYPES
-        USE DEFINE_STATE_TYPES
-        IMPLICIT NONE
-
-        CLASS(FL_DS_TYPE),       INTENT(IN)    :: FL_DS
-        CLASS(PL_DS_TYPE),       INTENT(IN)    :: PL_DS
-        CLASS(BOXM_DS_TYPE),     INTENT(IN)    :: BOXM_DS
-
-        CLASS(PL_STATE_TYPE),    INTENT(INOUT) :: PL_STATE
-        CLASS(BOXM_STATE_TYPE),  INTENT(INOUT) :: BOXM_STATE
-        CLASS(PATCH_STATE_TYPE), INTENT(INOUT) :: PATCH_STATE
-
-        INTEGER, INTENT(IN) :: TIME_IDX
-
-        IF (MOD((TIME_IDX-1)*BOXM_DS%TS_SIM, BOXM_DS%TS_PL) == 0) THEN
-            CALL PL_STATE%BACKPROJECT_FROM_GRID(PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
-        END IF
-
-    END SUBROUTINE BACKPROJECT_GRID_TO_PLUMES
-
-    SUBROUTINE WRITE_OUTPUTS(PL_OUT, BOXM_OUT, PATCH_TABLE, PL_DS, BOXM_DS, PL_STATE, BOXM_STATE, PATCH_STATE, TIME_IDX)
-        USE DEFINE_INPUT_TYPES
-        USE DEFINE_OUTPUT_TYPES
-        USE DEFINE_STATE_TYPES
-        IMPLICIT NONE
-
-        CLASS(PL_DS_TYPE),       INTENT(IN)    :: PL_DS
-        CLASS(BOXM_DS_TYPE),     INTENT(IN)    :: BOXM_DS
-
-        CLASS(PL_OUT_TYPE),      INTENT(INOUT) :: PL_OUT
-        CLASS(BOXM_OUT_TYPE),    INTENT(INOUT) :: BOXM_OUT
-        CLASS(PATCH_TABLE_TYPE), INTENT(INOUT) :: PATCH_TABLE
-
-        CLASS(PL_STATE_TYPE),    INTENT(INOUT) :: PL_STATE
-        CLASS(BOXM_STATE_TYPE),  INTENT(INOUT) :: BOXM_STATE
-        CLASS(PATCH_STATE_TYPE), INTENT(INOUT) :: PATCH_STATE
-
-        INTEGER, INTENT(IN) :: TIME_IDX
-        
-        CALL BOXM_OUT%WRITE(BOXM_STATE, TIME_IDX)
-        IF (BOXM_DS%N_AC > 0) THEN
-            CALL PL_OUT%WRITE(PL_STATE, PL_DS, TIME_IDX)
-            CALL PATCH_TABLE%WRITE(PATCH_STATE, BOXM_DS, BOXM_STATE, TIME_IDX)
-        END IF
-
-    END SUBROUTINE WRITE_OUTPUTS
-
-    SUBROUTINE RESET_STATES(PL_STATE, BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
-        USE HELPERS
-        USE DEFINE_INPUT_TYPES
-        USE DEFINE_STATE_TYPES
-        IMPLICIT NONE
-
-        CLASS(PL_STATE_TYPE),    INTENT(INOUT) :: PL_STATE
-        CLASS(BOXM_DS_TYPE),     INTENT(IN)    :: BOXM_DS
-        CLASS(BOXM_STATE_TYPE),  INTENT(INOUT) :: BOXM_STATE
-        CLASS(PATCH_STATE_TYPE), INTENT(INOUT) :: PATCH_STATE
-
-        INTEGER, INTENT(IN) :: TIME_IDX
-
-        IF (MOD((TIME_IDX-1)*BOXM_DS%TS_SIM, BOXM_DS%TS_PL) == 0) THEN
-            IF (ALLOCATED(PL_STATE%AGE_S)) PL_STATE%AGE_S(:) = 0
-            IF (ALLOCATED(PL_STATE%LONGITUDE)) PL_STATE%LONGITUDE(:) = 0.0_DP
-            IF (ALLOCATED(PL_STATE%LONGITUDE_M)) PL_STATE%LONGITUDE_M(:) = 0.0_DP
-            IF (ALLOCATED(PL_STATE%LATITUDE)) PL_STATE%LATITUDE(:) = 0.0_DP
-            IF (ALLOCATED(PL_STATE%LATITUDE_M)) PL_STATE%LATITUDE_M(:) = 0.0_DP
-            IF (ALLOCATED(PL_STATE%ALTITUDE)) PL_STATE%ALTITUDE(:) = 0.0_DP
-            IF (ALLOCATED(PL_STATE%LEVEL)) PL_STATE%LEVEL(:) = 0.0_DP
-            IF (ALLOCATED(PL_STATE%WIDTH)) PL_STATE%WIDTH(:) = 0.0_DP
-            IF (ALLOCATED(PL_STATE%DEPTH)) PL_STATE%DEPTH(:) = 0.0_DP
-            IF (ALLOCATED(PL_STATE%HEADING)) PL_STATE%HEADING(:) = 0.0_DP
-            IF (ALLOCATED(PL_STATE%SIGMA_YY)) PL_STATE%SIGMA_YY(:) = 0.0_DP
-            IF (ALLOCATED(PL_STATE%SIGMA_YZ)) PL_STATE%SIGMA_YZ(:) = 0.0_DP
-            IF (ALLOCATED(PL_STATE%SIGMA_ZZ)) PL_STATE%SIGMA_ZZ(:) = 0.0_DP
-            IF (ALLOCATED(PL_STATE%ACTIVE_SEG_FLAG)) PL_STATE%ACTIVE_SEG_FLAG(:) = .FALSE.
-            ! Keep carried plume mass between timesteps; it is updated by BACKPROJECT_GRID_TO_PLUMES
-            ! and only newly emitted segments are reset in PL_STATE_ADVANCE_MASS.
-
-            IF (ALLOCATED(PL_STATE%Y_HALF)) PL_STATE%Y_HALF(:,:) = 0.0_DP
-            IF (ALLOCATED(PL_STATE%Z_HALF)) PL_STATE%Z_HALF(:,:) = 0.0_DP
-            IF (ALLOCATED(PL_STATE%SLICE_POLYS_M)) PL_STATE%SLICE_POLYS_M(:,:,:,:) = 0.0_DP
-
-            
-        END IF
-
-        IF (ALLOCATED(BOXM_STATE%TEMP)) BOXM_STATE%TEMP(:) = 0.0_DP
-        IF (ALLOCATED(BOXM_STATE%H2O)) BOXM_STATE%H2O(:) = 0.0_DP
-        IF (ALLOCATED(BOXM_STATE%M)) BOXM_STATE%M(:) = 0.0_DP
-        IF (ALLOCATED(BOXM_STATE%O2)) BOXM_STATE%O2(:) = 0.0_DP
-        IF (ALLOCATED(BOXM_STATE%N2)) BOXM_STATE%N2(:) = 0.0_DP
-        IF (ALLOCATED(BOXM_STATE%SZA)) BOXM_STATE%SZA(:) = 0.0_DP
-
-        IF (ALLOCATED(BOXM_STATE%ACTIVE_FLAG)) BOXM_STATE%ACTIVE_FLAG(:) = .FALSE.
-
-        ! Keep patch row mapping between projection updates. Rows are rebuilt in
-        ! PATCH_STATE_BUILD_ROWS_FROM_W on projection steps; clearing them here
-        ! causes diagnostics and coarse aggregation to lose row-cell linkage on
-        ! intermediate chemistry-only timesteps.
-        IF (ALLOCATED(PATCH_STATE%TIME_REL_S)) PATCH_STATE%TIME_REL_S(:) = 0
-
-    END SUBROUTINE RESET_STATES
-
-    SUBROUTINE CLOSE_DATASETS(FL_DS, PL_DS, BOXM_DS, PL_OUT, BOXM_OUT, PATCH_TABLE)
-        USE DEFINE_INPUT_TYPES
-        USE DEFINE_OUTPUT_TYPES
-        IMPLICIT NONE
-
-        CLASS(FL_DS_TYPE),       INTENT(INOUT) :: FL_DS
-        CLASS(PL_DS_TYPE),       INTENT(INOUT) :: PL_DS
-        CLASS(BOXM_DS_TYPE),     INTENT(INOUT) :: BOXM_DS
-
-        CLASS(PL_OUT_TYPE),      INTENT(INOUT) :: PL_OUT
-        CLASS(BOXM_OUT_TYPE),    INTENT(INOUT) :: BOXM_OUT
-        CLASS(PATCH_TABLE_TYPE), INTENT(INOUT) :: PATCH_TABLE
-
-        CALL BOXM_DS%CLOSE()
-        IF (BOXM_DS%N_AC > 0) THEN
-            CALL FL_DS%CLOSE()
-            CALL PL_DS%CLOSE()
-        END IF
-        
-        CALL BOXM_OUT%CLOSE()
-        IF (BOXM_DS%N_AC > 0) THEN
-            CALL PL_OUT%CLOSE()
-            CALL PATCH_TABLE%CLOSE()
-        END IF
-
-    END SUBROUTINE CLOSE_DATASETS
-
-END MODULE BOXM_RUN_UTILS
-
 MODULE VALIDATION_UTILS
     USE DEFINE_INPUT_TYPES
     USE DEFINE_STATE_TYPES
@@ -9130,6 +9078,324 @@ CONTAINS
     END SUBROUTINE PRINT_PATCH_SPECIES_DIAG
 
 END MODULE VALIDATION_UTILS
+
+MODULE BOXM_RUN_UTILS
+    USE RUN_CHEM_UTILS
+    IMPLICIT NONE
+    
+    PRIVATE
+    PUBLIC :: BOXM_RUN_INIT, ADVANCE_MET, PROJECT_PLUMES_TO_GRID, RUN_CHEM, BACKPROJECT_GRID_TO_PLUMES
+    PUBLIC :: WRITE_OUTPUTS, CLOSE_DATASETS, RESET_STATES
+    
+CONTAINS
+    SUBROUTINE BOXM_RUN_INIT(FL_DS, PL_DS, BOXM_DS, PL_STATE, BOXM_STATE, PATCH_STATE, &
+                            PL_OUT, BOXM_OUT, PATCH_TABLE, JOB_ID, DATA_PATH)
+        USE HELPERS
+        USE RUN_CHEM_UTILS
+        USE DEFINE_INPUT_TYPES
+        USE DEFINE_STATE_TYPES
+        USE DEFINE_OUTPUT_TYPES
+        IMPLICIT NONE
+
+        CLASS(FL_DS_TYPE),       INTENT(INOUT) :: FL_DS
+        CLASS(PL_DS_TYPE),       INTENT(INOUT) :: PL_DS
+        CLASS(BOXM_DS_TYPE),     INTENT(INOUT) :: BOXM_DS
+
+        CLASS(PL_STATE_TYPE),    INTENT(INOUT) :: PL_STATE
+        CLASS(BOXM_STATE_TYPE),  INTENT(INOUT) :: BOXM_STATE
+        CLASS(PATCH_STATE_TYPE), INTENT(INOUT) :: PATCH_STATE
+
+        CLASS(PL_OUT_TYPE),      INTENT(INOUT) :: PL_OUT
+        CLASS(BOXM_OUT_TYPE),    INTENT(INOUT) :: BOXM_OUT
+        CLASS(PATCH_TABLE_TYPE), INTENT(INOUT) :: PATCH_TABLE
+
+        CHARACTER(LEN=*), INTENT(IN) :: JOB_ID
+        CHARACTER(LEN=*), INTENT(IN) :: DATA_PATH
+        INTEGER :: SEG_ID
+
+        ! INITIALIZE AND READ INPUT DATASETS
+        CALL BOXM_DS%INIT(TRIM(DATA_PATH)//'inputs/'//TRIM(JOB_ID)//'/boxm_ds.nc')
+        CALL BOXM_DS%READ_STATIC()
+        CALL BOXM_DS%SUMMARY()
+        
+        IF (BOXM_DS%N_AC > 0) THEN
+            CALL FL_DS%INIT(TRIM(DATA_PATH)//'inputs/'//TRIM(JOB_ID)//'/fl_ds.nc')
+            CALL FL_DS%READ_STATIC()
+            CALL FL_DS%SUMMARY()
+
+            CALL PL_DS%INIT(TRIM(DATA_PATH)//'inputs/'//TRIM(JOB_ID)//'/pl_ds.nc')
+            CALL PL_DS%READ_STATIC()
+            CALL PL_DS%SUMMARY()
+        END IF
+
+        IF (BOXM_DS%N_AC > 0) THEN
+            ! STATE TYPE INITIALIZATION FROM INPUT DATASETS
+            CALL PL_STATE%INIT_FROM_PL_DS(PL_DS)
+            CALL PL_STATE%INIT_FROM_PL_OUT(PL_DS, SEG_ID=1)
+            CALL PATCH_STATE%INIT_FROM_BOXM_DS(BOXM_DS)
+        END IF
+        CALL BOXM_STATE%INIT_FROM_BOXM_DS(BOXM_DS)
+        
+        IF (BOXM_DS%N_AC > 0) THEN
+            ! INITIALISE OUTPUT DATASETS
+            CALL PL_OUT%INIT(PL_DS, TRIM(DATA_PATH)//'outputs/'//TRIM(JOB_ID)//'/pl_out.nc')
+            CALL PL_OUT%READ_STATIC(PL_DS)
+
+            ! Align plume state species with PL_OUT species list
+            PL_STATE%NSPL = PL_OUT%NSPL
+            IF (ALLOCATED(PL_STATE%SPECIES_PL_NUM)) DEALLOCATE(PL_STATE%SPECIES_PL_NUM)
+            ALLOCATE(PL_STATE%SPECIES_PL_NUM(PL_STATE%NSPL))
+            PL_STATE%SPECIES_PL_NUM = PL_OUT%SPECIES_PL_NUM
+
+            IF (ALLOCATED(PL_STATE%PL_MASS)) DEALLOCATE(PL_STATE%PL_MASS)
+            ALLOCATE(PL_STATE%PL_MASS(PL_STATE%NSEG, PL_STATE%NSPL))
+            PL_STATE%PL_MASS(:,:) = 0.0_DP
+
+            CALL PATCH_TABLE%INIT(TRIM(DATA_PATH)//'outputs/'//TRIM(JOB_ID)//'/patch_table.nc')
+            CALL PATCH_TABLE%READ_STATIC()
+        END IF
+
+        CALL BOXM_OUT%INIT(TRIM(DATA_PATH)//'outputs/'//TRIM(JOB_ID)//'/boxm_out.nc')
+        CALL BOXM_OUT%READ_STATIC()
+
+        IF (BOXM_DS%RUN_CHEM == 1) THEN
+            CALL CHEM_ALLOC(BOXM_DS%NCELL, BOXM_DS%NSBOXM, BOXM_DS%NPP, BOXM_DS%NPC, BOXM_DS%NTC, BOXM_DS%NFL)
+        END IF
+
+    END SUBROUTINE BOXM_RUN_INIT
+
+    SUBROUTINE PROJECT_PLUMES_TO_GRID(FL_DS, PL_DS, BOXM_DS, PL_STATE, BOXM_STATE, PATCH_STATE, TIME_IDX)
+        USE DEFINE_INPUT_TYPES
+        USE DEFINE_STATE_TYPES
+        IMPLICIT NONE
+        
+        CLASS(FL_DS_TYPE),       INTENT(IN)    :: FL_DS
+        CLASS(PL_DS_TYPE),       INTENT(IN)    :: PL_DS
+        CLASS(BOXM_DS_TYPE),     INTENT(IN)    :: BOXM_DS
+
+        CLASS(PL_STATE_TYPE),    INTENT(INOUT) :: PL_STATE
+        CLASS(BOXM_STATE_TYPE),  INTENT(INOUT) :: BOXM_STATE
+        CLASS(PATCH_STATE_TYPE), INTENT(INOUT) :: PATCH_STATE
+
+        INTEGER, INTENT(IN) :: TIME_IDX
+        
+        IF (MOD((TIME_IDX-1)*BOXM_DS%TS_SIM, BOXM_DS%TS_PL) == 0) THEN
+            CALL PL_STATE%ADVANCE_GEOM(PL_DS, BOXM_DS, TIME_IDX)
+            CALL PL_STATE%BUILD_ACTIVE(BOXM_DS, BOXM_STATE)
+            CALL PL_STATE%EMI_TO_PLUMES(FL_DS, PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
+            CALL PL_STATE%PROJECT_TO_GRID(PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
+            CALL PATCH_STATE%BUILD_ROWS_FROM_W(PL_STATE, BOXM_STATE)
+        END IF
+
+        CALL PATCH_STATE%ACCUM_DELTAS_FROM_W(PL_STATE, BOXM_DS, BOXM_STATE)
+
+    END SUBROUTINE PROJECT_PLUMES_TO_GRID
+
+    SUBROUTINE ADVANCE_MET(BOXM_DS, BOXM_STATE, TIME_IDX)
+        USE DEFINE_INPUT_TYPES
+        USE DEFINE_STATE_TYPES
+        IMPLICIT NONE
+
+        CLASS(BOXM_DS_TYPE),     INTENT(IN)    :: BOXM_DS
+        CLASS(BOXM_STATE_TYPE),  INTENT(INOUT) :: BOXM_STATE
+
+        INTEGER, INTENT(IN) :: TIME_IDX
+
+        CALL BOXM_STATE%ADVANCE_MET(BOXM_DS, TIME_IDX)
+
+    END SUBROUTINE ADVANCE_MET
+
+    SUBROUTINE RUN_CHEM(BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
+        USE DEFINE_INPUT_TYPES
+        USE DEFINE_STATE_TYPES
+        USE RUN_CHEM_UTILS
+        USE VALIDATION_UTILS
+        USE HELPERS
+        IMPLICIT NONE
+
+        CLASS(BOXM_DS_TYPE),     INTENT(IN)    :: BOXM_DS
+
+        CLASS(BOXM_STATE_TYPE),  INTENT(INOUT) :: BOXM_STATE
+        CLASS(PATCH_STATE_TYPE), INTENT(INOUT) :: PATCH_STATE
+
+        INTEGER, INTENT(IN) :: TIME_IDX
+
+        ! Local variables for RUN_LEGACY_CHEM
+        INTEGER :: NCELL, NSBOXM, NPP, NPC, NTC, NFL
+
+        ! Pre-chemistry background snapshot for correct operator splitting.
+        ! Both the total (bg_pre + delta) and the background must be evolved
+        ! from the *same* starting point so that the delta captures only the
+        ! perturbation effect.
+        REAL(DP), ALLOCATABLE :: Y_BG_C_PRE(:,:)
+
+        ! Save a copy of the background BEFORE bg chemistry modifies it.
+        ALLOCATE(Y_BG_C_PRE(BOXM_STATE%NCELL, BOXM_DS%NSBOXM))
+        Y_BG_C_PRE(:,:) = BOXM_STATE%Y_BG_C(:,:)
+
+        ! === LEGACY BACKGROUND CHEMISTRY ===
+        CALL BOXM_STATE%RUN_COARSE_BG_CHEM(BOXM_DS)
+        
+        IF (BOXM_DS%N_AC > 0) THEN
+            ! === FINE PLUME CHEMISTRY (always) ===
+            CALL PATCH_STATE%RUN_FINE_DELTA_CHEM(BOXM_DS, BOXM_STATE, Y_BG_C_PRE)
+
+            IF (MOD((TIME_IDX - 1) * BOXM_DS%TS_SIM, BOXM_DS%TS_OUT) == 0) THEN
+                CALL PRINT_PATCH_SPECIES_DIAG(PATCH_STATE, 8, 'NO', 1.0D-20)
+            END IF
+
+            ! === RE-AVERAGE fine deltas to coarse grid (always) ===
+            CALL BOXM_STATE%RUN_COARSE_DELTA_CHEM(BOXM_DS, PATCH_STATE)
+
+            ! === COARSE DELTA CHEMISTRY (optional) ===
+            IF (BOXM_DS%DELTA_CHEM_MODE == 1) THEN
+                CALL BOXM_STATE%RUN_COARSE_DELTA_CHEM_EVOLVE(BOXM_DS, Y_BG_C_PRE)
+            END IF
+        END IF
+
+        ! === PERSISTENT DELTA CHEMISTRY (inactive cells with Y_DEL_C /= 0) ===
+        CALL BOXM_STATE%RUN_PERSISTENT_DELTA_CHEM(BOXM_DS, Y_BG_C_PRE)
+
+        ! === EULERIAN ADVECTION of Y_DEL_C ===
+        CALL BOXM_STATE%ADVECT_Y_DEL_C(BOXM_DS)
+
+        DEALLOCATE(Y_BG_C_PRE)
+        
+    END SUBROUTINE RUN_CHEM
+
+    SUBROUTINE BACKPROJECT_GRID_TO_PLUMES(FL_DS, PL_DS, BOXM_DS, PL_STATE, BOXM_STATE, PATCH_STATE, TIME_IDX)
+        USE DEFINE_INPUT_TYPES
+        USE DEFINE_STATE_TYPES
+        IMPLICIT NONE
+
+        CLASS(FL_DS_TYPE),       INTENT(IN)    :: FL_DS
+        CLASS(PL_DS_TYPE),       INTENT(IN)    :: PL_DS
+        CLASS(BOXM_DS_TYPE),     INTENT(IN)    :: BOXM_DS
+
+        CLASS(PL_STATE_TYPE),    INTENT(INOUT) :: PL_STATE
+        CLASS(BOXM_STATE_TYPE),  INTENT(INOUT) :: BOXM_STATE
+        CLASS(PATCH_STATE_TYPE), INTENT(INOUT) :: PATCH_STATE
+
+        INTEGER, INTENT(IN) :: TIME_IDX
+
+        IF (MOD((TIME_IDX-1)*BOXM_DS%TS_SIM, BOXM_DS%TS_PL) == 0) THEN
+            CALL PL_STATE%BACKPROJECT_FROM_GRID(PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
+        END IF
+
+    END SUBROUTINE BACKPROJECT_GRID_TO_PLUMES
+
+    SUBROUTINE WRITE_OUTPUTS(PL_OUT, BOXM_OUT, PATCH_TABLE, PL_DS, BOXM_DS, PL_STATE, BOXM_STATE, PATCH_STATE, TIME_IDX)
+        USE DEFINE_INPUT_TYPES
+        USE DEFINE_OUTPUT_TYPES
+        USE DEFINE_STATE_TYPES
+        IMPLICIT NONE
+
+        CLASS(PL_DS_TYPE),       INTENT(IN)    :: PL_DS
+        CLASS(BOXM_DS_TYPE),     INTENT(IN)    :: BOXM_DS
+
+        CLASS(PL_OUT_TYPE),      INTENT(INOUT) :: PL_OUT
+        CLASS(BOXM_OUT_TYPE),    INTENT(INOUT) :: BOXM_OUT
+        CLASS(PATCH_TABLE_TYPE), INTENT(INOUT) :: PATCH_TABLE
+
+        CLASS(PL_STATE_TYPE),    INTENT(INOUT) :: PL_STATE
+        CLASS(BOXM_STATE_TYPE),  INTENT(INOUT) :: BOXM_STATE
+        CLASS(PATCH_STATE_TYPE), INTENT(INOUT) :: PATCH_STATE
+
+        INTEGER, INTENT(IN) :: TIME_IDX
+        
+        CALL BOXM_OUT%WRITE(BOXM_STATE, TIME_IDX)
+        IF (BOXM_DS%N_AC > 0) THEN
+            CALL PL_OUT%WRITE(PL_STATE, PL_DS, TIME_IDX)
+            CALL PATCH_TABLE%WRITE(PATCH_STATE, BOXM_DS, BOXM_STATE, TIME_IDX)
+        END IF
+
+    END SUBROUTINE WRITE_OUTPUTS
+
+    SUBROUTINE RESET_STATES(PL_STATE, BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)
+        USE HELPERS
+        USE DEFINE_INPUT_TYPES
+        USE DEFINE_STATE_TYPES
+        IMPLICIT NONE
+
+        CLASS(PL_STATE_TYPE),    INTENT(INOUT) :: PL_STATE
+        CLASS(BOXM_DS_TYPE),     INTENT(IN)    :: BOXM_DS
+        CLASS(BOXM_STATE_TYPE),  INTENT(INOUT) :: BOXM_STATE
+        CLASS(PATCH_STATE_TYPE), INTENT(INOUT) :: PATCH_STATE
+
+        INTEGER, INTENT(IN) :: TIME_IDX
+
+        IF (MOD((TIME_IDX-1)*BOXM_DS%TS_SIM, BOXM_DS%TS_PL) == 0) THEN
+            IF (ALLOCATED(PL_STATE%AGE_S)) PL_STATE%AGE_S(:) = 0
+            IF (ALLOCATED(PL_STATE%LONGITUDE)) PL_STATE%LONGITUDE(:) = 0.0_DP
+            IF (ALLOCATED(PL_STATE%LONGITUDE_M)) PL_STATE%LONGITUDE_M(:) = 0.0_DP
+            IF (ALLOCATED(PL_STATE%LATITUDE)) PL_STATE%LATITUDE(:) = 0.0_DP
+            IF (ALLOCATED(PL_STATE%LATITUDE_M)) PL_STATE%LATITUDE_M(:) = 0.0_DP
+            IF (ALLOCATED(PL_STATE%ALTITUDE)) PL_STATE%ALTITUDE(:) = 0.0_DP
+            IF (ALLOCATED(PL_STATE%LEVEL)) PL_STATE%LEVEL(:) = 0.0_DP
+            IF (ALLOCATED(PL_STATE%WIDTH)) PL_STATE%WIDTH(:) = 0.0_DP
+            IF (ALLOCATED(PL_STATE%DEPTH)) PL_STATE%DEPTH(:) = 0.0_DP
+            IF (ALLOCATED(PL_STATE%HEADING)) PL_STATE%HEADING(:) = 0.0_DP
+            IF (ALLOCATED(PL_STATE%SIGMA_YY)) PL_STATE%SIGMA_YY(:) = 0.0_DP
+            IF (ALLOCATED(PL_STATE%SIGMA_YZ)) PL_STATE%SIGMA_YZ(:) = 0.0_DP
+            IF (ALLOCATED(PL_STATE%SIGMA_ZZ)) PL_STATE%SIGMA_ZZ(:) = 0.0_DP
+            IF (ALLOCATED(PL_STATE%ACTIVE_SEG_FLAG)) PL_STATE%ACTIVE_SEG_FLAG(:) = .FALSE.
+            ! Keep carried plume mass between timesteps; it is updated by BACKPROJECT_GRID_TO_PLUMES
+            ! and only newly emitted segments are reset in PL_STATE_ADVANCE_MASS.
+
+            IF (ALLOCATED(PL_STATE%Y_HALF)) PL_STATE%Y_HALF(:,:) = 0.0_DP
+            IF (ALLOCATED(PL_STATE%Z_HALF)) PL_STATE%Z_HALF(:,:) = 0.0_DP
+            IF (ALLOCATED(PL_STATE%SLICE_POLYS_M)) PL_STATE%SLICE_POLYS_M(:,:,:,:) = 0.0_DP
+
+            
+        END IF
+
+        IF (ALLOCATED(BOXM_STATE%TEMP)) BOXM_STATE%TEMP(:) = 0.0_DP
+        IF (ALLOCATED(BOXM_STATE%H2O)) BOXM_STATE%H2O(:) = 0.0_DP
+        IF (ALLOCATED(BOXM_STATE%M)) BOXM_STATE%M(:) = 0.0_DP
+        IF (ALLOCATED(BOXM_STATE%O2)) BOXM_STATE%O2(:) = 0.0_DP
+        IF (ALLOCATED(BOXM_STATE%N2)) BOXM_STATE%N2(:) = 0.0_DP
+        IF (ALLOCATED(BOXM_STATE%SZA)) BOXM_STATE%SZA(:) = 0.0_DP
+        IF (ALLOCATED(BOXM_STATE%U_WIND)) BOXM_STATE%U_WIND(:) = 0.0_DP
+        IF (ALLOCATED(BOXM_STATE%V_WIND)) BOXM_STATE%V_WIND(:) = 0.0_DP
+
+        IF (ALLOCATED(BOXM_STATE%ACTIVE_FLAG)) BOXM_STATE%ACTIVE_FLAG(:) = .FALSE.
+
+        ! Keep patch row mapping between projection updates. Rows are rebuilt in
+        ! PATCH_STATE_BUILD_ROWS_FROM_W on projection steps; clearing them here
+        ! causes diagnostics and coarse aggregation to lose row-cell linkage on
+        ! intermediate chemistry-only timesteps.
+        IF (ALLOCATED(PATCH_STATE%TIME_REL_S)) PATCH_STATE%TIME_REL_S(:) = 0
+
+    END SUBROUTINE RESET_STATES
+
+    SUBROUTINE CLOSE_DATASETS(FL_DS, PL_DS, BOXM_DS, PL_OUT, BOXM_OUT, PATCH_TABLE)
+        USE DEFINE_INPUT_TYPES
+        USE DEFINE_OUTPUT_TYPES
+        IMPLICIT NONE
+
+        CLASS(FL_DS_TYPE),       INTENT(INOUT) :: FL_DS
+        CLASS(PL_DS_TYPE),       INTENT(INOUT) :: PL_DS
+        CLASS(BOXM_DS_TYPE),     INTENT(INOUT) :: BOXM_DS
+
+        CLASS(PL_OUT_TYPE),      INTENT(INOUT) :: PL_OUT
+        CLASS(BOXM_OUT_TYPE),    INTENT(INOUT) :: BOXM_OUT
+        CLASS(PATCH_TABLE_TYPE), INTENT(INOUT) :: PATCH_TABLE
+
+        CALL BOXM_DS%CLOSE()
+        IF (BOXM_DS%N_AC > 0) THEN
+            CALL FL_DS%CLOSE()
+            CALL PL_DS%CLOSE()
+        END IF
+        
+        CALL BOXM_OUT%CLOSE()
+        IF (BOXM_DS%N_AC > 0) THEN
+            CALL PL_OUT%CLOSE()
+            CALL PATCH_TABLE%CLOSE()
+        END IF
+
+    END SUBROUTINE CLOSE_DATASETS
+
+END MODULE BOXM_RUN_UTILS
 
 PROGRAM BOXM_RUN
     USE BOXM_RUN_UTILS

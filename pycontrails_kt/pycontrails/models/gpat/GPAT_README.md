@@ -141,6 +141,102 @@ Usage: Passed to the main GPAT class for configuration.
   - Coordinates: ['row', 'species_out', 'species_out_num', 'time', 'time_rel_s', 'time_idx', 'row_cell_c', 'row_cell_f', 'latitude_f', 'longitude_f', 'altitude_f', 'level_f']
   - Variables: ['Y_del_f']
 
+## How to Run GPAT
+
+### 1. Environment Setup
+
+GPAT is built on a developer (editable) install of **pycontrails**. When you clone the GPAT repository, the correct Python environment is initialised for you via the provided `pyproject.toml` and Makefile.
+
+**Prerequisites:**
+- Python 3.12+ (via Miniconda or similar)
+- `gfortran` (system-level, for compiling the Fortran box model)
+- `netcdf-fortran` and `netcdf-c` development libraries (for `nf-config` / `nc-config`)
+- `conda` package manager
+
+**Steps:**
+
+```bash
+# 1. Clone the repository
+git clone <repo-url> && cd pycontrails_kt
+
+# 2. Create and activate the conda environment
+conda create -n contrails python=3.12
+conda activate contrails
+
+# 3. Install pycontrails in editable (developer) mode with all dependencies
+make dev-install
+# This runs: pip install -e ".[complete,dev,docs]" and sets up pre-commit hooks.
+# All Python source changes under pycontrails/ are immediately reflected.
+```
+
+You can verify the install with:
+```bash
+python -c "import pycontrails; print(pycontrails.__version__)"
+```
+
+### 2. Compile the Fortran Box Model
+
+Navigate to the GPAT model directory and compile `boxm.f90`:
+
+```bash
+cd pycontrails/models/gpat
+make boxm
+```
+
+This will:
+- Compile `boxm.f90` into the `boxm` executable using `gfortran` and the system NetCDF-Fortran libraries.
+- Create the required data directories (`data/inputs/glob/`, `data/inputs/`, `data/outputs/`).
+- Download global input files (`species.nc`, `h2o_concs.nc`, `air_temperature.nc`) from Google Drive.
+
+For a debug build with bounds-checking, backtraces, and NaN initialisation:
+```bash
+make debug
+```
+
+### 3. Configure and Run GPAT
+
+The run script is `run_gpat.py`. Edit it to configure the simulation parameters:
+
+- **`sim_params`** — simulation time windows, spatial domain bounds, grid resolution, paths, job ID.
+- **`fl_params`** — flight mode (`"direct"` from CSV or `"synthetic"`), aircraft type, initial state, number of aircraft.
+- **`pl_params`** — initial plume dimensions, number of slices, wind shear, output options.
+- **`met_params`** — wind components, air pressure tendency.
+- **`chem_params`** — emission, plume, and output species lists; chemistry toggle.
+
+Then run the full pipeline:
+
+```bash
+conda activate contrails
+cd pycontrails/models/gpat
+python3 run_gpat.py
+```
+
+This executes the complete GPAT workflow:
+1. Generates flight trajectories (from file or synthetic).
+2. Generates meteorology and background chemistry fields.
+3. Runs the Poll-Schumann aircraft performance model and emissions estimation.
+4. Simulates plume dispersion and advection via DryAdvection.
+5. Writes input NetCDF files (`fl_ds.nc`, `pl_ds.nc`, `boxm_ds.nc`).
+6. Creates zero-filled output templates (`pl_out.nc`, `boxm_out.nc`, `patch_table.nc`).
+7. Invokes the compiled `./boxm` Fortran executable for plume-to-grid projection, photochemical integration, and backprojection.
+
+### 4. Post-Processing and Analysis
+
+After a run completes, analyse the outputs using `run_pp_gpat.py`:
+
+```bash
+python3 run_pp_gpat.py
+```
+
+This script creates a `GPATPostProcessor` instance (from `pp_gpat.py`) which:
+- Loads input and output NetCDF datasets by job ID.
+- Unstacks the box model output for analysis.
+- Provides **analysis** methods: `print_input_ds`, `print_output_ds`, `rank_fine_cells`.
+- Provides **plotting** methods: interactive slider plots, 3D animations, heatmaps.
+- Provides **validation** methods: `boxm_test` and other consistency checks.
+
+Edit `run_pp_gpat.py` to select which analysis, plotting, and validation routines to run for your job.
+
 ## Parameterization
 Parameters are managed via Python dataclasses. For automated or batch runs, use config files (YAML/JSON) and load them into the dataclasses.
 
@@ -150,6 +246,7 @@ Parameters are managed via Python dataclasses. For automated or batch runs, use 
 - Use the analysis tools for custom validation and visualization.
 
 ## Requirements
-- Python 3.8+
-- numpy, pandas, xarray, pyproj, matplotlib, dask, netCDF4, and other dependencies from pycontrails
-- FORTRAN box model and contrail model executables (for full workflow)
+- Python 3.12+
+- conda (Miniconda or Miniforge recommended)
+- gfortran, netcdf-fortran, netcdf-c (system-level)
+- numpy, pandas, xarray, pyproj, matplotlib, dask, netCDF4, scipy, and other dependencies from pycontrails (installed automatically via `make dev-install`)

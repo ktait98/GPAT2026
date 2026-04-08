@@ -8,99 +8,108 @@ import json
 import pyvista as pv
 np.set_printoptions(threshold=np.inf, linewidth=500)
 
+run_path = f"{os.getcwd()}/"
 data_path = f"{os.getcwd()}/data/"
 
 criteria = {
-    "job_id": ["test"]
+    "job_id": ["2_flights_origin"]
 }
 
-pp_gpat = GPATPostProcessor(data_path=data_path, criteria=criteria)
-
-boxm_ds = pp_gpat.boxm_ds_dict[pp_gpat.job_ids[0]]
-fl_ds = pp_gpat.fl_ds_dict[pp_gpat.job_ids[0]]
-pl_ds = pp_gpat.pl_ds_dict[pp_gpat.job_ids[0]]
-
-boxm_out = pp_gpat.boxm_out_dict[pp_gpat.job_ids[0]]
-pl_out = pp_gpat.pl_out_dict[pp_gpat.job_ids[0]]
-patch_table = pp_gpat.patch_table_dict[pp_gpat.job_ids[0]]
-
-pp_gpat.analysis.print_input_ds(job_id=pp_gpat.job_ids[0], ds_type="fl")
-pp_gpat.analysis.print_input_ds(job_id=pp_gpat.job_ids[0], ds_type="pl")
-pp_gpat.analysis.print_input_ds(job_id=pp_gpat.job_ids[0], ds_type="boxm")
-
-pp_gpat.analysis.print_output_ds(job_id=pp_gpat.job_ids[0], ds_type="pl_out")
-pp_gpat.analysis.print_output_ds(job_id=pp_gpat.job_ids[0], ds_type="boxm_out")
-pp_gpat.analysis.print_output_ds(job_id=pp_gpat.job_ids[0], ds_type="patch_table")
+pp_gpat = GPATPostProcessor(run_path=run_path, data_path=data_path, criteria=criteria)
 
 job_id = pp_gpat.job_ids[0]
+
+boxm_ds = pp_gpat.boxm_ds_dict[job_id]
+fl_ds = pp_gpat.fl_ds_dict[job_id]
+pl_ds = pp_gpat.pl_ds_dict[job_id]
+
+boxm_out = pp_gpat.boxm_out_dict[job_id]
+pl_out = pp_gpat.pl_out_dict[job_id]
+patch_table = pp_gpat.patch_table_dict[job_id]
+
+pp_gpat.analysis.print_input_ds(job_id=job_id, ds_type="fl")
+pp_gpat.analysis.print_input_ds(job_id=job_id, ds_type="pl")
+pp_gpat.analysis.print_input_ds(job_id=job_id, ds_type="boxm")
+
+pp_gpat.analysis.print_output_ds(job_id=job_id, ds_type="pl_out")
+pp_gpat.analysis.print_output_ds(job_id=job_id, ds_type="boxm_out")
+pp_gpat.analysis.print_output_ds(job_id=job_id, ds_type="patch_table")
+
 species = "NO"
 
-print("\n=== PL OUT species summary (polluted timesteps only) ===")
-pl_summary = pp_gpat.analysis.summarize_pl_out_species(job_id=job_id, species=species, filter_active=True)
-print(pl_summary.head(10).to_string(index=False))
-if len(pl_summary) > 10:
-    print("...")
-    print(pl_summary.tail(5).to_string(index=False))
-print(
-    "pl summary (active times):",
-    {
-        "n_active_times": int(len(pl_summary)),
-        "max_pl_mass": float(pl_summary["max_pl_mass"].max()) if len(pl_summary) > 0 else 0.0,
-        "min_pl_mass": float(pl_summary["min_pl_mass"].min()) if len(pl_summary) > 0 else 0.0,
-    },
+pp_gpat.analysis.rank_fine_cells(job_id=job_id, species=species, time_indices=[181, 361, 721], n=5)
+
+pp_gpat.plotting.plot_boxm_patch_slider(
+    job_id=pp_gpat.job_ids[0],
+    species="NO",
+    time_indices=list(range(181, 1441, 60)),
+    mode="total_with_patch_fine",
+    vertical_mode="column",
 )
 
-print("\n=== BOXM species summary ===")
-box_summary = pp_gpat.analysis.summarize_boxm_species(job_id=job_id, species=species, filter_active=True)
-print(box_summary.head(10).to_string(index=False))
-print("...")
-print(box_summary.tail(5).to_string(index=False))
-print(
-    "box summary totals:",
-    {
-        "n_time": int(len(box_summary)),
-        "n_time_with_negative_total": int((box_summary["tot_neg_count"] > 0).sum()),
-        "max_negative_cell_count": int(box_summary["tot_neg_count"].max()),
-        "global_tot_min": float(box_summary["tot_min"].min()),
-    },
+pp_gpat.validation.boxm_test(
+    job_id=pp_gpat.job_ids[0],
+    cell=20
 )
 
-print("\n=== PATCH species summary ===")
-patch_summary = pp_gpat.analysis.summarize_patch_species(job_id=job_id, species=species, threshold=1.0e-20)
-if patch_summary.empty:
-    print("No patch_table summary available for this job.")
-else:
-    print(patch_summary.head(10).to_string(index=False))
-    print("...")
-    print(patch_summary.tail(5).to_string(index=False))
-    print(
-        "patch summary totals:",
-        {
-            "n_time": int(len(patch_summary)),
-            "max_nrows": int(patch_summary["nrows"].max()),
-            "max_neg_count": int(patch_summary["neg_count"].max()),
-            "global_min_delta": float(patch_summary["min_val"].min()),
-            "global_max_delta": float(patch_summary["max_val"].max()),
-        },
-    )
-
-print("\n=== Negative total coarse cells (sample) ===")
-neg_tot = pp_gpat.analysis.find_negative_total_cells(job_id=job_id, species=species, time_idx=None, max_rows=25)
-if neg_tot.empty:
-    print("No negative total cells found for Y_bg_c + Y_del_c.")
-else:
-    print(neg_tot.to_string(index=False))
-
-# pp_gpat.plotting.plot_boxm_patch_slider(
-#     job_id=pp_gpat.job_ids[0],
-#     species="NO",
-#     mode="total_with_patch",
-#     vertical_mode="topk",
-#     top_k=3,
+# print("\n=== PL OUT species summary (polluted timesteps only) ===")
+# pl_summary = pp_gpat.analysis.summarize_pl_out_species(job_id=job_id, species=species, filter_active=True)
+# print(pl_summary.head(10).to_string(index=False))
+# if len(pl_summary) > 10:
+#     print("...")
+#     print(pl_summary.tail(5).to_string(index=False))
+# print(
+#     "pl summary (active times):",
+#     {
+#         "n_active_times": int(len(pl_summary)),
+#         "max_pl_mass": float(pl_summary["max_pl_mass"].max()) if len(pl_summary) > 0 else 0.0,
+#         "min_pl_mass": float(pl_summary["min_pl_mass"].min()) if len(pl_summary) > 0 else 0.0,
+#     },
 # )
 
-if not patch_summary.empty:
-    print("\nPatch NO max (from patch summary):", float(patch_summary["max_val"].max()))
+# print("\n=== BOXM species summary ===")
+# box_summary = pp_gpat.analysis.summarize_boxm_species(job_id=job_id, species=species, filter_active=True)
+# print(box_summary.head(10).to_string(index=False))
+# print("...")
+# print(box_summary.tail(5).to_string(index=False))
+# print(
+#     "box summary totals:",
+#     {
+#         "n_time": int(len(box_summary)),
+#         "n_time_with_negative_total": int((box_summary["tot_neg_count"] > 0).sum()),
+#         "max_negative_cell_count": int(box_summary["tot_neg_count"].max()),
+#         "global_tot_min": float(box_summary["tot_min"].min()),
+#     },
+# )
+
+# print("\n=== PATCH species summary ===")
+# patch_summary = pp_gpat.analysis.summarize_patch_species(job_id=job_id, species=species, threshold=1.0e-20)
+# if patch_summary.empty:
+#     print("No patch_table summary available for this job.")
+# else:
+#     print(patch_summary.head(10).to_string(index=False))
+#     print("...")
+#     print(patch_summary.tail(5).to_string(index=False))
+#     print(
+#         "patch summary totals:",
+#         {
+#             "n_time": int(len(patch_summary)),
+#             "max_nrows": int(patch_summary["nrows"].max()),
+#             "max_neg_count": int(patch_summary["neg_count"].max()),
+#             "global_min_delta": float(patch_summary["min_val"].min()),
+#             "global_max_delta": float(patch_summary["max_val"].max()),
+#         },
+#     )
+
+# print("\n=== Negative total coarse cells (sample) ===")
+# neg_tot = pp_gpat.analysis.find_negative_total_cells(job_id=job_id, species=species, time_idx=None, max_rows=25)
+# if neg_tot.empty:
+#     print("No negative total cells found for Y_bg_c + Y_del_c.")
+# else:
+#     print(neg_tot.to_string(index=False))
+
+
+
 
 # pp_gpat.plotting.animate_plumes_3d_plotly(
 #     job_id=pp_gpat.job_ids[0],
