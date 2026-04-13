@@ -12,7 +12,7 @@ run_path = f"{os.getcwd()}/"
 data_path = f"{os.getcwd()}/data/"
 
 criteria = {
-    "job_id": ["2_flights_origin"]
+    "job_id": ["test", "2_flights_origin"]
 }
 
 pp_gpat = GPATPostProcessor(run_path=run_path, data_path=data_path, criteria=criteria)
@@ -20,37 +20,55 @@ pp_gpat = GPATPostProcessor(run_path=run_path, data_path=data_path, criteria=cri
 job_id = pp_gpat.job_ids[0]
 
 boxm_ds = pp_gpat.boxm_ds_dict[job_id]
-fl_ds = pp_gpat.fl_ds_dict[job_id]
-pl_ds = pp_gpat.pl_ds_dict[job_id]
+# fl_ds = pp_gpat.fl_ds_dict[job_id]
+# pl_ds = pp_gpat.pl_ds_dict[job_id]
 
 boxm_out = pp_gpat.boxm_out_dict[job_id]
-pl_out = pp_gpat.pl_out_dict[job_id]
-patch_table = pp_gpat.patch_table_dict[job_id]
 
-pp_gpat.analysis.print_input_ds(job_id=job_id, ds_type="fl")
-pp_gpat.analysis.print_input_ds(job_id=job_id, ds_type="pl")
-pp_gpat.analysis.print_input_ds(job_id=job_id, ds_type="boxm")
 
-pp_gpat.analysis.print_output_ds(job_id=job_id, ds_type="pl_out")
-pp_gpat.analysis.print_output_ds(job_id=job_id, ds_type="boxm_out")
-pp_gpat.analysis.print_output_ds(job_id=job_id, ds_type="patch_table")
 
-species = "NO"
+# pl_out = pp_gpat.pl_out_dict[job_id]
+# patch_table = pp_gpat.patch_table_dict[job_id]
 
-pp_gpat.analysis.rank_fine_cells(job_id=job_id, species=species, time_indices=[181, 361, 721], n=5)
+# print(boxm_out["Y_bg_c"].sel(species_out="CO", latitude_c=0.25, longitude_c=0.25).sel(level_c=158.7, method="nearest").values)
 
-pp_gpat.plotting.plot_boxm_patch_slider(
-    job_id=pp_gpat.job_ids[0],
-    species="NO",
-    time_indices=list(range(181, 1441, 60)),
-    mode="total_with_patch_fine",
-    vertical_mode="column",
-)
+# pp_gpat.analysis.print_input_ds(job_id=job_id, ds_type="fl")
+# pp_gpat.analysis.print_input_ds(job_id=job_id, ds_type="pl")
+# pp_gpat.analysis.print_input_ds(job_id=job_id, ds_type="boxm")
+
+# pp_gpat.analysis.print_output_ds(job_id=job_id, ds_type="pl_out")
+# pp_gpat.analysis.print_output_ds(job_id=job_id, ds_type="boxm_out")
+# pp_gpat.analysis.print_output_ds(job_id=job_id, ds_type="patch_table")
+
+# species = "NO"
+
+# pp_gpat.analysis.rank_fine_cells(job_id=job_id, species=species, time_indices=[181, 361, 721], n=5)
+
+# pp_gpat.plotting.plot_boxm_patch_slider(
+#     job_id=pp_gpat.job_ids[0],
+#     species="NO",
+#     time_indices=list(range(181, 1441, 9)),
+#     mode="total_with_patch_fine",
+#     vertical_mode="column",
+#     overlay_flights=True,
+#     overlay_slices=True,
+# )
+
+
 
 pp_gpat.validation.boxm_test(
-    job_id=pp_gpat.job_ids[0],
-    cell=20
+    job_id=job_id,
+    cell=1,
+    plot_validation=True
 )
+
+
+
+
+
+
+# results = pp_gpat.validation.boxm_test_fine(job_id)           # auto-select 3 cells
+# results = pp_gpat.validation.boxm_test_fine(job_id, cell_c=20, cell_f=12)  # specific cell
 
 # print("\n=== PL OUT species summary (polluted timesteps only) ===")
 # pl_summary = pp_gpat.analysis.summarize_pl_out_species(job_id=job_id, species=species, filter_active=True)

@@ -281,22 +281,49 @@ class GPAT(Model):
         self.run = GPATRun(self)
 
     def _build_grid(self, sim_params):
-        """Build coarse grid vectors and meter axes from sim_params bounds."""
+        """Build coarse grid vectors and meter axes from sim_params bounds.
+
+        Also builds padded met grid arrays (``met_lons``, ``met_lats``,
+        ``met_levels``) that extend one cell beyond the BOXM domain on
+        each side so that DryAdvection can interpolate at flight
+        waypoints near the domain boundary.
+        """
+        hres = sim_params.hres_sim_c
+        vres = sim_params.vres_sim_c
+
         self.lats = np.arange(
-            sim_params.lat_bounds[0] + sim_params.hres_sim_c / 2,
+            sim_params.lat_bounds[0] + hres / 2,
             sim_params.lat_bounds[1],
-            sim_params.hres_sim_c,
+            hres,
         )
         self.lons = np.arange(
-            sim_params.lon_bounds[0] + sim_params.hres_sim_c / 2,
+            sim_params.lon_bounds[0] + hres / 2,
             sim_params.lon_bounds[1],
-            sim_params.hres_sim_c,
+            hres,
         )
         self.alts = np.arange(
-            sim_params.alt_bounds[0] + sim_params.vres_sim_c / 2,
+            sim_params.alt_bounds[0] + vres / 2,
             sim_params.alt_bounds[1],
-            sim_params.vres_sim_c,
+            vres,
         )
+
+        # Padded met grid: one extra cell on each side for DryAdvection
+        self.met_lats = np.arange(
+            sim_params.lat_bounds[0] - hres / 2,
+            sim_params.lat_bounds[1] + hres,
+            hres,
+        )
+        self.met_lons = np.arange(
+            sim_params.lon_bounds[0] - hres / 2,
+            sim_params.lon_bounds[1] + hres,
+            hres,
+        )
+        self.met_alts = np.arange(
+            sim_params.alt_bounds[0] - vres / 2,
+            sim_params.alt_bounds[1] + vres,
+            vres,
+        )
+        self.met_levels = units.m_to_pl(self.met_alts)
 
         self.levels = units.m_to_pl(self.alts)
 
@@ -424,6 +451,8 @@ class GPATSetup:
 
             df = pd.read_csv(fl_params.file)
             fl = []
+
+            self.gpat.fl_params.n_ac = len(df["flight_id"].dropna().unique())
 
             for flight_id in sorted(df["flight_id"].dropna().unique()):
                 df_flt = df[df["flight_id"] == flight_id].copy()
@@ -560,29 +589,37 @@ class GPATSetup:
             return fl
 
     def gen_met(self) -> MetDataset:
-        """Generate meteorology data."""
+        """Generate meteorology data.
+
+        Uses the padded met grid (``met_lons``, ``met_lats``,
+        ``met_levels``) so that DryAdvection can interpolate at flight
+        waypoints near the BOXM domain boundary.
+        """
         met_params = self.gpat.met_params
+        met_lons = self.gpat.met_lons
+        met_lats = self.gpat.met_lats
+        met_levels = self.gpat.met_levels
 
         # Step 1: Create with STANDARD names for MetDataset validation
         met_standard = xr.Dataset(
             data_vars={
                 "eastward_wind": (
                     ("time", "level", "latitude", "longitude"),
-                    np.full((len(self.gpat.times_sim), len(self.gpat.levels), len(self.gpat.lats), len(self.gpat.lons)), met_params.eastward_wind),
+                    np.full((len(self.gpat.times_sim), len(met_levels), len(met_lats), len(met_lons)), met_params.eastward_wind),
                 ),
                 "northward_wind": (
                     ("time", "level", "latitude", "longitude"),
-                    np.full((len(self.gpat.times_sim), len(self.gpat.levels), len(self.gpat.lats), len(self.gpat.lons)), met_params.northward_wind),
+                    np.full((len(self.gpat.times_sim), len(met_levels), len(met_lats), len(met_lons)), met_params.northward_wind),
                 ),
                 "lagrangian_tendency_of_air_pressure": (
                     ("time", "level", "latitude", "longitude"),
-                    np.full((len(self.gpat.times_sim), len(self.gpat.levels), len(self.gpat.lats), len(self.gpat.lons)), met_params.lagrangian_tendency_of_air_pressure),
+                    np.full((len(self.gpat.times_sim), len(met_levels), len(met_lats), len(met_lons)), met_params.lagrangian_tendency_of_air_pressure),
                 ),
             },
             coords={
-                "longitude": self.gpat.lons,
-                "latitude": self.gpat.lats,
-                "level": self.gpat.levels,
+                "longitude": met_lons,
+                "latitude": met_lats,
+                "level": met_levels,
                 "time": pd.to_datetime(self.gpat.times_sim.values).strftime("%Y-%m-%dT%H:%M:%SZ"),
             },
         )
@@ -597,10 +634,11 @@ class GPATSetup:
             xr.open_dataarray(self.gpat.inputs_glob + "air_temperature.nc", engine="netcdf4")
             .sel(month=month - 1)
             .interp(
-                longitude=self.gpat.lons,
-                latitude=self.gpat.lats,
-                level=self.gpat.levels,
-                method="linear"
+                longitude=met_lons,
+                latitude=met_lats,
+                level=met_levels,
+                method="linear",
+                kwargs={"fill_value": "extrapolate"},
             )
             .broadcast_like(met.data["eastward_wind"])
         )
@@ -609,10 +647,11 @@ class GPATSetup:
             xr.open_dataarray(self.gpat.inputs_glob + "h2o_concs.nc", engine="netcdf4")
             .sel(month=month - 1)
             .interp(
-                longitude=self.gpat.lons,
-                latitude=self.gpat.lats,
-                level=self.gpat.levels,
-                method="linear"
+                longitude=met_lons,
+                latitude=met_lats,
+                level=met_levels,
+                method="linear",
+                kwargs={"fill_value": "extrapolate"},
             )
             .broadcast_like(met.data["eastward_wind"])
         )
@@ -657,23 +696,49 @@ class GPATSetup:
         """Generate background chemistry data."""
         month = self.gpat.times_sim[0].month
 
+        # Load background chemistry dataset
         bg_chem = (
             xr.open_dataset(self.gpat.inputs_glob + "species.nc", engine="netcdf4")
             .sel(month=month - 1)
             .rename({"species": "species_boxm"})
         )
 
-        for s in [1,2,3,5,7,9,10,13,15,16,17,18,19,20,22,24,26,27,29,31,33,35,36,37,38,40,
-                  41,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,60,62,63,65,66,68,69,70,
-                  72,74,75,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,
-                  98,99,100,102,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,
-                  119,120,121,122,123,124,125,126,127,128,129,130,131,132,133,134,135,136,
-                  137,138,139,140,141,142,143,145,146,147,148,149,150,151,152,153,154,155,
-                  156,157,158,159,160,161,162,163,164,165,166,167,168,169,170,171,172,173,
-                  174,175,176,177,178,179,180,181,182,183,184,185,186,187,188,189,190,191,
-                  192,193,194,195,196,197,199,200,201,203,204,205,206,207,208,209,210,211,
-                  212,213,214,215,216,217,218,219]:
-            bg_chem.bg_chem[:, :, :, s - 1] = 0
+        # List of species indices (1-based) that are initialized in boxm_orig
+        initialized_species = [
+            4,  # NO2
+            8,  # NO
+            6,  # O3
+            11, # CO
+            21, # CH4
+            39, # HCHO
+            42, # CH3CHO
+            73, # CH3COCH3
+            23, # C2H6
+            30, # C2H4
+            25, # C3H8
+            32, # C3H6
+            59, # C2H2
+            28, # NC4H10
+            34, # TBUT2ENE
+            61, # BENZENE
+            64, # TOLUENE
+            67, # OXYL
+            43, # C5H8
+            12, # H2O2
+            14, # HNO3
+            71, # C2H5CHO
+            76, # CH3OH
+            101,# MEK
+            144,# CH3OOH
+            198,# PAN
+            202 # MPAN
+        ]
+
+        # Zero out all species except those initialized in boxm_orig
+        n_species = bg_chem.bg_chem.shape[-1]
+        for s in range(1, n_species + 1):
+            if s not in initialized_species:
+                bg_chem.bg_chem[:, :, :, s - 1] = 0
 
         bg_chem = bg_chem * 1e09  # convert mixing ratio to ppb
 
@@ -939,10 +1004,6 @@ class GPATSetup:
             df["flight_id"] = df["flight_id"].astype(int) + 1  # start flight_id from 1 (FORTRAN)
         df["waypoint"] = df["waypoint"].astype(int) + 1
 
-        # pl_keys = self.gpat.pl[["flight_id", "waypoint"]].drop_duplicates()
-        # # Do NOT increment pl_keys here!
-        # df = df.merge(pl_keys, on=["flight_id", "waypoint"], how="inner")
-
         # Sort by flight_id, waypoint to establish the seg_id ordering
         df = df.sort_values(by=["flight_id", "waypoint"]).reset_index(drop=True)
         df["seg_id"] = df.groupby(["flight_id", "waypoint"]).ngroup() + 1
@@ -998,12 +1059,17 @@ class GPATSetup:
         else:
             df["flight_id"] = df["flight_id"].astype(int) + 1  # start flight_id from 1 (FORTRAN)
         df["waypoint"] = df["waypoint"].astype(int) + 1
-        
-        # Create segment index: assign same seg_id to all rows with same (flight_id, waypoint)
-        df["seg_id"] = df.groupby(["flight_id", "waypoint"]).ngroup() + 1  # start seg_id from 1 (FORTRAN)
 
-        # Calculate total number of unique segments
-        nseg = df["seg_id"].max()
+        # Use FL's (flight_id, waypoint) → seg_id mapping so that PL seg_ids are
+        # consistent with FL_DS.  This is essential because the Fortran indexes
+        # PL_DS%EMI_PL_MASS using seg_id values derived from FL_DS%TIME_IDX.
+        fl_seg_map = self.gpat.fl_ds[["flight_id", "waypoint"]].to_dataframe().reset_index()
+        fl_seg_map = fl_seg_map[["seg_id", "flight_id", "waypoint"]].drop_duplicates()
+        df = df.merge(fl_seg_map, on=["flight_id", "waypoint"], how="left")
+
+        # nseg must match FL_DS so all seg_ids are addressable in Fortran
+        nseg_fl = int(self.gpat.fl_ds.seg_id.values.max())
+        nseg = nseg_fl
 
         # Get unique flight_id and waypoint for each seg_id
         seg_unique = df.drop_duplicates(subset=["seg_id"])[["seg_id", "flight_id", "waypoint"]].set_index("seg_id").sort_index()
@@ -1011,10 +1077,20 @@ class GPATSetup:
         # Set multi-index (seg_id, time)
         self.gpat.pl_ds = df.set_index(["seg_id", "time"]).to_xarray()
 
+        # Reindex seg_id to cover ALL FL seg_ids (pad missing plume segments
+        # with zeros / NaT).  This keeps PL_DS and FL_DS seg_id-compatible so
+        # the Fortran can safely index PL_DS%EMI_PL_MASS with any FL seg_id.
+        all_fl_seg_ids = np.arange(1, nseg_fl + 1)
+        self.gpat.pl_ds = self.gpat.pl_ds.reindex(seg_id=all_fl_seg_ids, fill_value=0)
+
+        # Build full flight_id / waypoint coordinate arrays covering all FL seg_ids.
+        fl_fid = fl_seg_map.set_index("seg_id")["flight_id"].reindex(all_fl_seg_ids, fill_value=0)
+        fl_wp  = fl_seg_map.set_index("seg_id")["waypoint"].reindex(all_fl_seg_ids, fill_value=0)
+
         # Set flight id and waypoint as coordinates using unique values per seg_id
         self.gpat.pl_ds = self.gpat.pl_ds.assign_coords(
-            flight_id = ("seg_id", seg_unique["flight_id"].values),
-            waypoint = ("seg_id", seg_unique["waypoint"].values),
+            flight_id = ("seg_id", fl_fid.values),
+            waypoint = ("seg_id", fl_wp.values),
             species_emi_num = ("species_emi", chem_params.species_emi_num)
         )
 
@@ -1060,10 +1136,26 @@ class GPATSetup:
 
         self.gpat.pl_ds = self.gpat.pl_ds.drop_vars((*all_species_cols, "fuel_flow", "fuel_burn", "true_airspeed", "sin_a", "cos_a"))
 
-        # Convert timedelta to total seconds, handling NaT values before casting to int.
+        # Convert timedelta to total seconds, handling NaT and zero-fill values.
         age_values = self.gpat.pl_ds["age"].values
-        age_clean = np.where(np.isnat(age_values), np.timedelta64(0, "s"), age_values)
-        age_seconds = age_clean.astype("timedelta64[s]").astype(np.int64)
+        # After reindex, padded segments may have fill_value=0 (int) instead of
+        # timedelta.  Convert uniformly to timedelta64[s] first, treating any
+        # non-timedelta zeros as 0 seconds.
+        if age_values.dtype.kind == 'm':  # timedelta
+            age_clean = np.where(np.isnat(age_values), np.timedelta64(0, "s"), age_values)
+            age_seconds = age_clean.astype("timedelta64[s]").astype(np.int64)
+        else:
+            # Mixed / object array from reindex fill — cast to int directly
+            age_seconds = np.zeros(age_values.shape, dtype=np.int64)
+            for idx in np.ndindex(age_values.shape):
+                v = age_values[idx]
+                if isinstance(v, (np.timedelta64,)):
+                    if np.isnat(v):
+                        age_seconds[idx] = 0
+                    else:
+                        age_seconds[idx] = int(v / np.timedelta64(1, "s"))
+                else:
+                    age_seconds[idx] = int(v) if v else 0
         self.gpat.pl_ds["age_s"] = (("seg_id", "time"), age_seconds)
 
         df = self.gpat.pl_ds["age_s"].to_dataframe().reset_index()
@@ -1131,7 +1223,15 @@ class GPATSetup:
         chem_params = self.gpat.chem_params
 
         # --- Merge meteorology and background chemistry fields ---
-        self.gpat.boxm_ds = xr.merge([self.gpat.met.data, self.gpat.bg_chem])
+        # Met lives on the padded grid (met_lons/met_lats/met_levels) for
+        # DryAdvection, but BOXM only needs the coarse grid.  Downselect met
+        # to the BOXM cell centres before merging with bg_chem.
+        met_boxm = self.gpat.met.data.sel(
+            longitude=self.gpat.lons,
+            latitude=self.gpat.lats,
+            level=self.gpat.levels,
+        )
+        self.gpat.boxm_ds = xr.merge([met_boxm, self.gpat.bg_chem])
 
         #self.gpat.boxm_ds["time_rel_s"] = (self.gpat.boxm_ds["time"] - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(float)
         # add altitude coordinate
