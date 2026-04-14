@@ -40,9 +40,9 @@ boxm_out = pp_gpat.boxm_out_dict[job_id]
 # pp_gpat.analysis.print_output_ds(job_id=job_id, ds_type="boxm_out")
 # pp_gpat.analysis.print_output_ds(job_id=job_id, ds_type="patch_table")
 
-# species = "NO"
+species = "NO"
 
-# pp_gpat.analysis.rank_fine_cells(job_id=job_id, species=species, time_indices=[181, 361, 721], n=5)
+pp_gpat.analysis.rank_fine_cells(job_id=job_id, species=species, time_indices=[181, 361, 721], n=5)
 
 # pp_gpat.plotting.plot_boxm_patch_slider(
 #     job_id=pp_gpat.job_ids[0],
@@ -57,14 +57,12 @@ boxm_out = pp_gpat.boxm_out_dict[job_id]
 
 
 pp_gpat.validation.boxm_test(
-    job_id=job_id,
-    cell=1,
-    plot_validation=True
+    job_id="test",
+    cell=43,
+    cell_f=4,
+    plot_validation=False,
+    plot_handoff=True,
 )
-
-
-
-
 
 
 # results = pp_gpat.validation.boxm_test_fine(job_id)           # auto-select 3 cells
@@ -126,17 +124,14 @@ pp_gpat.validation.boxm_test(
 # else:
 #     print(neg_tot.to_string(index=False))
 
-
-
-
 # pp_gpat.plotting.animate_plumes_3d_plotly(
-#     job_id=pp_gpat.job_ids[0],
+#     job_id=job_id,
 #     patch_species="NO",
 #     overlay_ellipses=False,
 #     overlay_slices=False,
 #     overlay_patch=True,
 #     time_idx_start=181+3*5*60,
-#     time_idx_end=181+3*6*60,
+#     time_idx_end=181+3*12*60,
 #     frame_stride=5,
 #     output_path="plume.html"
 # )

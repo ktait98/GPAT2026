@@ -6399,6 +6399,9 @@ MODULE DEFINE_STATE_TYPES
         REAL(DP), ALLOCATABLE :: Y_DEL_C(:,:)   ! (NCELL, NSBOXM) mol/m3
         LOGICAL, ALLOCATABLE :: ACTIVE_FLAG(:)     ! (NCELL)
 
+        LOGICAL :: FINE_PLUME_MODE = .TRUE.
+        INTEGER :: HANDOFF_TIME_IDX = -1
+
         INTEGER, ALLOCATABLE :: DTS
 
         ! Grid topology
@@ -6439,6 +6442,7 @@ MODULE DEFINE_STATE_TYPES
         PROCEDURE, PASS :: BUILD_ROWS_FROM_W       => PATCH_STATE_BUILD_ROWS_FROM_W
         PROCEDURE, PASS :: ACCUM_DELTAS_FROM_W       => PATCH_STATE_ACCUM_DELTAS_FROM_W
         PROCEDURE, PASS :: RUN_FINE_DELTA_CHEM       => PATCH_STATE_RUN_FINE_DELTA_CHEM
+        PROCEDURE, PASS :: MAX_CV_ACTIVE            => PATCH_STATE_MAX_CV_ACTIVE
 
     END TYPE PATCH_STATE_TYPE
    
@@ -6913,16 +6917,6 @@ CONTAINS
 
         IF ( (TIME_IDX >= PL_DS%TIME_IDX(1)) .AND. (TIME_IDX <= PL_DS%TIME_IDX(PL_DS%NTPL)) ) THEN
             
-            DO SEG_ID = 1, PL_STATE%NSEG
-                DO PL_ID = 1, PL_STATE%NSPL
-                    ! Default: retain previous mass
-                    ! Check if segment is too old (expired)
-                    IF (PL_STATE%AGE_S(SEG_ID) > PL_DS%MAX_AGE_S) THEN
-                        PL_STATE%PL_MASS(SEG_ID, PL_ID) = 0.0_DP
-                    END IF
-                END DO
-            END DO
-            
             ! IF EMISSION HAPPENED AT THIS TIMESTEP, SET DATA TO PL MASS
             MASK = (FL_DS%TIME_IDX == TIME_IDX)
             EMI_SEG_IDS = PACK([(I, I=1, SIZE(FL_DS%TIME_IDX))], MASK)
@@ -7390,6 +7384,9 @@ CONTAINS
         IF (.NOT. ALLOCATED(BOXM_STATE%ACTIVE_FLAG)) ALLOCATE(BOXM_STATE%ACTIVE_FLAG(BOXM_STATE%NCELL))
 
         BOXM_STATE%DTS = BOXM_DS%TS_SIM
+
+        BOXM_STATE%FINE_PLUME_MODE = .TRUE.
+        BOXM_STATE%HANDOFF_TIME_IDX = -1
 
         BOXM_STATE%TIME_REL_S = 0
         BOXM_STATE%SPECIES_BOXM_NUM(:) = BOXM_DS%SPECIES_BOXM_NUM(:)
@@ -8014,6 +8011,74 @@ CONTAINS
             DEALLOCATE(TEMP_CELL, H2O_CELL, O2_CELL, N2_CELL, M_CELL, SZA_CELL)
         END DO
     END SUBROUTINE PATCH_STATE_RUN_FINE_DELTA_CHEM
+
+    SUBROUTINE PATCH_STATE_MAX_CV_ACTIVE(PATCH_STATE, BOXM_STATE, I_NO, I_NO2, I_O3, CV_MAX_OUT)
+        IMPLICIT NONE
+
+        CLASS(PATCH_STATE_TYPE), INTENT(IN)  :: PATCH_STATE
+        CLASS(BOXM_STATE_TYPE),  INTENT(IN)  :: BOXM_STATE
+        INTEGER,                 INTENT(IN)  :: I_NO, I_NO2, I_O3
+        REAL(DP),                INTENT(OUT) :: CV_MAX_OUT
+
+        INTEGER :: IC
+        INTEGER :: NROW
+        REAL(DP) :: CV_NO, CV_NO2, CV_O3
+
+        CV_MAX_OUT = 0.0_DP
+
+        DO IC = 1, BOXM_STATE%NCELL
+            IF (.NOT. BOXM_STATE%ACTIVE_FLAG(IC)) CYCLE
+
+            NROW = COUNT(PATCH_STATE%ROW_CELL_C == IC)
+            IF (NROW <= 1) CYCLE
+
+            CALL ONE_SPECIES_CV(PATCH_STATE, IC, I_NO,  CV_NO)
+            CALL ONE_SPECIES_CV(PATCH_STATE, IC, I_NO2, CV_NO2)
+            CALL ONE_SPECIES_CV(PATCH_STATE, IC, I_O3,  CV_O3)
+
+            CV_MAX_OUT = MAX(CV_MAX_OUT, CV_NO, CV_NO2, CV_O3)
+        END DO
+
+    CONTAINS
+        SUBROUTINE ONE_SPECIES_CV(PATCH_STATE, CELL_ID, ISPEC, CV)
+            IMPLICIT NONE
+            CLASS(PATCH_STATE_TYPE), INTENT(IN)  :: PATCH_STATE
+            INTEGER,                 INTENT(IN)  :: CELL_ID, ISPEC
+            REAL(DP),                INTENT(OUT) :: CV
+
+            INTEGER :: IR, N
+            REAL(DP) :: MU, VAR, SIG, VAL
+            REAL(DP), PARAMETER :: EPS = 1.0D-30
+
+            MU = 0.0_DP
+            N  = 0
+
+            DO IR = 1, PATCH_STATE%NROWS
+                IF (PATCH_STATE%ROW_CELL_C(IR) /= CELL_ID) CYCLE
+                MU = MU + PATCH_STATE%Y_DEL_F(IR, ISPEC)
+                N  = N + 1
+            END DO
+
+            IF (N <= 1) THEN
+                CV = 0.0_DP
+                RETURN
+            END IF
+
+            MU = MU / REAL(N, DP)
+
+            VAR = 0.0_DP
+            DO IR = 1, PATCH_STATE%NROWS
+                IF (PATCH_STATE%ROW_CELL_C(IR) /= CELL_ID) CYCLE
+                VAL = PATCH_STATE%Y_DEL_F(IR, ISPEC)
+                VAR = VAR + (VAL - MU) * (VAL - MU)
+            END DO
+            VAR = VAR / REAL(N, DP)
+            SIG = SQRT(VAR)
+
+            CV = SIG / (ABS(MU) + EPS)
+        END SUBROUTINE ONE_SPECIES_CV
+
+    END SUBROUTINE PATCH_STATE_MAX_CV_ACTIVE
 
 END MODULE DEFINE_STATE_TYPES
 
@@ -9211,6 +9276,8 @@ CONTAINS
         CLASS(PATCH_STATE_TYPE), INTENT(INOUT) :: PATCH_STATE
 
         INTEGER, INTENT(IN) :: TIME_IDX
+
+        IF (.NOT. BOXM_STATE%FINE_PLUME_MODE) RETURN
         
         IF (MOD((TIME_IDX-1)*BOXM_DS%TS_SIM, BOXM_DS%TS_PL) == 0) THEN
             CALL PL_STATE%ADVANCE_GEOM(PL_DS, BOXM_DS, TIME_IDX)
@@ -9252,38 +9319,66 @@ CONTAINS
         CLASS(PATCH_STATE_TYPE), INTENT(INOUT) :: PATCH_STATE
 
         INTEGER, INTENT(IN) :: TIME_IDX
+        REAL(DP) :: CV_MAX_NOW
+        REAL(DP), PARAMETER :: CV_HANDOFF_THRESH = 0.5_DP
+        INTEGER :: I_NO, I_NO2, I_O3
 
-        ! Local variables for RUN_LEGACY_CHEM
+        REAL(DP) :: T_SINCE_PLUME_START_S
+        INTEGER :: PLUME_START_TIME_IDX
+        REAL(DP), PARAMETER :: HANDOFF_MIN_AGE_S = 6.0_DP * 3600.0_DP
+
         INTEGER :: NCELL, NSBOXM, NPP, NPC, NTC, NFL
-
-        ! Pre-chemistry background snapshot for correct operator splitting.
-        ! Both the total (bg_pre + delta) and the background must be evolved
-        ! from the *same* starting point so that the delta captures only the
-        ! perturbation effect.
         REAL(DP), ALLOCATABLE :: Y_BG_C_PRE(:,:)
 
         ! Save a copy of the background BEFORE bg chemistry modifies it.
         ALLOCATE(Y_BG_C_PRE(BOXM_STATE%NCELL, BOXM_DS%NSBOXM))
         Y_BG_C_PRE(:,:) = BOXM_STATE%Y_BG_C(:,:)
 
+        I_NO = 8
+        I_NO2 = 4
+        I_O3 = 6
+
         ! === LEGACY BACKGROUND CHEMISTRY ===
         CALL BOXM_STATE%RUN_COARSE_BG_CHEM(BOXM_DS)
         
         IF (BOXM_DS%N_AC > 0) THEN
-            ! === FINE PLUME CHEMISTRY (always) ===
-            CALL PATCH_STATE%RUN_FINE_DELTA_CHEM(BOXM_DS, BOXM_STATE, Y_BG_C_PRE)
 
-            IF (MOD((TIME_IDX - 1) * BOXM_DS%TS_SIM, BOXM_DS%TS_OUT) == 0) THEN
-                CALL PRINT_PATCH_SPECIES_DIAG(PATCH_STATE, 8, 'NO', 1.0D-20)
+            IF (BOXM_STATE%FINE_PLUME_MODE) THEN
+                ! === FINE PLUME CHEMISTRY (pre-handoff only) ===
+                CALL PATCH_STATE%RUN_FINE_DELTA_CHEM(BOXM_DS, BOXM_STATE, Y_BG_C_PRE)
+
+                ! === RE-AVERAGE fine deltas to coarse grid ===
+                CALL BOXM_STATE%RUN_COARSE_DELTA_CHEM(BOXM_DS, PATCH_STATE)
+
+                ! === OPTIONAL COARSE DELTA CHEMISTRY ===
+                IF (BOXM_DS%DELTA_CHEM_MODE == 1) THEN
+                    CALL BOXM_STATE%RUN_COARSE_DELTA_CHEM_EVOLVE(BOXM_DS, Y_BG_C_PRE)
+                END IF
+
+                ! === GLOBAL HANDOFF READINESS CHECK ===
+                IF (MOD((TIME_IDX-1)*BOXM_DS%TS_SIM, BOXM_DS%TS_OUT) == 0) THEN
+                    CALL PATCH_STATE%MAX_CV_ACTIVE(BOXM_STATE, I_NO, I_NO2, I_O3, CV_MAX_NOW)
+
+                    PRINT *, 'HANDOFF CHECK: TIME_IDX=', TIME_IDX, ' CV_MAX=', CV_MAX_NOW
+
+                    T_SINCE_PLUME_START_S = REAL((TIME_IDX - PLUME_START_TIME_IDX) * BOXM_DS%TS_SIM, DP)
+
+                    IF (T_SINCE_PLUME_START_S >= HANDOFF_MIN_AGE_S) THEN
+                        IF (CV_MAX_NOW < CV_HANDOFF_THRESH) THEN
+                            BOXM_STATE%FINE_PLUME_MODE = .FALSE.
+                            BOXM_STATE%HANDOFF_TIME_IDX = TIME_IDX
+                            PRINT *, 'GLOBAL HANDOFF TRIGGERED AT TIME_IDX=', TIME_IDX
+                        END IF
+                    END IF
+                END IF
+
+            ELSE
+                ! === POST-HANDOFF: no fine plume chemistry, no fresh coarse reconstruction ===
+                IF (BOXM_DS%DELTA_CHEM_MODE == 1) THEN
+                    CALL BOXM_STATE%RUN_COARSE_DELTA_CHEM_EVOLVE(BOXM_DS, Y_BG_C_PRE)
+                END IF
             END IF
 
-            ! === RE-AVERAGE fine deltas to coarse grid (always) ===
-            CALL BOXM_STATE%RUN_COARSE_DELTA_CHEM(BOXM_DS, PATCH_STATE)
-
-            ! === COARSE DELTA CHEMISTRY (optional) ===
-            IF (BOXM_DS%DELTA_CHEM_MODE == 1) THEN
-                CALL BOXM_STATE%RUN_COARSE_DELTA_CHEM_EVOLVE(BOXM_DS, Y_BG_C_PRE)
-            END IF
         END IF
 
         ! === PERSISTENT DELTA CHEMISTRY (inactive cells with Y_DEL_C /= 0) ===
@@ -9307,6 +9402,8 @@ CONTAINS
         CLASS(PATCH_STATE_TYPE), INTENT(INOUT) :: PATCH_STATE
 
         INTEGER, INTENT(IN) :: TIME_IDX
+
+        IF (.NOT. BOXM_STATE%FINE_PLUME_MODE) RETURN
 
         IF (MOD((TIME_IDX-1)*BOXM_DS%TS_SIM, BOXM_DS%TS_PL) == 0) THEN
             CALL PL_STATE%BACKPROJECT_FROM_GRID(PL_DS, BOXM_DS, BOXM_STATE, PATCH_STATE, TIME_IDX)

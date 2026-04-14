@@ -798,6 +798,29 @@ class GPATPlotting:
         marker_time  = last_fine_time if last_fine_time is not None else coarse_last_active_time
         marker_label = "end of fine patches" if last_fine_time is not None else "last coarse active"
 
+        # Prefer explicit handoff time if available
+        explicit_handoff_time = None
+        if "handoff_time_idx" in boxm_out:
+            try:
+                hidx = int(np.asarray(boxm_out["handoff_time_idx"].values).ravel()[0])
+                k = np.flatnonzero(time_idx_arr == hidx)
+                if k.size:
+                    explicit_handoff_time = time_axis[k[0]]
+            except Exception:
+                pass
+        elif "handoff_time_idx" in boxm_out.attrs:
+            try:
+                hidx = int(boxm_out.attrs["handoff_time_idx"])
+                k = np.flatnonzero(time_idx_arr == hidx)
+                if k.size:
+                    explicit_handoff_time = time_axis[k[0]]
+            except Exception:
+                pass
+
+        if explicit_handoff_time is not None:
+            marker_time = explicit_handoff_time
+            marker_label = "global handoff"
+
         # ── Subplots ─────────────────────────────────────────────────────────────
         plot_species = list(species)[:8]
         fig, axes = plt.subplots(2, 4, figsize=(20, 10), sharex=True)
@@ -825,6 +848,11 @@ class GPATPlotting:
                         label=f"$Y_{{del,f}}$ (cell_f={cell_f})")
 
             if sp in orig_y_ppb:
+                if sp == "CH4" and sp in orig_y_ppb:
+                    print("CH4 orig_y_ppb:", orig_y_ppb[sp])
+                    print("orig_t:", orig_t)
+                    print("new_t:", new_t)
+                    print("Y.OUT CH4 values:", _y_df[col].values)
                 ax.plot(time_axis[time_mask], orig_y_ppb[sp][time_mask],
                         color="k", linestyle="--", linewidth=0.8,
                         label="boxm_orig Y.OUT")
@@ -2357,7 +2385,15 @@ class GPATValidation:
         (8, 61, "BENZENE"),
     ]
 
-    def boxm_test(self, job_id, cell, plot_validation=False):
+    def boxm_test(
+        self,
+        job_id,
+        cell,
+        cell_f=None,
+        plot_validation=False,
+        plot_handoff=False,
+        handoff_species=("NO", "NO2", "O3", "OH", "HO2", "HNO3"),
+    ):
         """Two-tier validation of the new box model against boxm_orig.
 
         Tier 1 — Chemistry kernel: run boxm_orig with zero emissions for a
@@ -2376,6 +2412,15 @@ class GPATValidation:
             Job ID.
         cell : int or dict
             Cell index (int) or dict with latitude, longitude, level keys.
+        cell_f : int or dict, optional
+            Fine cell index (int) or dict with latitude, longitude, level keys.
+        plot_validation : bool, optional
+            Whether to plot validation results.
+        plot_handoff : bool, optional
+            Whether to plot handoff results.
+        handoff_species : tuple of str, optional
+            Species to include in handoff plots.
+
 
         Returns
         -------
@@ -2477,7 +2522,33 @@ class GPATValidation:
                 show_del=True,
             )
 
-        return {"tier1_chemistry": tier1, "tier2_emissions": tier2}
+        # ── Handoff-aware diagnostic plot ──────────────────────────────────────
+        handoff_info = {}
+        if plot_handoff:
+            _cell_c_int = self._cell_dict_to_index(self.pp_gpat.boxm_ds_dict[job_id], cell)
+            handoff_time_idx = self.get_handoff_time_idx(job_id, cell_c=_cell_c_int, cell_f=cell_f)
+
+            print("\n" + "=" * 60)
+            print("Handoff-aware GPAT diagnostic")
+            print("=" * 60)
+            print(f"cell_c={_cell_c_int}, cell_f={cell_f}, handoff_time_idx={handoff_time_idx}")
+
+            self.pp_gpat.plotting.plot_cell_timeseries(
+                job_id,
+                cell_c=_cell_c_int,
+                cell_f=cell_f,
+                compare_boxm_orig=False,
+                species=handoff_species,
+                show_del=True,
+            )
+
+            handoff_info = {
+                "cell_c": _cell_c_int,
+                "cell_f": cell_f,
+                "handoff_time_idx": handoff_time_idx,
+            }
+
+        return {"tier1_chemistry": tier1, "tier2_emissions": tier2, "handoff_info": handoff_info}
 
     def gen_boxm_orig_input(self, boxm_ds_cell, job_id):
         """Generate the input file for the original box model."""
@@ -3357,6 +3428,55 @@ class GPATValidation:
             if src in ds_cell and dst not in ds_cell:
                 rename_map[src] = dst
         return ds_cell.rename(rename_map) if rename_map else ds_cell
+
+    def get_handoff_time_idx(self, job_id, cell_c=None, cell_f=None):
+        """Return handoff time_idx for a selected coarse/fine cell.
+
+        Priority:
+        1. explicit boxm_out variable/attr if present
+        2. last fine patch time for the selected (cell_c, cell_f)
+        3. last active coarse time for cell_c
+        """
+        boxm_out = self.pp_gpat.boxm_out_dict[job_id]
+        pt = self.pp_gpat.patch_table_dict.get(job_id)
+
+        # 1) explicit global handoff, if written by BOXM
+        if "handoff_time_idx" in boxm_out:
+            vals = np.asarray(boxm_out["handoff_time_idx"].values).ravel()
+            vals = vals[np.isfinite(vals)]
+            if vals.size:
+                return int(vals[0])
+
+        if "handoff_time_idx" in boxm_out.attrs:
+            try:
+                return int(boxm_out.attrs["handoff_time_idx"])
+            except Exception:
+                pass
+
+        # 2) last fine patch time for specific fine cell
+        if pt is not None and cell_c is not None and cell_f is not None:
+            cc = np.asarray(pt["row_cell_c"].values, dtype=int)
+            cf = np.asarray(pt["row_cell_f"].values, dtype=int)
+            ti = np.asarray(pt["time_idx"].values, dtype=int)
+            mask = (cc == int(cell_c)) & (cf == int(cell_f))
+            if np.any(mask):
+                return int(np.max(ti[mask]))
+
+        # 3) last active coarse time for selected coarse cell
+        if cell_c is not None and "active_flag" in boxm_out:
+            try:
+                if "cell" in boxm_out.dims:
+                    af = np.asarray(boxm_out["active_flag"].isel(cell=int(cell_c) - 1).values, dtype=bool)
+                else:
+                    return None
+                tids = np.asarray(boxm_out["time_idx"].values, dtype=int)
+                idx = np.flatnonzero(af)
+                if idx.size:
+                    return int(tids[idx[-1]])
+            except Exception:
+                pass
+
+        return None
 
     def _select_fine_cells(self, job_id, n_cells=3, min_timesteps=5):
         """Auto-select fine cells spanning low/mid/high Y_del_f magnitude.
