@@ -23,8 +23,8 @@ sim_params = {
     "domain_mode": "fixed",  # "fixed" or "auto"
     "domain_margin_deg": 0.01,  # extra horizontal buffer [deg] added to auto bounds for plume advection
 
-    "run_path": "/home/ktait98/GPAT2026/pycontrails_kt/pycontrails/models/gpat/",
-    "data_path": "/home/ktait98/GPAT2026/pycontrails_kt/pycontrails/models/gpat/data/", # "/projects/Impact_of_aviation_on_climate
+    "run_path": "~/GPAT2026/pycontrails_kt/pycontrails/models/gpat/",
+    "data_path": "~/GPAT2026/pycontrails_kt/pycontrails/models/gpat/data/", # "/projects/Impact_of_aviation_on_climate
     "job_id": "test",
 }
 
