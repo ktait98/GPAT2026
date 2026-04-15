@@ -2272,7 +2272,10 @@ class GPATValidation:
         self.pp_gpat = pp_gpat
 
     # Validation methods
-    def mc_test(params, fl_df, pl_df, chem_ds):
+    def mc_test(
+            self,
+            params, fl_df, pl_df, chem_ds
+    ):
         """Check if mass is conserved in the box model.
 
         Parameters
