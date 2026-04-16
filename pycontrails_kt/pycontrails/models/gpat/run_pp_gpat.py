@@ -19,20 +19,17 @@ pp_gpat = GPATPostProcessor(run_path=run_path, data_path=data_path, criteria=cri
 
 job_id = pp_gpat.job_ids[0]
 
+fl_ds = pp_gpat.fl_ds_dict[job_id]
+pl_ds = pp_gpat.pl_ds_dict[job_id]
 boxm_ds = pp_gpat.boxm_ds_dict[job_id]
-# fl_ds = pp_gpat.fl_ds_dict[job_id]
-# pl_ds = pp_gpat.pl_ds_dict[job_id]
 
 boxm_out = pp_gpat.boxm_out_dict[job_id]
-
-
-
 # pl_out = pp_gpat.pl_out_dict[job_id]
 # patch_table = pp_gpat.patch_table_dict[job_id]
 
 # print(boxm_out["Y_bg_c"].sel(species_out="CO", latitude_c=0.25, longitude_c=0.25).sel(level_c=158.7, method="nearest").values)
 
-# pp_gpat.analysis.print_input_ds(job_id=job_id, ds_type="fl")
+pp_gpat.analysis.print_input_ds(job_id=job_id, ds_type="fl")
 # pp_gpat.analysis.print_input_ds(job_id=job_id, ds_type="pl")
 # pp_gpat.analysis.print_input_ds(job_id=job_id, ds_type="boxm")
 

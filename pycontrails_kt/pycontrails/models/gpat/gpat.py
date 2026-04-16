@@ -54,9 +54,8 @@ class SimParams:
         default_factory=lambda: (
             pd.to_datetime("2022-01-20 13:00:00"),
             pd.Timedelta(minutes=2),
-            pd.Timedelta(hours=2),
         )
-    )  # (start time, time step, max age)
+    )  # (start time, time step)
 
     # simulation time
     t_sim: tuple[pd.Timestamp, pd.Timedelta, pd.Timedelta] = field(
@@ -79,7 +78,6 @@ class SimParams:
     lat_bounds: tuple[float, float] = (0.0, 1.0)  # lat bounds [deg]
     lon_bounds: tuple[float, float] = (0.0, 1.0)  # lon bounds [deg]
     alt_bounds: tuple[float, float] = (12000, 13000)  # alt bounds [m]
-    domain_mode: Literal["fixed", "auto"] = "fixed"  # "auto" derives bounds from flight start/end points
     domain_margin_deg: float = 0.0  # extra horizontal buffer [deg] added to auto bounds for plume advection
     hres_sim_c: float = 0.01  # horizontal resolution [deg]
     vres_sim_c: float = 500  # vertical resolution [m]
@@ -101,9 +99,6 @@ class FlParams:
     target_altitude: Optional[float] = None  # m, overrides fl0_rocd when set
     fl0_heading: Optional[float] = 0.0  # deg
     fl0_coords0: Optional[tuple[float, float, float]] = (0.1, 0.125, 12500)  # lat, lon, alt [deg, deg, m]
-    # Optional control points for a tactile route definition.
-    # Each tuple is (lat, lon, alt_m); times are spread uniformly over t_fl.
-    control_waypoints: Optional[list[tuple[float, float, float]]] = None
     domain_margin_deg: float = 0.01
     sep_dist: Optional[tuple[float, float, float]] = (5000, 2000, 0)  # dx, dy, dz [m]
     n_ac: Optional[int] = 1  # number of aircraft
@@ -132,7 +127,6 @@ class ChemParams:
     """Default chemistry parameters."""
 
     run_chem: bool = True  # whether to run chemistry model
-    delta_chem_mode: int = 0  # 0=fine only, 1=fine+coarse delta chemistry
 
     species_emi: tuple[str, ...] = ("NO",)
     
@@ -343,68 +337,13 @@ class GPAT(Model):
             ref_lat,
         )
 
-    def _auto_bounds_from_flights(self, flights):
-        """Derive domain bounds from flight start/end waypoints.
-
-        Sets ``sim_params.*_bounds`` to the bounding box of all first and
-        last waypoints, plus a configurable horizontal margin, snapped
-        outward to the nearest coarse grid cell boundary.
-
-        The margin (``sim_params.domain_margin_deg``) should account for
-        plume advection and dispersion so that plumes blown by wind are
-        not clipped at the domain edge.
-        """
-        lats, lons, alts = [], [], []
-        for fl in flights:
-            df = fl.dataframe
-            for idx in [0, -1]:  # first and last waypoint
-                lats.append(float(df["latitude"].iloc[idx]))
-                lons.append(float(df["longitude"].iloc[idx]))
-                alts.append(float(df["altitude"].iloc[idx]))
-
-        lat_min, lat_max = min(lats), max(lats)
-        lon_min, lon_max = min(lons), max(lons)
-        alt_min, alt_max = min(alts), max(alts)
-
-        # Apply horizontal margin for plume advection/dispersion
-        margin = self.sim_params.domain_margin_deg
-        lat_min -= margin
-        lat_max += margin
-        lon_min -= margin
-        lon_max += margin
-
-        # Snap bounds outward to coarse grid resolution
-        hres = self.sim_params.hres_sim_c
-        lat_min = np.floor(lat_min / hres) * hres
-        lat_max = np.ceil(lat_max / hres) * hres
-        lon_min = np.floor(lon_min / hres) * hres
-        lon_max = np.ceil(lon_max / hres) * hres
-
-        # Pad altitude and snap to vertical resolution
-        vres = self.sim_params.vres_sim_c
-        alt_min = np.floor(alt_min / vres) * vres
-        alt_max = np.ceil(alt_max / vres) * vres
-
-        self.sim_params.lat_bounds = (lat_min, lat_max)
-        self.sim_params.lon_bounds = (lon_min, lon_max)
-        self.sim_params.alt_bounds = (alt_min, alt_max)
-
-        print(
-            f"Auto domain bounds (margin={margin:.4f} deg, snapped to hres={hres}, vres={vres}):\n"
-            f"  lat_bounds = ({lat_min:.6f}, {lat_max:.6f})\n"
-            f"  lon_bounds = ({lon_min:.6f}, {lon_max:.6f})\n"
-            f"  alt_bounds = ({alt_min:.1f}, {alt_max:.1f})"
-        )
-
     def preprocess_gpat(self):
         """Preprocess inputs for GPAT FORTRAN implementation (BOXM and CONTRAIL in future)."""
         # Generate flight trajectory points
         if self.fl_params.n_ac > 0:
             self.fl = self.setup.traj_gen()
 
-        # Auto-derive domain bounds from flight endpoints if requested
-        if self.sim_params.domain_mode == "auto" and self.fl_params.n_ac > 0:
-            self._auto_bounds_from_flights(self.fl)
+        if self.fl_params.n_ac > 0:
             self._build_grid(self.sim_params)
 
         # Generate meteorological data
@@ -445,9 +384,9 @@ class GPATSetup:
         fl_params = self.gpat.fl_params
         sim_params = self.gpat.sim_params
 
-        if fl_params.mode == "direct":
+        if fl_params.mode == "opensky":
             if fl_params.file is None:
-                raise ValueError("Flight file must be provided for direct mode.")
+                raise ValueError("Flight file must be provided for opensky mode.")
 
             df = pd.read_csv(fl_params.file)
             fl = []
@@ -473,7 +412,7 @@ class GPATSetup:
                 fl.append(fli)
 
             if not fl:
-                raise ValueError("No valid flights were loaded from the direct-mode CSV.")
+                raise ValueError("No valid flights were loaded from the opensky-mode CSV.")
 
             return fl
 
@@ -815,8 +754,6 @@ class GPATSetup:
             for species, ei in eis.items():
                 fl[i][species] = ei * fl[i]["fuel_burn"] # [kg]
 
-
-
         return fl
     
     def sim_plumes(self) -> list[pd.DataFrame]:
@@ -829,7 +766,7 @@ class GPATSetup:
 
         dry_adv = DryAdvection(
             met,
-            max_age=sim_params.t_pl[2],
+            max_age=sim_params.t_sim[2],
             dt_integration=sim_params.t_pl[1],
             shear=pl_params.shear,
         )
@@ -839,16 +776,6 @@ class GPATSetup:
 
         # simulate plumes for each flight and store results in list of dataframes
         for i, fli in enumerate(fl):
-            # print(f"Flight {i}: type={type(fli)}, hasattr(dataframe)={hasattr(fli, 'dataframe')}, hasattr(data)={hasattr(fli, 'data')}, len={len(fli) if hasattr(fli, '__len__') else 'N/A'}")
-            # if hasattr(fli, 'dataframe'):
-            #     print(f"  dataframe shape: {fli.dataframe.shape}")
-            #     print(f"  dataframe columns: {fli.dataframe.columns}")
-            #     print(f"  dataframe head:\n{fli.dataframe.head()}")
-            #     print(f"  dataframe NaNs:\n{fli.dataframe.isna().sum()}")
-            #     # print(f"  dataframe Nan rows:\n{fli.dataframe[fli.dataframe.isna().any(axis=1)]}")
-            # elif hasattr(fli, 'data'):
-            #     print(f"  data shape: {fli.data.shape}")
-
             met = self.gpat.met
 
             if len(fli.dataframe) < 2:
@@ -862,9 +789,6 @@ class GPATSetup:
 
             # Mask plume to simulation domain
             pli = self.mask_plume_to_sim_domain(pli)
-
-            print(fli)
-            print(pli)
       
             met = self.gpat.met
 
@@ -1170,7 +1094,7 @@ class GPATSetup:
         #         first_time_mask[i, time_idx[0]] = True
 
         # Now build the active mask
-        active_mask = (self.gpat.pl_ds["age_s"].values > 0) & (self.gpat.pl_ds["age_s"].values <= sim_params.t_pl[2].total_seconds())
+        active_mask = (self.gpat.pl_ds["age_s"].values > 0)
         active_mask = active_mask.astype(int)
         self.gpat.pl_ds = self.gpat.pl_ds.assign_coords(active_seg_flag=(("seg_id", "time"), active_mask))
 
@@ -1203,7 +1127,6 @@ class GPATSetup:
             f_max=pl_params.f_max,
             output_pl_slices=int(pl_params.output_pl_slices),
             n_points=pl_params.n_points,
-            max_age_s=int(sim_params.t_pl[2].total_seconds()),
 
             description="Emission species mass in plume segments",
         )
@@ -1233,7 +1156,6 @@ class GPATSetup:
         )
         self.gpat.boxm_ds = xr.merge([met_boxm, self.gpat.bg_chem])
 
-        #self.gpat.boxm_ds["time_rel_s"] = (self.gpat.boxm_ds["time"] - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(float)
         # add altitude coordinate
         self.gpat.boxm_ds = self.gpat.boxm_ds.assign_coords(
             time_rel_s = ("time", (self.gpat.boxm_ds["time"].values - np.datetime64(self.gpat.sim_params.t_sim[0])).astype("timedelta64[s]").astype(int)),
@@ -1271,13 +1193,7 @@ class GPATSetup:
             flux_species=130,
 
             run_chem=int(chem_params.run_chem),
-            delta_chem_mode=int(chem_params.delta_chem_mode),
             n_ac=fl_params.n_ac,
-
-            # grid topology for advection
-            nlon=len(self.gpat.boxm_ds.longitude),
-            nlat=len(self.gpat.boxm_ds.latitude),
-            nlev=len(self.gpat.boxm_ds.level),
 
             description="BOXM coarse-grid meteorology and background chemistry fields",
             note="Emissions and plume segments handled separately via PL_DS.NC and FL_DS.NC",

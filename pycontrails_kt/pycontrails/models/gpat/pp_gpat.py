@@ -519,96 +519,6 @@ class GPATPlotting:
         self.patch_plot_min_value = None
         self.patch_plot_max_log10_span = 3.0
 
-    def plot_species_budget_timeseries(self, job_id, species="NO", level=None, metric="mean"):
-        """Plot bg, delta and total coarse fields through time for one species."""
-        boxm_out = self.pp_gpat.boxm_out_dict[job_id]
-        y_bg = boxm_out["Y_bg_c"].sel(species_out=species)
-        y_del = boxm_out["Y_del_c"].sel(species_out=species)
-
-        if level is not None and "level_c" in y_bg.dims:
-            lev = np.asarray(y_bg["level_c"].values, dtype=float)
-            k = int(np.argmin(np.abs(lev - float(level))))
-            y_bg = y_bg.isel(level_c=k)
-            y_del = y_del.isel(level_c=k)
-            print(f"Using nearest level_c={lev[k]} for requested level={level}")
-
-        y_tot = y_bg + y_del
-        reduce_dims = [d for d in y_bg.dims if d != "time"]
-        if metric == "sum":
-            bg_s = y_bg.sum(dim=reduce_dims)
-            del_s = y_del.sum(dim=reduce_dims)
-            tot_s = y_tot.sum(dim=reduce_dims)
-            y_label = "domain sum"
-        else:
-            bg_s = y_bg.mean(dim=reduce_dims)
-            del_s = y_del.mean(dim=reduce_dims)
-            tot_s = y_tot.mean(dim=reduce_dims)
-            y_label = "domain mean"
-
-        x = np.asarray(boxm_out["time_idx"].values, dtype=int)
-        fig, ax = plt.subplots(figsize=(9, 4.5))
-        ax.plot(x, bg_s.values, label="Y_bg_c")
-        ax.plot(x, del_s.values, label="Y_del_c")
-        ax.plot(x, tot_s.values, label="Y_total = Y_bg_c + Y_del_c")
-        ax.axhline(0.0, color="black", lw=0.8, alpha=0.6)
-        ax.set_xlabel("time_idx")
-        ax.set_ylabel(y_label)
-        ax.set_title(f"Coarse species budget: {species}")
-        ax.grid(True, alpha=0.3)
-        ax.legend()
-        plt.tight_layout()
-        plt.show()
-
-    def plot_negative_total_map(self, job_id, species="NO", time_idx=None, level=None):
-        """Plot total coarse field and overlay cells where total < 0."""
-        boxm_out = self.pp_gpat.boxm_out_dict[job_id]
-        y_bg = boxm_out["Y_bg_c"].sel(species_out=species)
-        y_del = boxm_out["Y_del_c"].sel(species_out=species)
-        y_tot = y_bg + y_del
-
-        all_tidx = np.asarray(boxm_out["time_idx"].values, dtype=int)
-        if time_idx is None:
-            neg_any = ((y_tot < 0).sum(dim=[d for d in y_tot.dims if d != "time"]) > 0).values
-            if np.any(neg_any):
-                t_sel = int(all_tidx[np.flatnonzero(neg_any)[0]])
-            else:
-                t_sel = int(all_tidx[0])
-        else:
-            t_sel = int(all_tidx[np.argmin(np.abs(all_tidx - int(time_idx)))])
-
-        t_loc = np.flatnonzero(all_tidx == t_sel)
-        ds_t = y_tot.isel(time=t_loc).squeeze("time")
-        if level is not None and "level_c" in ds_t.dims:
-            lev = np.asarray(ds_t["level_c"].values, dtype=float)
-            k = int(np.argmin(np.abs(lev - float(level))))
-            ds_t = ds_t.isel(level_c=k)
-            print(f"Using nearest level_c={lev[k]} for requested level={level}")
-        elif "level_c" in ds_t.dims:
-            ds_t = ds_t.isel(level_c=0)
-
-        vals = np.asarray(ds_t.values, dtype=float)
-        if vals.ndim == 2:
-            vals = vals.T  # (lat, lon)
-        lon = np.asarray(boxm_out["longitude_c"].values, dtype=float)
-        lat = np.asarray(boxm_out["latitude_c"].values, dtype=float)
-
-        neg_mask = np.isfinite(vals) & (vals < 0)
-        n_neg = int(np.sum(neg_mask))
-        print(f"time_idx={t_sel}: negative total cells={n_neg}")
-
-        fig, ax = plt.subplots(figsize=(8, 6))
-        mesh = ax.pcolormesh(lon, lat, vals, shading="auto", cmap="RdBu_r")
-        fig.colorbar(mesh, ax=ax, label="Y_total")
-        if n_neg > 0:
-            iy, ix = np.where(neg_mask)
-            ax.scatter(lon[ix], lat[iy], s=12, c="k", alpha=0.6, label="total < 0")
-            ax.legend(loc="best")
-        ax.set_xlabel("Longitude")
-        ax.set_ylabel("Latitude")
-        ax.set_title(f"Total coarse field for {species} at time_idx={t_sel}")
-        plt.tight_layout()
-        plt.show()
-
     # Time series line plotting
     def plot_time_series(self, job_id, species="NO", level=None, lat=None, lon=None, data_var="Y_bg_c", avg_over_domain=False):
         boxm_out = self.pp_gpat.boxm_out_dict[job_id]
@@ -2474,11 +2384,7 @@ class GPATValidation:
             [self.pp_gpat.run_path + "boxm_orig", self.pp_gpat.data_path, job_id],
         )
 
-        print(boxm_out_cell)
-
         self.update_boxm_out_cell(boxm_out_cell, job_id)
-
-        print(boxm_out_cell["Y_bg_c"].sel(species_out="CO").values)
 
         tier1 = self.compare_chemistry_kernel(job_id, boxm_ds_cell, boxm_out_cell, cell)
 
@@ -3255,102 +3161,6 @@ class GPATValidation:
 
         return results
 
-    def plot_boxm_validation_timeseries(self, boxm_ds_cell, boxm_out_cell, job_id, tier="chemistry_kernel"):
-            """Plot time series comparison for boxm_orig vs new model for Tier 1 or Tier 2.
-
-            One subplot per species, with R² annotated on each panel.
-
-            Parameters
-            ----------
-            boxm_ds_cell : xr.Dataset
-                Input dataset sliced to the cell under test.
-            boxm_out_cell : xr.Dataset
-                Output dataset sliced to the cell under test.
-            job_id : str
-                Job ID.
-            tier : str
-                "chemistry_kernel" for Tier 1, "emission_response" for Tier 2.
-            """
-            import math
-
-            # New model species available in this cell
-            new_species = list(boxm_out_cell["species_out"].values)
-
-            # Read Y.OUT from boxm_orig with native header (TIME, Y1, ..., Y219; ppb)
-            outputs_dir = pathlib.Path(f"{self.pp_gpat.data_path}outputs/{job_id}")
-            y_df = pd.read_csv(outputs_dir / "Y.OUT", dtype=np.float64)
-
-            # All species_out are always available via Fortran Y-index
-            plot_species = list(new_species)
-            if not plot_species:
-                print("No matching species to plot.")
-                return
-
-            if tier == "chemistry_kernel":
-                label_new = "New model ($Y_{bg}$)"
-                label_orig = "boxm_orig (no EMI)"
-            else:
-                label_new = "New model ($Y_{bg} + Y_{del}$)"
-                label_orig = "boxm_orig (with EMI)"
-
-            n_species = len(plot_species)
-            n_cols = 3
-            n_rows = math.ceil(n_species / n_cols)
-            fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 3.5 * n_rows), squeeze=False)
-
-            for i, sp in enumerate(plot_species):
-                ax = axes[i // n_cols][i % n_cols]
-                # Get correct Fortran Y-array column for this species
-                sp_num = int(boxm_out_cell["species_out_num"].sel(species_out=sp).values.item())
-                orig_vals = y_df[f"Y{sp_num}"].values  # ppb
-
-                if tier == "chemistry_kernel":
-                    new_vals = boxm_out_cell["Y_bg_c"].sel(species_out=sp).values  # already ppb
-                else:
-                    y_bg = boxm_out_cell["Y_bg_c"].sel(species_out=sp).values
-                    y_del = (
-                        boxm_out_cell["Y_del_c"].sel(species_out=sp).values
-                        if "Y_del_c" in boxm_out_cell
-                        else np.zeros_like(y_bg)
-                    )
-                    new_vals = y_bg + y_del  # both in ppb — no conversion needed
-
-                # Interpolate orig (fine timestep) onto new model time grid
-                new_times = np.arange(len(new_vals), dtype=float)
-                orig_times_norm = np.linspace(0, len(new_vals) - 1, len(orig_vals))
-                orig_interp = np.interp(new_times, orig_times_norm, orig_vals)
-
-                r2 = self.r_sq(orig_interp, new_vals)
-
-                ax.plot(new_times, orig_interp, color="tab:blue", linestyle="--", linewidth=1.0, label=label_orig)
-                ax.plot(new_times, new_vals, color="tab:orange", linewidth=1.0, label=label_new)
-                ax.set_title(sp, fontsize=10)
-                ax.set_xlabel("Time index", fontsize=8)
-                ax.set_ylabel("ppb", fontsize=8)
-                ax.tick_params(labelsize=7)
-                ax.grid(True, linestyle="--", linewidth=0.4, alpha=0.6)
-                ax.text(0.97, 0.05, f"$R^2$ = {r2:.3f}", transform=ax.transAxes,
-                        ha="right", va="bottom", fontsize=8,
-                        bbox=dict(facecolor="white", alpha=0.7, edgecolor="none"))
-
-            # Add shared legend from first subplot, hide unused axes
-            handles, labels = axes[0][0].get_legend_handles_labels()
-            fig.legend(handles, labels, loc="lower center", ncol=2, fontsize=9,
-                       bbox_to_anchor=(0.5, -0.02))
-            for j in range(n_species, n_rows * n_cols):
-                axes[j // n_cols][j % n_cols].set_visible(False)
-
-            fig.suptitle(
-                f"Box model validation — {tier.replace('_', ' ').title()} ({job_id})",
-                fontsize=12, y=1.01,
-            )
-            plt.tight_layout()
-            plt.savefig(
-                pathlib.Path(f"{self.pp_gpat.data_path}outputs/{job_id}") / f"boxm_validation_{tier}.png",
-                dpi=150, bbox_inches="tight",
-            )
-            plt.show()
-
     # ------------------------------------------------------------------
     # Helpers for boxm_test_fine
     # ------------------------------------------------------------------
@@ -3431,55 +3241,6 @@ class GPATValidation:
             if src in ds_cell and dst not in ds_cell:
                 rename_map[src] = dst
         return ds_cell.rename(rename_map) if rename_map else ds_cell
-
-    def get_handoff_time_idx(self, job_id, cell_c=None, cell_f=None):
-        """Return handoff time_idx for a selected coarse/fine cell.
-
-        Priority:
-        1. explicit boxm_out variable/attr if present
-        2. last fine patch time for the selected (cell_c, cell_f)
-        3. last active coarse time for cell_c
-        """
-        boxm_out = self.pp_gpat.boxm_out_dict[job_id]
-        pt = self.pp_gpat.patch_table_dict.get(job_id)
-
-        # 1) explicit global handoff, if written by BOXM
-        if "handoff_time_idx" in boxm_out:
-            vals = np.asarray(boxm_out["handoff_time_idx"].values).ravel()
-            vals = vals[np.isfinite(vals)]
-            if vals.size:
-                return int(vals[0])
-
-        if "handoff_time_idx" in boxm_out.attrs:
-            try:
-                return int(boxm_out.attrs["handoff_time_idx"])
-            except Exception:
-                pass
-
-        # 2) last fine patch time for specific fine cell
-        if pt is not None and cell_c is not None and cell_f is not None:
-            cc = np.asarray(pt["row_cell_c"].values, dtype=int)
-            cf = np.asarray(pt["row_cell_f"].values, dtype=int)
-            ti = np.asarray(pt["time_idx"].values, dtype=int)
-            mask = (cc == int(cell_c)) & (cf == int(cell_f))
-            if np.any(mask):
-                return int(np.max(ti[mask]))
-
-        # 3) last active coarse time for selected coarse cell
-        if cell_c is not None and "active_flag" in boxm_out:
-            try:
-                if "cell" in boxm_out.dims:
-                    af = np.asarray(boxm_out["active_flag"].isel(cell=int(cell_c) - 1).values, dtype=bool)
-                else:
-                    return None
-                tids = np.asarray(boxm_out["time_idx"].values, dtype=int)
-                idx = np.flatnonzero(af)
-                if idx.size:
-                    return int(tids[idx[-1]])
-            except Exception:
-                pass
-
-        return None
 
     def _select_fine_cells(self, job_id, n_cells=3, min_timesteps=5):
         """Auto-select fine cells spanning low/mid/high Y_del_f magnitude.
@@ -3695,7 +3456,6 @@ class GPATValidation:
                   f"{max_err:12.4e}  {mean_del:12.4e}")
 
         return results
-
 
 # Helper functions for PP GPAT
 def lonlat_to_m(lon, lat, global_ref_lon, global_ref_lat):

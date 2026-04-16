@@ -4,15 +4,16 @@ import xarray as xr
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from pycontrails.models.gpat.gpat import GPAT, SimParams, FlParams, PlParams, MetParams, ChemParams, dict_to_dataclass
 import os
+from pathlib import Path
 import holoviews as hv
 # np.set_printoptions(threshold=np.inf, linewidth=500)
 
 # global simulation parameters
 sim_params = {
     "t_fl": (pd.to_datetime("2022-01-20 13:00:00"), pd.Timedelta(seconds=60), pd.Timedelta(minutes=60)),# (start time, time step, run time)
-    "t_pl": (pd.to_datetime("2022-01-20 13:00:00"), pd.Timedelta(seconds=60), pd.Timedelta(hours=40)),# (start time, time step, max age)
-    "t_sim": (pd.to_datetime("2022-01-20 12:00:00"), pd.Timedelta(seconds=20), pd.Timedelta(hours=48)),# (start time, time step, run time)
-    "t_out": (pd.to_datetime("2022-01-20 12:00:00"), pd.Timedelta(seconds=60), pd.Timedelta(hours=48)),# (start time, time step, run time)
+    "t_pl": (pd.to_datetime("2022-01-20 13:00:00"), pd.Timedelta(seconds=60), pd.Timedelta(hours=10)),# (start time, time step, max age)
+    "t_sim": (pd.to_datetime("2022-01-20 12:00:00"), pd.Timedelta(seconds=20), pd.Timedelta(hours=2*24)),# (start time, time step, run time)
+    "t_out": (pd.to_datetime("2022-01-20 12:00:00"), pd.Timedelta(seconds=60), pd.Timedelta(hours=2*24)),# (start time, time step, run time)
     "lat_bounds": (47, 48),  # lat bounds [deg]
     "lon_bounds": (-33, -32),  # lon bounds [deg]
     "alt_bounds": (12000, 13000),  # alt bounds [m]
@@ -23,15 +24,15 @@ sim_params = {
     "domain_mode": "fixed",  # "fixed" or "auto"
     "domain_margin_deg": 0.01,  # extra horizontal buffer [deg] added to auto bounds for plume advection
 
-    "run_path": "~/GPAT2026/pycontrails_kt/pycontrails/models/gpat/",
-    "data_path": "~/GPAT2026/pycontrails_kt/pycontrails/models/gpat/data/", # "/projects/Impact_of_aviation_on_climate
+    "run_path": str(Path("~/GPAT2026/pycontrails_kt/pycontrails/models/gpat/").expanduser()) + "/",  # path to run directory
+    "data_path": str(Path("~/GPAT2026/pycontrails_kt/pycontrails/models/gpat/data/").expanduser()) + "/", # "/projects/Impact_of_aviation_on_climate
     "job_id": "test",
 }
 
 #flight trajectory parameters
 fl_params = {
     "mode": "synthetic",
-    "file": "data/flights/2_flights_origin.csv",  # flight trajectory file
+    "file": str(Path("~/GPAT2026/pycontrails_kt/pycontrails/models/gpat/data/flights/2_flights_origin.csv").expanduser()),  # flight trajectory file
 
     "ac_type": "A320",  # aircraft type
     "fl0_speed": 150.0,  # m/s
@@ -49,7 +50,7 @@ fl_params = {
 
     # "domain_margin_deg": 0.005,
     "sep_dist": (1000, 0, 0),  # dx, dy, dz [m]
-    "n_ac": 5,  # number of aircraft
+    "n_ac": 1,  # number of aircraft
 }
 
 # plume dispersion parameters
