@@ -5,8 +5,8 @@ Simulate aircraft trajectories, estimate aircraft performance, fuel burn and emi
 Plot associated aircraft exhaust plumes, subject to Gaussian dispersion and advection.
 Aggregate plumes to an Eulerian grid for photochemical and microphysical processing.
 """
-
 import argparse
+import getpass
 import os
 import random
 import pathlib
@@ -17,8 +17,9 @@ from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from turtle import ht
 from typing import Literal, Optional
 
+import hashlib
+import json
 import matplotlib.pyplot as plt
-
 from matplotlib.lines import Line2D
 import ipywidgets as widgets
 import dask.array as da
@@ -26,7 +27,6 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 from pyproj import Geod, Transformer
-import json
 
 from pycontrails.core import Flight, GeoVectorDataset, MetDataset, models
 from pycontrails.core.models import Model
@@ -78,7 +78,6 @@ class SimParams:
     lat_bounds: tuple[float, float] = (0.0, 1.0)  # lat bounds [deg]
     lon_bounds: tuple[float, float] = (0.0, 1.0)  # lon bounds [deg]
     alt_bounds: tuple[float, float] = (12000, 13000)  # alt bounds [m]
-    domain_margin_deg: float = 0.0  # extra horizontal buffer [deg] added to auto bounds for plume advection
     hres_sim_c: float = 0.01  # horizontal resolution [deg]
     vres_sim_c: float = 500  # vertical resolution [m]
     hres_sim_f: float = 0.001  # horizontal resolution [deg]
@@ -91,17 +90,27 @@ class SimParams:
 @dataclass
 class FlParams:
     """Default flight/fleet parameters."""
-    mode: Literal["direct", "synthetic"] = "direct"
+    mode: Literal["opensky", "synthetic"] = "opensky"
     file: Optional[str] = None
-    ac_type: Optional[str] = "A320"  # aircraft type
-    fl0_speed: Optional[float] = 100.0  # m/s
-    fl0_rocd: Optional[float] = 0.0  # m/s
-    target_altitude: Optional[float] = None  # m, overrides fl0_rocd when set
-    fl0_heading: Optional[float] = 0.0  # deg
-    fl0_coords0: Optional[tuple[float, float, float]] = (0.1, 0.125, 12500)  # lat, lon, alt [deg, deg, m]
-    domain_margin_deg: float = 0.01
-    sep_dist: Optional[tuple[float, float, float]] = (5000, 2000, 0)  # dx, dy, dz [m]
-    n_ac: Optional[int] = 1  # number of aircraft
+
+    # OpenSky / CSV controls
+    min_points: int = 2
+    callsigns: Optional[list[str]] = None
+    icao24: Optional[list[str]] = None
+    opensky_username: Optional[str] = None
+    opensky_password: Optional[str] = None
+    use_cache: bool = True
+    cache_dir: Optional[str] = None  # defaults to sim_params.data_path + "opensky_cache/"
+    force_refresh: bool = False
+
+    # Synthetic flight controls
+    ac_type: Optional[str] = "A320"
+    fl0_speed: Optional[float] = 100.0
+    fl0_rocd: Optional[float] = 0.0
+    fl0_heading: Optional[float] = 0.0
+    fl0_coords0: Optional[tuple[float, float, float]] = (0.1, 0.125, 12500)
+    sep_dist: Optional[tuple[float, float, float]] = (5000, 2000, 0)
+    n_ac: Optional[int] = 1
 
 @dataclass
 class PlParams:
@@ -224,7 +233,7 @@ class GPAT(Model):
         self.job_id = sim_params.job_id
 
         # If running in direct mode with a specified flight file, derive job_id from the filename if not already set.
-        if fl_params.mode == "direct" and fl_params.file is not None:
+        if fl_params.mode == "opensky" and fl_params.file is not None:
             self.job_id = os.path.splitext(os.path.basename(fl_params.file))[0]
 
         sim_params.date_created = pd.Timestamp.now()
@@ -385,36 +394,18 @@ class GPATSetup:
         sim_params = self.gpat.sim_params
 
         if fl_params.mode == "opensky":
-            if fl_params.file is None:
-                raise ValueError("Flight file must be provided for opensky mode.")
+            if fl_params.file:
+                df = self._load_opensky_csv(fl_params.file)
+            else:
+                df = self._get_opensky_dataframe()
 
-            df = pd.read_csv(fl_params.file)
-            fl = []
+            flights = self._opensky_df_to_flights(df)
 
-            self.gpat.fl_params.n_ac = len(df["flight_id"].dropna().unique())
+            if not flights:
+                raise ValueError("No valid flights found for opensky mode.")
 
-            for flight_id in sorted(df["flight_id"].dropna().unique()):
-                df_flt = df[df["flight_id"] == flight_id].copy()
-
-                # Ensure time is datetime and sort
-                df_flt["time"] = pd.to_datetime(df_flt["time"])
-                df_flt = df_flt.sort_values("time").reset_index(drop=True)
-
-                # Skip degenerate flights
-                if len(df_flt) < 2:
-                    print(f"Skipping flight_id={flight_id}: fewer than 2 valid points")
-                    continue
-
-                fli = Flight(data=df_flt)
-                fli.attrs = {"flight_id": int(flight_id), "aircraft_type": fl_params.ac_type}
-
-                fli["waypoint"] = np.arange(len(fli))
-                fl.append(fli)
-
-            if not fl:
-                raise ValueError("No valid flights were loaded from the opensky-mode CSV.")
-
-            return fl
+            self.gpat.fl_params.n_ac = len(flights)
+            return flights
 
         # generate synthetic formation flight
         if fl_params.mode == "synthetic":
@@ -618,16 +609,10 @@ class GPATSetup:
         # calculate solar zenith angle
         met.data["sza"] = (
             ("latitude", "longitude", "time"),
-            self.calc_sza(
+            self._calc_sza(
                 met["latitude"].data.values, met["longitude"].data.values, met["time"].data.values
             ),
         )
-
-        # # add time relative to simulation start time
-        # time_rel_s = (met["time"].values - np.datetime64(self.gpat.times_sim[0])).astype("timedelta64[s]").astype(float)
-        # met.data = met.data.assign_coords({
-        #     "time_rel_s": (("time"), time_rel_s)  
-        # })
 
         return met
 
@@ -696,7 +681,7 @@ class GPATSetup:
             print(f"Before {i}: {fli.dataframe}")
 
             # mask flight to simulation domain
-            fli = self.mask_flight_to_sim_domain(fli)
+            fli = self._mask_flight_to_sim_domain(fli)
 
             print(f"After {i}: {fli.dataframe}")
 
@@ -788,7 +773,7 @@ class GPATSetup:
             pli["altitude"] = units.pl_to_m(pli["level"])
 
             # Mask plume to simulation domain
-            pli = self.mask_plume_to_sim_domain(pli)
+            pli = self._mask_plume_to_sim_domain(pli)
       
             met = self.gpat.met
 
@@ -810,7 +795,7 @@ class GPATSetup:
             if len(pli_df) < 2:
                 print(f"Skipping flight {i}: plume has fewer than 2 points after masking.")
                 continue
-            pli_df = self.calc_heading(pli_df)
+            pli_df = self._calc_heading(pli_df)
             if len(fli_df) == 0 or len(pli_df) == 0:
                 print(f"Skipping flight {i}: all points advected outside met domain after DryAdvection.")
                 continue
@@ -1083,15 +1068,6 @@ class GPATSetup:
         self.gpat.pl_ds["age_s"] = (("seg_id", "time"), age_seconds)
 
         df = self.gpat.pl_ds["age_s"].to_dataframe().reset_index()
-        # first_time_dict = df.groupby("seg_id")["time"].min().to_dict()
-
-        # # Create a boolean mask for (seg_id, time) pairs that are the first for that seg_id
-        # first_time_mask = np.zeros(self.gpat.pl_ds["age_s"].shape, dtype=bool)
-        # for i, seg_id in enumerate(self.gpat.pl_ds["age_s"].seg_id.values):
-        #     first_time = first_time_dict[seg_id]
-        #     time_idx = np.where(self.gpat.pl_ds["age_s"].time.values == first_time)[0]
-        #     if len(time_idx) > 0:
-        #         first_time_mask[i, time_idx[0]] = True
 
         # Now build the active mask
         active_mask = (self.gpat.pl_ds["age_s"].values > 0)
@@ -1523,19 +1499,270 @@ class GPATSetup:
         print(f"Saved {nc_path}")
 
     # Helper functions used in GPAT Setup
-    def calc_heading(self, pl_df: pd.DataFrame) -> pd.DataFrame:
+    def _ensure_opensky_credentials(self) -> tuple[str | None, str | None]:
+        fl = self.gpat.fl_params
+
+        username = fl.opensky_username
+        password = fl.opensky_password
+
+        try:
+            if not username:
+                username = input("OpenSky username: ").strip() or None
+
+            if username and not password:
+                password = getpass.getpass("OpenSky password: ").strip() or None
+        except (KeyboardInterrupt, EOFError):
+            raise RuntimeError("OpenSky credential entry cancelled by user.")
+
+        self.gpat.fl_params.opensky_username = username
+        self.gpat.fl_params.opensky_password = password
+
+        return username, password
+
+    def _get_opensky_cache_metadata(self) -> dict:
+        sim = self.gpat.sim_params
+        fl = self.gpat.fl_params
+
+        return {
+            "t_start": str(sim.t_fl[0]),
+            "t_duration": str(sim.t_fl[2]),
+            "lat_bounds": list(sim.lat_bounds),
+            "lon_bounds": list(sim.lon_bounds),
+            "alt_bounds": list(sim.alt_bounds),
+            "callsigns": sorted(fl.callsigns) if fl.callsigns else None,
+            "icao24": sorted(fl.icao24) if fl.icao24 else None,
+            "ac_type": fl.ac_type,
+            "generated_at": pd.Timestamp.utcnow().isoformat(),
+        }
+    
+    def _build_opensky_cache_key(self) -> str:
+        meta = self._get_opensky_cache_metadata().copy()
+        meta.pop("generated_at", None)  # do not include volatile timestamp in hash
+        key_str = json.dumps(meta, sort_keys=True)
+        return hashlib.md5(key_str.encode()).hexdigest()
+    
+    def _get_opensky_cache_path(self) -> pathlib.Path:
+        fl = self.gpat.fl_params
+        sim = self.gpat.sim_params
+
+        if fl.cache_dir is not None:
+            cache_dir = pathlib.Path(fl.cache_dir).expanduser()
+        else:
+            cache_dir = pathlib.Path(sim.data_path).expanduser() / "opensky_cache"
+
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+        cache_key = self._build_opensky_cache_key()
+        return cache_dir / f"opensky_{cache_key}.csv"
+    
+    def _get_opensky_dataframe(self) -> pd.DataFrame:
+        fl = self.gpat.fl_params
+        cache_path = self._get_opensky_cache_path()
+
+        if fl.use_cache and cache_path.exists() and not fl.force_refresh:
+            print(f"[OpenSky] Loading cached data: {cache_path}")
+
+            meta_path = cache_path.with_suffix(".json")
+            if meta_path.exists():
+                with open(meta_path, "r") as f:
+                    meta = json.load(f)
+                print(f"[OpenSky] Cache metadata: {meta}")
+            else:
+                print("[OpenSky] WARNING: cache metadata file missing")
+
+            return self._load_opensky_csv(str(cache_path))
+
+        print("[OpenSky] Querying OpenSky history...")
+        df = self._query_opensky_history()
+
+        if fl.use_cache:
+            print(f"[OpenSky] Saving cache: {cache_path}")
+            df.to_csv(cache_path, index=False)
+
+            meta_path = cache_path.with_suffix(".json")
+            meta = self._get_opensky_cache_metadata()
+            meta["cache_key"] = self._build_opensky_cache_key()
+            meta["cache_csv"] = str(cache_path)
+            meta["n_rows"] = int(len(df))
+            meta["n_flights"] = int(df["flight_id"].nunique()) if "flight_id" in df.columns else None
+            meta["time_min"] = str(df["time"].min()) if "time" in df.columns and len(df) else None
+            meta["time_max"] = str(df["time"].max()) if "time" in df.columns and len(df) else None
+
+            with open(meta_path, "w") as f:
+                json.dump(meta, f, indent=2)
+
+        return df
+
+    def _query_opensky_history(self) -> pd.DataFrame:
+        from traffic.data import opensky
+
+        sim_params = self.gpat.sim_params
+        fl_params = self.gpat.fl_params
+
+        username, password = self._ensure_opensky_credentials()
+
+        start = sim_params.t_fl[0]
+        stop = sim_params.t_fl[0] + sim_params.t_fl[2]
+        bounds = (
+            sim_params.lon_bounds[0],
+            sim_params.lat_bounds[0],
+            sim_params.lon_bounds[1],
+            sim_params.lat_bounds[1],
+        )
+
+        traffic_obj = opensky.history(
+            start=start,
+            stop=stop,
+            bounds=bounds,
+            callsign=fl_params.callsigns if fl_params.callsigns else None,
+            icao24=fl_params.icao24 if fl_params.icao24 else None,
+            username=username,
+            password=password,
+        )
+
+        if traffic_obj is None:
+            raise ValueError("OpenSky historical query returned no traffic.")
+
+        df = traffic_obj.data.copy()
+        return self._normalise_opensky_dataframe(df)
+
+    def _normalise_opensky_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
+        df = df.copy()
+
+        # Rename common traffic/OpenSky columns to GPAT / pycontrails names
+        rename_map = {
+            "timestamp": "time",
+            "last_position": "time",
+            "lat": "latitude",
+            "lon": "longitude",
+            "geoaltitude": "altitude",
+            "baroaltitude": "altitude",
+            "icao24": "icao24",
+            "callsign": "callsign",
+        }
+        for old, new in rename_map.items():
+            if old in df.columns and new not in df.columns:
+                df = df.rename(columns={old: new})
+
+        if "time" not in df.columns:
+            raise ValueError("OpenSky dataframe must include a time/timestamp column.")
+        if "latitude" not in df.columns or "longitude" not in df.columns:
+            raise ValueError("OpenSky dataframe must include latitude/longitude.")
+        if "altitude" not in df.columns:
+            raise ValueError("OpenSky dataframe must include geoaltitude or baroaltitude.")
+
+        df["time"] = pd.to_datetime(df["time"], utc=True).dt.tz_convert(None)
+
+        # Remove rows with missing essentials
+        df = df.dropna(subset=["time", "latitude", "longitude", "altitude"]).copy()
+
+        # Build a stable flight identifier
+        if "flight_id" not in df.columns:
+            if "icao24" in df.columns and "callsign" in df.columns:
+                df["flight_id"] = (
+                    df["icao24"].fillna("UNK").astype(str).str.strip() + "_" +
+                    df["callsign"].fillna("UNK").astype(str).str.strip()
+                )
+            elif "icao24" in df.columns:
+                df["flight_id"] = df["icao24"].astype(str).str.strip()
+            elif "callsign" in df.columns:
+                df["flight_id"] = df["callsign"].astype(str).str.strip()
+            else:
+                raise ValueError("Cannot construct flight_id from OpenSky dataframe.")
+
+        return df
+
+    def _opensky_df_to_flights(self, df: pd.DataFrame) -> list[Flight]:
+        fl_params = self.gpat.fl_params
+        sim_params = self.gpat.sim_params
+
+        flights = []
+
+        for flight_id, df_flt in df.groupby("flight_id"):
+            df_flt = df_flt.sort_values("time").drop_duplicates(subset="time").reset_index(drop=True)
+
+            # Domain mask here, before Flight construction, is fine too
+            mask = (
+                df_flt["longitude"].between(*sim_params.lon_bounds) &
+                df_flt["latitude"].between(*sim_params.lat_bounds) &
+                df_flt["altitude"].between(*sim_params.alt_bounds)
+            )
+            df_flt = df_flt.loc[mask].copy()
+
+            if len(df_flt) < fl_params.min_points:
+                continue
+
+            # Resample to regular intervals with linear interpolation, filling any gaps up to t_fl[1] with forward/backward fill.
+            ts_fl_sec = int(sim_params.t_fl[1].total_seconds())
+            freq_str = f"{ts_fl_sec}s" if ts_fl_sec < 60 else f"{int(ts_fl_sec // 60)}min"
+
+            fli = Flight(df_flt).resample_and_fill(freq=freq_str)
+            fli.attrs = {
+                "flight_id": flight_id,
+                "aircraft_type": fl_params.ac_type,
+            }
+            fli["waypoint"] = np.arange(len(fli))
+            flights.append(fli)
+
+        return flights
+
+    def _load_opensky_csv(self, path: str) -> pd.DataFrame:
+        df = pd.read_csv(path)
+
+        # Normalise column names
+        rename_map = {
+            "lat": "latitude",
+            "lon": "longitude",
+            "geoaltitude": "altitude",
+            "baroaltitude": "altitude",
+            "timestamp": "time",
+            "last_position": "time",
+        }
+        for old, new in rename_map.items():
+            if old in df.columns and new not in df.columns:
+                df = df.rename(columns={old: new})
+
+        required = ["time", "latitude", "longitude", "altitude"]
+        missing = [c for c in required if c not in df.columns]
+        if missing:
+            raise ValueError(f"OpenSky CSV missing required columns: {missing}")
+
+        df["time"] = pd.to_datetime(df["time"], utc=True).dt.tz_convert(None)
+
+        # Remove unusable rows
+        df = df.dropna(subset=["time", "latitude", "longitude", "altitude"]).copy()
+
+        # Build a flight_id if one is not already present
+        if "flight_id" not in df.columns:
+            if "icao24" in df.columns and "callsign" in df.columns:
+                df["flight_id"] = (
+                    df["icao24"].astype(str).str.strip() + "_" +
+                    df["callsign"].fillna("").astype(str).str.strip()
+                )
+            elif "icao24" in df.columns:
+                df["flight_id"] = df["icao24"].astype(str).str.strip()
+            elif "callsign" in df.columns:
+                df["flight_id"] = df["callsign"].astype(str).str.strip()
+            else:
+                raise ValueError(
+                    "OpenSky CSV needs either flight_id, or at least icao24 / callsign."
+                )
+
+        return df
+
+    def _calc_heading(self, pl_df: pd.DataFrame) -> pd.DataFrame:
         """Calculate heading for each plume at each timestep."""
         pl_df = pl_df.sort_values(by=["time", "waypoint"]).copy()
 
         heading = (
             pl_df.groupby("time", group_keys=False)
-            .apply(self.calculate_heading_g)
+            .apply(self._calculate_heading_g)
         )
 
         pl_df["heading"] = heading.reindex(pl_df.index)
         return pl_df
 
-    def calculate_heading_g(self, group):
+    def _calculate_heading_g(self, group):
         """Calculate heading for each timestep.
 
         Parameters
@@ -1563,7 +1790,7 @@ class GPATSetup:
             np.concatenate([[heading[0]], heading]) if len(heading) > 0 else [np.nan], index=group.index
         )
 
-    def calc_sza(self, latitudes, longitudes, timesteps):
+    def _calc_sza(self, latitudes, longitudes, timesteps):
         """Calculate szas for each cell at all timesteps.
 
         Parameters
@@ -1592,7 +1819,7 @@ class GPATSetup:
                 )
         return sza
     
-    def mask_flight_to_sim_domain(self, flight: Flight) -> Flight:
+    def _mask_flight_to_sim_domain(self, flight: Flight) -> Flight:
         
         sim_params = self.gpat.sim_params
         
@@ -1615,7 +1842,7 @@ class GPATSetup:
             new_flight.attrs = getattr(flight, "attrs", {})
         return new_flight
     
-    def mask_plume_to_sim_domain(self, plume: GeoVectorDataset) -> GeoVectorDataset:
+    def _mask_plume_to_sim_domain(self, plume: GeoVectorDataset) -> GeoVectorDataset:
 
         sim_params = self.gpat.sim_params
 
