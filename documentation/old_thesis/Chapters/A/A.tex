@@ -1,0 +1,305 @@
+In this section, any additional tables of data and figures are included, to aid the reader in understanding the models and methods used and results presented throughout this PhD thesis.
+
+\section{GPAT Datasets}
+
+\subsection{Flight Dataset Example}\label{FL_dataset_example}
+
+\begin{table}[h!]
+    \centering
+    \caption{Flight Dataset Example (1/3)}
+    \begin{tabular}{@{}llllll@{}}
+    \toprule
+    \textbf{\begin{tabular}[c]{@{}l@{}}Flight\\ UID\end{tabular}} &
+      \textbf{Time} &
+      \textbf{\begin{tabular}[c]{@{}l@{}}Lat.\\ {[}deg{]}\end{tabular}} &
+      \textbf{\begin{tabular}[c]{@{}l@{}}Lon.\\ {[}deg{]}\end{tabular}} &
+      \textbf{\begin{tabular}[c]{@{}l@{}}Alt.\\ {[}m{]}\end{tabular}} &
+      \textbf{\begin{tabular}[c]{@{}l@{}}Pressure level\\ {[}hPa{]}\end{tabular}} \\ \midrule
+    0 & 13:00:00 & 47.500 & -32.900 & 12,500.0 & 178.645 \\
+    0 & 13:02:00 & 47.499 & -32.741 & 12,500.0 & 178.645 \\
+    0 & 13:04:00 & 47.498 & -32.581 & 12,500.0 & 178.645 \\
+    0 & 13:06:00 & 47.498 & -32.422 & 12,500.0 & 178.645 \\
+    0 & 13:08:00 & 47.497 & -32.263 & 12,500.0 & 178.645 \\
+    0 & 13:10:00 & 47.496 & -32.104 & 12,500.0 & 178.645 \\
+    1 & 13:00:00 & 47.500 & -32.887 & 12,500.0 & 178.645 \\
+    1 & 13:02:00 & 47.499 & -32.727 & 12,500.0 & 178.645 \\
+    1 & 13:04:00 & 47.498 & -32.568 & 12,500.0 & 178.645 \\
+    1 & 13:06:00 & 47.498 & -32.409 & 12,500.0 & 178.645 \\
+    1 & 13:08:00 & 47.497 & -32.250 & 12,500.0 & 178.645 \\
+    1 & 13:10:00 & 47.496 & -32.090 & 12,500.0 & 178.645 \\ \bottomrule
+    \end{tabular}
+    \end{table}
+
+\begin{table}[h!]
+    \centering
+    \caption{Flight Dataset Example (2/3)}
+    \label{}
+    \begin{tabular}{@{}lllll@{}}
+    \toprule
+    \textbf{\begin{tabular}[c]{@{}l@{}}Fuel burn\\ {[}kg{]}\end{tabular}} &
+    \textbf{\begin{tabular}[c]{@{}l@{}}Aircraft mass\\ {[}kg{]}\end{tabular}} &
+    \textbf{ROCD} &
+    \textbf{\begin{tabular}[c]{@{}l@{}}Air temp.\\ {[}K{]}\end{tabular}} &
+    \textbf{\begin{tabular}[c]{@{}l@{}}Spec. hum.\\ $q$ {[}g/kg{]}\end{tabular}} \\ \midrule
+    125.326 & 6.098e+4 & 0.0 & 219.286 & 0.0543 \\
+    125.220 & 6.086e+4 & 0.0 & 219.334 & 0.0556 \\
+    125.115 & 6.073e+4 & 0.0 & 219.383 & 0.0556 \\
+    125.046 & 6.060e+4 & 0.0 & 219.415 & 0.0548 \\
+    125.016 & 6.048e+4 & 0.0 & 219.429 & 0.0546 \\
+    125.016 & 6.035e+4 & 0.0 & 219.443 & 0.0546 \\
+    125.317 & 6.098e+4 & 0.0 & 219.290 & 0.0543 \\
+    125.211 & 6.085e+4 & 0.0 & 219.339 & 0.0556 \\
+    125.106 & 6.073e+4 & 0.0 & 219.387 & 0.0556 \\
+    125.044 & 6.060e+4 & 0.0 & 219.416 & 0.0548 \\
+    125.014 & 6.048e+4 & 0.0 & 219.430 & 0.0546 \\
+    125.014 & 6.035e+4 & 0.0 & 219.444 & 0.0546 \\ 
+    \bottomrule
+    \end{tabular}
+    \end{table}
+
+\begin{table}[h!]
+    \centering
+    \caption{Flight Dataset Example (3/3)}
+    \label{}
+    \begin{tabular}{@{}lllll@{}}
+    \toprule
+    \textbf{\begin{tabular}[c]{@{}l@{}}True airspeed\\ {[}m/s{]}\end{tabular}} &
+        \textbf{\begin{tabular}[c]{@{}l@{}}Thrust\\ {[}N{]}\end{tabular}} &
+        \textbf{\begin{tabular}[c]{@{}l@{}}Thrust \\ setting\end{tabular}} &
+        \textbf{\begin{tabular}[c]{@{}l@{}}Engine eff.\\ $\eta$\end{tabular}} &
+        \textbf{\begin{tabular}[c]{@{}l@{}}Fuel flow\\ {[}kg/s{]}\end{tabular}} \\ \midrule
+    99.706 & 9.529e+4 & 0.940 & 0.099 & 1.044 \\
+    99.707 & 9.493e+4 & 0.940 & 0.099 & 1.044 \\
+    99.709 & 9.457e+4 & 0.940 & 0.099 & 1.043 \\
+    99.710 & 9.420e+4 & 0.940 & 0.099 & 1.042 \\
+    99.712 & 9.383e+4 & 0.940 & 0.099 & 1.042 \\
+    99.712 & 9.383e+4 & 0.940 & 0.099 & 1.042 \\
+    99.706 & 9.529e+4 & 0.940 & 0.099 & 1.044 \\
+    99.707 & 9.493e+4 & 0.940 & 0.099 & 1.043 \\
+    99.709 & 9.457e+4 & 0.940 & 0.099 & 1.043 \\
+    99.710 & 9.420e+4 & 0.940 & 0.099 & 1.042 \\
+    99.712 & 9.383e+4 & 0.940 & 0.099 & 1.042 \\
+    99.712 & 9.383e+4 & 0.940 & 0.099 & 1.042 \\ \bottomrule
+    \end{tabular}
+    \end{table}
+
+\subsection{Meteorological Dataset Example}\label{MET_dataset_example}
+\begin{table}[h!]
+    \centering
+    \caption{Example MET dataset generated from gen\_met model, for North Atlantic Flight Corridor (NAFC) at 13~km altitude in January.}
+    \label{MET_table}
+    \begin{tabular}{@{}lll@{}}
+    \toprule
+    \textbf{Parameter} & \textbf{Description}                                            & \textbf{Example value} \\ \midrule
+    air\_temperature    & Air temperature {[}K{]}                                             & 219.2                  \\
+    {[}\ce{H2O}{]}         & Water vapour concentrations {[}molec./cm\textsuperscript{3}{]}      & 2.766e+14              \\
+    {[}M{]}                & Number density of air{[}molec./cm\textsuperscript{3}{]}            & 5.901e+18              \\
+    {[}\ce{N2}{]}          & Nitrogen concentrations {[}molec./cm\textsuperscript{3}{]}          & 4.608e+18              \\
+    {[}\ce{O2}{]}          & Oxygen concentrations {[}molec./cm\textsuperscript{3}{]}            & 1.226e+18              \\
+    $q$                & Specific humidity {[}g\textsubscript{water}/kg\textsubscript{air}{]} & 0.0549                 \\
+    $r$                & Relative humidity {[}\%{]}                                          & 23.2                   \\
+    u\_wind             & Eastward windspeed {[}m/s{]}                                        & 32.3                   \\
+    v\_wind             & Northward windspeed {[}m/s{]}                                       & 12.5                   \\
+    vertical\_velocity  & Vertical windspeed {[}m/s{]}                                        & 0.04                   \\
+    SZA                & Solar Zenith Angle {[}deg{]}                                        & 70.9                   \\ \bottomrule
+    \end{tabular}
+    \end{table}
+
+\subsection{Background Chemistry Dataset Example}\label{BG_CHEM_dataset_example}
+\begin{longtable}[c]{@{}lll@{}}
+    \caption{Example background chemistry concentrations generated from Background Chemistry Model, for NAFC at 13~km altitude in January.}
+    \label{BG_CHEM_table}\\
+    \toprule
+    \multicolumn{1}{@{}l@{}}{\textbf{\begin{tabular}[l]{@{}l@{}}Background\\ species\end{tabular}}} &
+      \multicolumn{1}{l}{\textbf{\begin{tabular}[l]{@{}l@{}}Full chemical\\ name\end{tabular}}} &
+      \multicolumn{1}{l}{\textbf{\begin{tabular}[l]{@{}l@{}}Concentration\\ {[}ppbv{]}\end{tabular}}} \\* \midrule
+    \endfirsthead
+    %
+    \endhead
+    %
+    \bottomrule
+    \endfoot
+    %
+    \endlastfoot
+    %
+    \ce{NO2}      & Nitrogen dioxide            & 4.605 $\times$ 10\textsuperscript{2} \\
+    \ce{O3}       & Ozone                       & 6.763 $\times$ 10\textsuperscript{1} \\
+    NO       & Nitric oxide                & 2.150 $\times$ 10\textsuperscript{-2} \\
+    CO       & Carbon monoxide             & 8.912 $\times$ 10\textsuperscript{1} \\
+    \ce{H2O2}     & Hydrogen peroxide           & 6.962 $\times$ 10\textsuperscript{-2} \\
+    \ce{HNO3}     & Nitric Acid                 & 2.107 $\times$ 10\textsuperscript{-2} \\
+    \ce{CH4}      & Methane                     & 1.714 $\times$ 10\textsuperscript{3} \\
+    \ce{C2H6}     & Ethane                      & 4.769 $\times$ 10\textsuperscript{-1} \\
+    \ce{C3H8}     & Propane                     & 1.120 $\times$ 10\textsuperscript{-1} \\
+    \ce{NC4H10}   & n-Butane                    & 2.811 $\times$ 10\textsuperscript{-1} \\
+    \ce{C2H4}     & Ethylene                    & 2.447 $\times$ 10\textsuperscript{-3} \\
+    \ce{C3H6}     & Propylene                   & 3.175 $\times$ 10\textsuperscript{-5} \\
+    TBUT2ENE & t-But-2-ene                 & 7.439 $\times$ 10\textsuperscript{-9} \\
+    HCHO     & Formaldehyde                & 3.314 $\times$ 10\textsuperscript{-2} \\
+    \ce{CH3CHO}   & Acetaldehyde                & 2.920 $\times$ 10\textsuperscript{-2} \\
+    \ce{C5H8}     & Isoprene                    & 4.947 $\times$ 10\textsuperscript{-8} \\
+    \ce{C2H2}     & Acetylene                   & 1.554 $\times$ 10\textsuperscript{-1} \\
+    BENZENE  & Benzene                     & 2.392 $\times$ 10\textsuperscript{-2} \\
+    TOLUENE  & Toluene                     & 2.014 $\times$ 10\textsuperscript{-3} \\
+    OXYL     & o-Xylene                    & 4.037 $\times$ 10\textsuperscript{-4} \\
+    \ce{C2H5CHO}  & Propionaldehyde             & 1.391 $\times$ 10\textsuperscript{-3} \\
+    \ce{CH3COCH3} & Acetone                     & 2.599 $\times$ 10\textsuperscript{-1} \\
+    \ce{CH3OH}    & Methanol                    & 2.243 $\times$ 10\textsuperscript{-1} \\
+    MEK      & Methyl ethyl ketone         & 3.481 $\times$ 10\textsuperscript{-3} \\
+    \ce{CH3OOH}   & Methyl hydroperoxide        & 6.970 $\times$ 10\textsuperscript{-3} \\
+    PAN      & Peroxyacetyl nitrate        & 2.292 $\times$ 10\textsuperscript{-1} \\
+    MPAN     & Methyl peroxyacetyl nitrate & 2.225 $\times$ 10\textsuperscript{-6} \\* \bottomrule
+\end{longtable}
+
+\subsection{Plume Dataset Example}\label{PL_dataset_example}
+
+\begin{table}[h!]
+    \centering
+    \caption{Plume Dataset Example (1/4)}
+    \label{PL_table_1}
+    \begin{tabular}{@{}lllllll@{}}
+    \toprule
+    \textbf{\begin{tabular}[c]{@{}l@{}}Flight\\ UID\end{tabular}} &
+      \textbf{\begin{tabular}[c]{@{}l@{}}Waypoint\\ No.\end{tabular}} &
+      \textbf{Time} &
+      \textbf{\begin{tabular}[c]{@{}l@{}}Lat.\\ {[}deg{]}\end{tabular}} &
+      \textbf{\begin{tabular}[c]{@{}l@{}}Lon.\\ {[}deg{]}\end{tabular}} &
+      \textbf{\begin{tabular}[c]{@{}l@{}}Alt.\\ {[}m{]}\end{tabular}} &
+      \textbf{\begin{tabular}[c]{@{}l@{}}Pressure \\ level {[}hPa{]}\end{tabular}} \\ \midrule
+    0   & 0   & 13:00:00 & 47.500 & -32.900 & 12500.0 & 178.645 \\
+    1   & 0   & 13:00:00 & 47.500 & -32.887 & 12500.0 & 178.645 \\
+    0   & 0   & 13:02:00 & 47.500 & -32.900 & 12500.0 & 178.645 \\
+    0   & 1   & 13:02:00 & 47.500 & -32.741 & 12500.0 & 178.645 \\
+    1   & 0   & 13:02:00 & 47.500 & -32.887 & 12500.0 & 178.645 \\
+    ... & ... & ...      & ...    & ...     & ...     & ...     \\
+    0   & 5   & 19:06:00 & 47.500 & -32.104 & 12500.0 & 178.645 \\
+    1   & 4   & 19:06:00 & 47.500 & -32.250 & 12500.0 & 178.645 \\
+    1   & 5   & 19:06:00 & 47.500 & -32.090 & 12500.0 & 178.645 \\
+    0   & 5   & 19:08:00 & 47.500 & -32.104 & 12500.0 & 178.645 \\
+    1   & 5   & 19:08:00 & 47.500 & -32.090 & 12500.0 & 178.645 \\ \bottomrule
+    \end{tabular}
+    \end{table}
+
+\begin{table}[h!]
+    \centering
+    \caption{Plume Dataset Example (2/4)}
+    \label{PL_table_2}
+    \begin{tabular}{@{}llllll@{}}
+    \toprule
+    \textbf{\begin{tabular}[c]{@{}l@{}}Plume age \\ {[}hh:mm{]}\end{tabular}} &
+        \textbf{\begin{tabular}[c]{@{}l@{}}Heading\\ angle {[}deg{]}\end{tabular}} &
+        \textbf{\begin{tabular}[c]{@{}l@{}}Plume \\ width {[}m{]}\end{tabular}} &
+        \textbf{\begin{tabular}[c]{@{}l@{}}$\sigma_{yy}$\\ {[}m\textsuperscript{2}{]}\end{tabular}} &
+        \textbf{\begin{tabular}[c]{@{}l@{}}$\sigma_{zz}$\\ {[}m\textsuperscript{2}{]}\end{tabular}} &
+        \textbf{\begin{tabular}[c]{@{}l@{}}True airspeed\\ {[}m/s{]}\end{tabular}} \\ \midrule
+    00:02 & 359.618 & 8.107e+1 & 8.215e+2 & 4.355e+2 & 99.706 \\
+    00:02 & 359.618 & 8.107e+1 & 8.215e+2 & 4.354e+2 & 99.706 \\
+    00:04 & 359.618 & 1.438e+2 & 2.585e+3 & 5.584e+2 & 99.706 \\
+    00:02 & 359.618 & 8.106e+1 & 8.214e+2 & 4.353e+2 & 99.707 \\
+    00:04 & 359.618 & 1.438e+2 & 2.585e+3 & 5.584e+2 & 99.706 \\
+    ...   & ...     & ...      & ...      & ...      & ...    \\
+    05:58 & 359.618 & 5.298e+4 & 3.508e+8 & 2.218e+4 & 99.712 \\
+    06:00 & 359.618 & 5.344e+4 & 3.569e+8 & 2.233e+4 & 99.712 \\
+    05:58 & 359.618 & 5.297e+4 & 3.508e+8 & 2.218e+4 & 99.712 \\
+    06:00 & 359.618 & 5.342e+4 & 3.566e+8 & 2.231e+4 & 99.712 \\
+    06:00 & 359.618 & 5.341e+4 & 3.566e+8 & 2.231e+4 & 99.712 \\ \bottomrule
+    \end{tabular}
+    \end{table}
+
+\begin{table}[h!]
+    \centering
+    \caption{Plume Dataset Example (3/4)}
+    \label{PL_table_3}
+    \begin{tabular}{@{}llllllll@{}}
+    \toprule
+    \textbf{\begin{tabular}[c]{@{}l@{}}Fuel flow\\ {[}kg/s{]}\end{tabular}} &
+        \textbf{\begin{tabular}[c]{@{}l@{}}Fuel burn\\ {[}kg{]}\end{tabular}} &
+        \textbf{\begin{tabular}[c]{@{}l@{}}CO2\\ {[}kg{]}\end{tabular}} &
+        \textbf{\begin{tabular}[c]{@{}l@{}}H2O\\ {[}kg{]}\end{tabular}} &
+        \textbf{\begin{tabular}[c]{@{}l@{}}SO2\\ {[}kg{]}\end{tabular}} &
+        \textbf{\begin{tabular}[c]{@{}l@{}}nvPM\\ {[}kg{]}\end{tabular}} &
+        \textbf{\begin{tabular}[c]{@{}l@{}}NO\\ {[}kg{]}\end{tabular}} &
+        \textbf{\begin{tabular}[c]{@{}l@{}}NO2\\ {[}kg{]}\end{tabular}} \\ \midrule
+    1.044 & 125.326 & 396.029 & 154.150 & 0.105 & 0.009 & 1.723 & 0.091 \\
+    1.044 & 125.317 & 396.001 & 154.140 & 0.105 & 0.009 & 1.723 & 0.091 \\
+    1.044 & 125.326 & 396.029 & 154.150 & 0.105 & 0.009 & 1.723 & 0.091 \\
+    1.044 & 125.220 & 395.696 & 154.021 & 0.105 & 0.009 & 1.721 & 0.091 \\
+    1.044 & 125.317 & 396.001 & 154.140 & 0.105 & 0.009 & 1.723 & 0.091 \\
+    ...   & ...     & ...     & ...     & ...   & ...   & ...   & ...   \\
+    1.042 & 125.016 & 395.051 & 153.770 & 0.105 & 0.009 & 1.717 & 0.090 \\
+    1.042 & 125.014 & 395.043 & 153.767 & 0.105 & 0.009 & 1.717 & 0.090 \\
+    1.042 & 125.014 & 395.043 & 153.767 & 0.105 & 0.009 & 1.717 & 0.090 \\
+    1.042 & 125.016 & 395.051 & 153.770 & 0.105 & 0.009 & 1.717 & 0.090 \\
+    1.042 & 125.014 & 395.043 & 153.767 & 0.105 & 0.009 & 1.717 & 0.090 \\ \bottomrule
+    \end{tabular}
+    \end{table}
+
+\begin{table}[h!]
+    \centering
+    \caption{Plume Dataset Example (4/4)}
+    \label{PL_table_4}
+    \begin{tabular}{@{}lllllll@{}}
+    \toprule
+    \textbf{\begin{tabular}[c]{@{}l@{}}CO\\ {[}kg{]}\end{tabular}} &
+      \textbf{\begin{tabular}[c]{@{}l@{}}HCHO\\ {[}kg{]}\end{tabular}} &
+      \textbf{\begin{tabular}[c]{@{}l@{}}CH3CHO\\ {[}kg{]}\end{tabular}} &
+      \textbf{\begin{tabular}[c]{@{}l@{}}C2H4\\ {[}kg{]}\end{tabular}} &
+      \textbf{\begin{tabular}[c]{@{}l@{}}C3H6\\ {[}kg{]}\end{tabular}} &
+      \textbf{\begin{tabular}[c]{@{}l@{}}C2H2\\ {[}kg{]}\end{tabular}} &
+      \textbf{\begin{tabular}[c]{@{}l@{}}BENZENE\\ {[}kg{]}\end{tabular}} \\ \midrule
+    0.061 & 0.001 & 0.000 & 0.001 & 0.000 & 0.000 & 0.000 \\
+    0.061 & 0.001 & 0.000 & 0.001 & 0.000 & 0.000 & 0.000 \\
+    0.061 & 0.001 & 0.000 & 0.001 & 0.000 & 0.000 & 0.000 \\
+    0.061 & 0.001 & 0.000 & 0.001 & 0.000 & 0.000 & 0.000 \\
+    0.061 & 0.001 & 0.000 & 0.001 & 0.000 & 0.000 & 0.000 \\
+    ...   & ...   & ...   & ...   & ...   & ...   & ...   \\
+    0.061 & 0.001 & 0.000 & 0.001 & 0.000 & 0.000 & 0.000 \\
+    0.061 & 0.001 & 0.000 & 0.001 & 0.000 & 0.000 & 0.000 \\
+    0.061 & 0.001 & 0.000 & 0.001 & 0.000 & 0.000 & 0.000 \\
+    0.061 & 0.001 & 0.000 & 0.001 & 0.000 & 0.000 & 0.000 \\
+    0.061 & 0.001 & 0.000 & 0.001 & 0.000 & 0.000 & 0.000 \\ \bottomrule
+    \end{tabular}
+    \end{table}
+\end{document}
+
+\subsection{Emissions Dataset Example}
+\label{EMI_dataset_example}
+
+\begin{table}[h!]
+\centering
+\caption{Example Emissions Dataset for NAFC at 13 km altitude. Emissions taken at 2 hours plume age and initial flight coordinates.}
+\label{EMI_table}
+\begin{tabular}{@{}lll@{}}
+\begin{tabular}[c]{@{}l@{}}Emission\\ species\end{tabular} &
+    \begin{tabular}[c]{@{}l@{}}Full chemical\\ name\end{tabular} &
+    \begin{tabular}[c]{@{}l@{}}Concentration\\ {[}ppbv{]}\end{tabular} \\
+    \ce{NO}          & Nitric oxide     & 1.520e-01 \\
+\ce{NO2}    & Nitrogen dioxide & 5.218e-03 \\
+\ce{CO}          & Carbon monoxide  & 5.793e-03 \\
+\ce{HCHO}        & Formaldehyde     & 6.326e-05 \\
+\ce{CH3CHO} & Acetaldehyde     & 1.437e-05 \\
+\ce{C2H4}   & Ethylene         & 8.466e-05 \\
+\ce{C3H6}   & Propylene        & 1.504e-05 \\
+\ce{C2H2}   & Acetylene        & 2.432e-05 \\
+\ce{BENZENE}     & Benzene          & 4.053e-06
+\end{tabular}
+\end{table}
+
+\section{GPAT Assumptions and Limitations}
+% Met data constant - to ensure consistency with BOXM 1.0. But in reality significant diurnal variations in met properties which should be incorporated to better match to reality.
+
+% Use updated met data - currently from 1998 UK Met Office UM model outputs. The climate has changed significantly since then, and so has our understanding of the meteorology and weather. This needs to be addressed in future studies.
+
+% Currently only a 2D model that captures the horizontal dispersion of emissions. ID is still assumed in the vertical direction. This is a conservative assumption for this study, as it means that there is always some additional level of dilution compared to real-world conditions. It also means that flights can only be modelled at a single flight level. A 3D model would be required to model climbing or descending aircraft emissions.
+
+% -	Zero wind conditions – despite the dry advection scheme’s inherent capability to model wind shear and advection effects for a plume centroid, and this being captured in the input emissions dataset, this does not mean that the photochemical box model has knowledge of these changes in plume position. As a result, e.g. under high wind, the chemical changes that occur due to an injection of emissions at one timestep will remain apparent on that grid cell, despite the plume mass advecting out of the box by the next timestep.
+
+% No vertical transport of air mass (vert. vel. = 0), meaning no downwash of plumes captured.
+
+% The two aforementioned effects could diminish the benefits of formation flight for chemical saturation purposes. This is because the corresponding aircraft plumes may not align if they are being advected horizontally and/or vertically over time. This would require additional consideration of formation flight configurations and suitable separation distances between aircraft to ensure adequate plume overlap. 
+
+% Currently GPAT is only suitable for capturing the effects of gas-phase photochemistry. There is no capability yet to model heterogeneous chemistry or microphysical effects, important for investigating contrail and aerosol climate impacts.
+
+% Clear sky conditions - no modelling of natural cloud formation, which can affect contrail climate impacts significantly. If 
+
+% Formation flight aerodynamic benefits have not been accounted for. Likely to be some amount of fuel burn reduction resulting from wake-surfing phenomenon, in which follower aircraft fly in the upwash of the leader aircraft's wake, thus reducing lift and required thrust by up to 10~% \cite{Bangash2004,Kent2021}

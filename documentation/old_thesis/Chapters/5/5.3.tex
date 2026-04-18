@@ -1,0 +1,77 @@
+\section{Input Parameters}
+The Gridded Plume Analysis Tool requires three sets of user-defined input parameters, to provide the necessary information to conduct a model run. This comprises flight parameters related to aircraft and flight properties, plume parameters pertaining to the characteristics of the associated aircraft exhaust plumes, and lastly the simulation parameters, required to instantiate the physical and chemical modelling environment.
+
+\subsection{Flight Parameters (fl\_params)}
+The flight parameters give information on the flights taking place in the simulation. This includes the start time, duration and time step of the flight data to be generated, the aircraft types, speed, heading and initial coordinates of the first aircraft. For formation flight scenarios, it also contains the longitudinal (dx), lateral (dy) and vertical (dz) separation minima between the leader and follower aircraft, as well as the number of aircraft in the simulation. It is assumed that follower aircraft are travelling at the same speed and along the same heading. Table \ref{tab_fl_params} shows these parameters as they are read by the software, along with a description of their use, units and an example value.
+
+\begin{table}[H]
+\caption{GPAT Flight Parameters with example values.}
+\label{tab_fl_params}
+\centering
+\begin{tabular}{lll}
+\hline
+\textbf{Parameter}    & \textbf{Description}                & \textbf{Example value}       \\ \hline
+t\textsubscript{0}\_fl       & Flight start time          & 2022-01-01 12:00:00 \\
+rt\_fl       & Flight run time {[}min{]}  & 60                  \\
+ts\_fl       & Flight time step {[}min{]} & 2                   \\
+ac\_type     & Aircraft type              & A320                \\
+fl\textsubscript{0}\_speed   & Aircraft speed {[}m/s{]}   & 100                 \\
+fl\textsubscript{0}\_heading & Aircraft heading {[}deg{]} & 45                   \\
+fl\textsubscript{0}\_coords\textsubscript{0} & \begin{tabular}[c]{@{}l@{}}Leader aircraft initial coordinates \\ {[}lat. deg, lon. deg, alt. m{]}\end{tabular} & (45.0, 45.0, 12,000) \\
+sep\_dist    & \begin{tabular}[c]{@{}l@{}}Separation minima {[}dx m, dy m, dz m{]}\end{tabular}                             & (1000, 100, 0)       \\
+n\_ac        & Number of aircraft         & 5                   \\ \hline
+\end{tabular}
+\end{table}
+
+\subsection{Plume Parameters (plume\_params)}
+These are the parameters that determine how the exhaust plumes, and emissions contained within them, disperse and advect spatially over time. This includes the integration time step, max age of each plume, initial dimensions, wind shear, horizontal and vertical resolution of the plume simulation, as well as the number of Gaussian slices for the plume aggregation step (for more on this, see section \ref{plume_to_grid_model}). Table \ref{tab_plume_params} shows these parameters as they are read by the software, along with a description of their use, units and an example value.
+
+\begin{table}[H]
+\caption{GPAT Plume Parameters with example values.}
+\label{tab_plume_params}
+\centering
+\begin{tabular}{lll}
+\hline
+\textbf{Parameter}      & \textbf{Description}                                     & \textbf{Example value} \\ \hline
+dt\_integration & Integration time step [min]                     & 2             \\
+max\_age        & Maximum age of plume segments [hours]           & 2             \\
+depth          & Initial plume depth [m]                         & 50            \\
+width          & Initial plume width [m]                         & 50            \\
+shear          & Wind shear [1/s]                                & 0.01          \\
+hres\_pl        & Horizontal resolution of plume aggregation [deg] & 0.05          \\
+vres\_pl        & Vertical resolution of plume aggregation [m]   & 500           \\
+n\_slices       & Number of Gaussian slices to aggregate to grid  & 10	\\ \hline           
+\end{tabular}
+\end{table}
+
+\subsection{Simulation Parameters (sim\_params)}
+This set of parameters defines the spatial and temporal domain of the simulation run, specifying the geographical bounds of the region of interest, the time frame over which the atmospheric chemistry and physics is simulated, the spatial and temporal resolution of the domain, wind effects, and species in and out of the model. Table \ref{tab_sim_params} shows these parameters as they are read by the software, along with a description of their use, units and an example value.
+
+\begin{table}[H]
+\caption{GPAT Simulation Parameters with example values.}
+\label{tab_sim_params}
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Parameter}          & \textbf{Description}                               & \textbf{Example value}       \\ \midrule
+t\textsubscript{0}\_sim            & Simulation start time                     & 2022-01-01 12:00:00 \\
+rt\_sim            & Simulation run time [days]                & 5                   \\
+ts\_sim            & Simulation time step [s]                  & 20                  \\
+lat\_bounds        & Latitude bounds [deg]                     & (40, 50)            \\
+lon\_bounds        & Longitude bounds [deg]                    & (40, 50)            \\
+alt\_bounds        & Altitude bounds [m]                       & (12000, 13000)      \\
+hres\_sim          & Horizontal resolution of simulation [deg] & 0.05                \\
+vres\_sim          & Vertical resolution of simulation [m]     & 500                \\
+eastward\_wind     & Eastward bound wind speed [m/s]            & 0                   \\
+northward\_wind    & Northward bound wind speed [m/s]           & 0                   \\
+vertical\_velocity & Vertical wind velocity [m/s]              & 0                   \\
+species\_in &
+  \begin{tabular}[c]{@{}l@{}}Emission species concentrations\\ aggregated to sim. [ppbv]\end{tabular} &
+  \begin{tabular}[c]{@{}l@{}} (``NO'', ``NO2'', ``CO'')\end{tabular} \\
+species\_out &
+  Output species concentrations [ppbv] &
+  \begin{tabular}[c]{@{}l@{}} (``O3'', ``NO2'', ``NO'')\end{tabular} \\ \bottomrule
+\end{tabular}
+\end{table}
+
+It is worth noting that vertical resolution was kept at 1,000~m for the whole of this PhD thesis, as this provided instantaneous dispersion into the vertical dimension at a typical maximum plume height \cite{Kraabol2000a}. This means that any saturation effects that are modelled using GPAT are likely to be conservative compared to the saturation effects in real-world plume overlap.

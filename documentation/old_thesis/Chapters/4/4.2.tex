@@ -1,0 +1,58 @@
+\section{Methodology}
+
+\subsection{Determination of Threshold \texorpdfstring{\ce{NO_x}}{NOx} from Kinetic Data}
+\label{4.2.1}
+An estimate of the threshold level of \ce{NO2} defining $[\ce{NO2}]_{\mathrm{equiv}}$ as the concentration of [\ce{NO2}] required to start OH collapse can be made by comparing the loss rates for OH with \ce{CH4} (reaction \eqref{OH+NO2+M_4}) and CO (reaction \eqref{OH+CO_4}) with that for OH with \ce{NO2} (reaction \eqref{OH+NO2+M_4}).
+
+\begin{equation}
+	 k_{6} [\ce{NO2}]_{\mathrm{equiv}} [\ce{OH}] [\ce{M}] = k_{1} [\ce{CO}] [\ce{OH}] + k_{7} [\ce{CH4}] [\ce{OH}]
+\label{k6NO2equiv}
+\end{equation}
+
+A simple rearrangement of~\eqref{k6NO2equiv} provides an expression for $[\ce{NO2}]_{\mathrm{equiv}}$:
+
+\begin{align}
+\begin{split}
+    [\ce{NO2}]_{\mathrm{equiv}} {}&= \frac{k_{1} [\ce{CO}] [\ce{OH}] + k_7 [\ce{CH4}] [\ce{OH}]}{k_6 [\ce{OH}] [\ce{M}]} \nonumber
+\end{split} \\
+    {}&= \frac{k_1 [\ce{CO}] + k_7 [\ce{CH4}]}{k_6 [\ce{M}]}
+    \label{no2equiv}
+\end{align}
+
+The temperature ($T$) dependent rate coefficient of the reaction \eqref{OH+CO_4}, $k_1 = 5.4 \times 10^{-14} \times ((T/298)^{1.5}) \times exp (250/T))$ and reaction \eqref{OH+CH4_4}, $k_7 = 2.45 \times 10^{-12} \times exp \left (\left (-1775 \pm 100 \right )/ T \right )$ have been obtained from Baulch et al. \cite{Baulch1992} and DeMore et al. \cite{DeMore1997}, respectively. The reaction \eqref{OH+NO2+M_4} depends not only on temperature, but also on pressure. A decrease in pressure reduces the value of the rate coefficient and so there is competition between these two components with altitude: increasing altitude leads to a decrease in temperature and an increase in $k_6$, whereas pressure decreases, and this will decrease $k_6$. The term, $k_6 [\ce{M}]$ was calculated as:
+
+\begin{equation}
+	k_6 [\ce{M}] = \frac{k_0 [\ce{M}]}{1 + \frac{k_0 [\ce{M}]}{k_{\alpha}}} \times 0.6^{\left ( \frac{1}{1 + \left ( \mathrm{log}  \frac{k_0 [\ce{M}]}{k_{\alpha}} \right )^2}  \right )}
+\label{k_6[M]}
+\end{equation}
+
+Where $k_0 = \left( 2.5 \pm 0.1 \right) \times 10^{-30} (T/300)^{-4.4 \pm 0.3}$ and $k_{\alpha} = \left( 1.6 \pm 0.2 \right) \times 10^{-11}(T/300)^{-1.7 \pm 0.2}$, taken from DeMore et al.~\cite{DeMore1997}.
+
+Temperature and pressure decrease with increasing altitude in the troposphere for a given latitude and longitude, but for a given altitude, temperature decreases from the equator to the poles. Although \ce{CH4} has a hemispheric gradient, higher in the Northern Hemisphere (\textasciitilde1800~ppbv) than the Southern Hemisphere (\textasciitilde1700~ppbv), and a slow inter-hemisphere transport with a temporal scale of approximately 1~year, mixing ratios of \ce{CH4} are pretty constant throughout the troposphere as a result of its 10-year lifetime \cite{Shallcross2020}. Whereas, CO, whose lifetime is around a month, has a strong gradient between Northern Hemisphere (120--180~ppbv) and Southern Hemisphere (60--70~ppbv), and displays mixing ratios that drop off considerably with altitude \cite{Shallcross2020}. If we imagine, for simplicity, that CO is 1100~ppb at the surface and 100~ppb at 10~km and from surface to 10~km drops off by 100~ppb/km, we can start to make some preliminary calculations to scope out where in the atmosphere recreating the polluted urban atmosphere may be most likely.
+
+\begin{figure}[H]
+		\includegraphics[width=\textwidth]{4/DudleySurfPlot.jpg}
+		%\vspace{-.1cm}
+		\caption{Calculated $[\ce{NO2}]_{\mathrm{equiv}}$ using simple kinetic equation (Equation \eqref{no2equiv}) at different temperatures and altitudes.}
+		\label{DudleySurfPlot}
+\end{figure}
+
+Therefore, the [\ce{NO2}]equiv was calculated as a function of temperature typical of the troposphere (200--330~K) and at pressures from the surface up to 10~km using the simple CO mixing ratio altitude profile noted earlier, with a fixed mixing ratio of \ce{CH4}, 1900~ppb.
+
+\subsection{Determination of Threshold \texorpdfstring{\ce{NO_x}}{NOx} from STOCHEM-CRI CTM Modelling Data and IAGOS Measurement Data}
+\label{4.2.2}
+The same calculation as shown in section \ref{4.2.1} was repeated using global model concentrations of \ce{CH4}, CO, and the rate coefficients as a function of temperature and pressure. These model fields were computed at a resolution of 5~\textdegree~longitude $\times$ 5~\textdegree~latitude with altitude binning corresponding to model output levels from Collins et al.~\cite{Collins1997}. The monthly global model fields of temperature, OH, CO, and \ce{CH4} were obtained from the output of a 3D chemistry and transport model, STOCHEM-CRI \cite{Fuglestvedt1999}. These global fields provided a basis for calculation of [\ce{NO2}]equiv on a global scale to examine the spatial and temporal variations of this parameter. To further confirm the \ce{NO_x} threshold trends seen in the global model analysis, the calculations were performed again, this time on measurement data from the three IAGOS projects: MOZAIC, CORE, and CARIBIC \cite{Blot2021}. In these datasets, datapoints have been generated from measurements of key climate variables, using scientific instruments onboard civil aircraft. The MOZAIC project ran from 1994 to 2010 and collected data from over 33,471 flights. CORE collected data from 2011 up until present day, providing data on a further 7790 flights. Finally, CARIBIC has been operating since 1997 to present day, however, has only collected data from 541 flights. These datasets were used to create temperature, M and CO concentration fields, which are comparable to the corresponding STOCHEM-CRI model fields. Such fields were constructed by collating data in latitude, longitude, altitude bins, which match the resolution of the STOCHEM-CRI simulated fields. These fields are used in the calculation of \ce{NO_x} threshold which are compared with that found from STOCHEM-CRI.
+
+Measurements are taken at a nominal temporal resolution of 4~s throughout the entire flight profile. Anomalous or missing data led to sparsity between measurements; however, data quality has generally improved in recent years, as newer and more accurate equipment was deployed. To perform these calculations, all data points were removed from flights with either no useful compositional chemical data or where vital physical measurements such as temperature, pressure, or altitude were missing. These steps reduced our sample size down to 16,335 individual flights with 83.8~million useful data points, collected over a 28-year period.
+
+The necessary computations were carried out using the C API to netCDF and Slurm workload manager on the BlueCrystal Phase 4 supercomputing facility \cite{BC4}. Outputs were stored in CSV format and queried using an SQL database, where we binned data into the grid cell resolution of STOCHEM-CRI. Then averages of our estimated ${[\ce{NO2}]_{\mathrm{equiv}}}$ values were calculated for each box in our world grid. The global distribution plots were generated using Python packages: Matplotlib and Cartopy.
+
+\subsection{Development of 1D Box Model of Flight Corridor}
+A simple one-dimensional (1D) model of aircraft cruise conditions was developed which addresses the issues of inadequate spatial and temporal CTM resolution. A set of grid boxes has been built perpendicular to an air traffic corridor in the UTLS region. The grid contains 999 boxes, each of 100~m $\times$ 100~m $\times$ 100~m and the contents are assumed to be instantaneously mixed. Each grid box contains a number of trace gases, that is, representing the chemistry of the UTLS region including \ce{CH4}, CO, \ce{NO_x}, O3, \ce{H2O}, organic compounds, and their degradation products. The time-dependent behaviour of each trace gas is represented by a differential equation of the form:
+
+\begin{equation}
+	\frac{\partial c_i}{\partial t} = P_i - l_i . c_i - \frac{\partial}{\partial x} K \frac{\partial c_i}{\partial x}
+\label{es_eq}
+\end{equation}
+
+where $c_i$ is the mass of species, $i$, $t$ the time, $x$ the axis perpendicular to the air traffic corridor, $P_i$ the production rate of the species within the box, and $l_i$ is the rate coefficient for the loss of the species within the box and the final term on the right-hand side of the equation represents the gain and loss of the species by exchange with neighboring boxes with the grid. Equation (\ref{es_eq}) was expressed in finite-difference form and integrated numerically with a dispersion time-step of 300~s and a chemical time-step of 20 s using a backwards-iterative Euler numerical method. $K$ is the horizontal diffusion coefficient and was set at 10 $\mathrm{m}^2/\mathrm{s}$ based on Paoli et al. \cite{Paoli2011} and Schumann et al. \cite{Schumann1995} for the UTLS region. The chemical production and loss rates were taken from the Common Representative Intermediate (CRI) mechanism \cite{Jenkin2008, Watson2008, Utembe2009} which describes the chemistry of 220 species taking part in 609 reactions. Background conditions for the UTLS were taken from a previous run of STOCHEM-CRI for 40 \textdegree~N, June 21 at 150~mb and used to provide initial conditions for each of the 999 grid boxes.

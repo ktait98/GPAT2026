@@ -1,0 +1,65 @@
+\section{Results}
+This study brought to light some interesting findings regarding plume overlap occurrences, in real-world air traffic scenarios. Firstly, the results of the global analysis were plotted on a heatmap of mean airspace densities. This was subsequently overlaid onto a world map, to allow for visual identification of geographical biases in aviation demand. Figure \ref{WorldPlot} shows the heatmap, with magnification of the two overarching regions with the highest air traffic densities, the East Coast of the United States and Central Europe.
+
+\begin{figure}[H]
+		\includegraphics[width=\textwidth]{3/WorldPlot.png}
+		%\vspace{-.1cm}
+		\caption{Global heatmap of mean air traffic density. Snapshots of air traffic data were taken at the first second of every hour throughout 01/2022. Mean values are significantly lower than peak values due to large variations in aviation demand throughout the course of each day.}
+		\label{WorldPlot}
+\end{figure}
+
+From these magnified regions, the two highest density grid cells were selected for a further subgrid scale analysis. These were the United States (US) hotspot, with a midpoint longitude of -76.5\textdegree\ and latitude of 36.5\textdegree, and the European (EU) hotspot at longitude 2.5\textdegree\ and latitude 49.5\textdegree. Again, both grid cells are at an altitude of 38,000 ft $\pm$500~ft. Before conducting the high resolution subgrid scale study, it was first necessary to cherry-pick a suitable time interval to investigate, as running plume simulations over the entire month period was too computationally expensive. Instead, using trajectory data resampled at 1 minute intervals, the average aircraft count for each hour of the day was calculated over the whole month, for each hotspot grid cell. The results can be seen in figure \ref{Hist}.
+ 
+\begin{figure}[H]
+\centering\
+		\includegraphics[width=\textwidth]{3/hist.pdf}
+		\caption{Temporal variation in average aircraft count for the two hotspots, for each hour of the day, over all days in January 2022.}
+		\label{Hist}
+\end{figure}
+
+The US hotspot has notably less peaky data than the EU alternative, however it peaks earlier, at 08:00:00 EST (UTC-5), whereas EU peaks at 13:00:00 CEST (UTC+1). The absolute highest count for US was 26 aircraft, on 24-01-2022 at 08:00:00 EST. For EU, it was 31 aircraft, on 29-01-2022 at 13:00:00 CEST. Using these peak datetimes, a detailed plume analysis was then performed, using the plume modelling approach outlined in section \ref{meth}. For each hotspot, the air traffic situation over three hours (peak time $\pm$ 1~h) was observed.
+
+ \begin{figure}[H]
+ \begin{adjustwidth}{0cm}{0cm}
+ \centering
+ \hspace{.5cm}
+ 	\begin{subfigure}[H]{0.60\textwidth}
+ 		\includegraphics[width=9cm]{3/PlumeUS.pdf}
+		
+ 		\caption{}
+ 		\label{PlumeUS}
+ 	\end{subfigure}
+ 	\hfill
+ 	\begin{subfigure}[H]{0.60\textwidth}
+ 		\includegraphics[width=9cm]{3/PlumeEU.pdf}
+ 		%\vspace{.1cm}	
+ 		\caption{}
+ 		\label{PlumeEU}
+ 	\end{subfigure}
+ \end{adjustwidth}
+ \label{Plume}
+ \caption{Plume modelling simulation for high density hotspots. \textbf{(a)} US hotspot. \textbf{(b)} EU hotspot.}
+ \end{figure}
+
+For both hotspots, over the specified duration, data were collected on distances, headings and bearings between aircraft pairs at each time step (every 10~s). Plume instances are modelled as circles on a 2-dimensional map, meaning it is not possible to visually distinguish altitude differences and vertical plume extent. Altitude was left out of the plots, because aircraft in cruise rarely tend to deviate far from their designated flight level.
+
+Table \ref{tab} presents numerical results from the subgrid scale plume study, which collected data from 2114 aircraft pair instances for the US hotspot, and 2443 for the EU hotspot. For each, some key aircraft pair information was computed, and the SPE tests were conducted for each data point, including a test for no SPE occurrence at all (i.e.\ the data points which don't meet the SPE criteria).
+
+\begin{table}[H]
+\centering
+\caption{}
+\label{tab}
+\begin{tabular}{@{}lllll@{}}
+\toprule
+                                                     & \textbf{US hotspot} & \textbf{EU hotspot} &  &  \\ \midrule
+Min.\ distance {[}km{]}                               & 15.1       & 11.1       &  &  \\
+Min.\ relative track {[}\textdegree{]} & 0.0258     & 0.0153     &  &  \\
+Avg.\ distance {[}km{]}                               & 48.7       & 48.0       &  &  \\
+Avg.\ relative track {[}\textdegree{]} & 15.2       & 148        &  &  \\
+\ce{SPE_1} {[}\%{]}                & 2.05       & 3.74       &  &  \\
+\ce{SPE_2} {[}\%{]}                & 30.3       & 11.1       &  &  \\
+\ce{SPE_3} {[}\%{]}                & 0.420      & 0.223      &  &  \\
+\ce{SPE_4} {[}\%{]}                & 9.18       & 3.48       &  &  \\
+No SPE {[}\%{]}                                      & 57.6       & 81.4       &  &  \\ \bottomrule
+\end{tabular}
+\end{table}

@@ -1,0 +1,382 @@
+\section{Models and Methods}
+The input parameters and input datasets to, and output datasets from all models, have been outlined above. This section delves into the underlying methods and practices used in the GPAT modelling framework, explaining what each model is responsible for, how it functions, as well as why it is necessary in the context of the thesis objectives. The novelty of this framework lies in the plume aggregation approach, and the application of a photochemical trajectory model to simulate aircraft plume evolution on the subgrid scale. This unlocks new possibilities to investigate the cumulative chemical and physical effects that occur locally in aircraft plumes, especially in high-density airspace where two or more plumes intersect and saturate the atmosphere with emissions.
+
+\begin{figure}[h!]
+    \centering	
+    \includegraphics[width=0.7\textwidth]{5/GPAT_flights.png}
+    \caption{Schematic representation of GPAT flight trajectories for a four-aircraft formation configuration.}
+    \label{GPAT_flights}
+\end{figure}
+
+\subsection{Trajectory Model (traj\_gen)}
+The Trajectory Model generates sampled flight trajectory data from the input Flight Parameters. Firstly, the number of aircraft (n\_ac) is read. Then, total flight distance is calculated from the product of aircraft speed (fl\textsubscript{0}\_speed) and flight runtime (rt\_fl). The leader aircraft's initial coordinates (fl\textsubscript{0}\_coords\textsubscript{0}), heading (fl\textsubscript{0}\_heading), speed and distance flown are then fed into an external function that carries out forward geodetic computations to estimate the final coordinates of the aircraft at the end of its runtime \cite{Pyproj2021}. A pycontrails Flight object is then created, which resamples and fills the trajectory with intermediate waypoints which correspond with the flight timestep (ts\_fl). These waypoints are an important component of the flight data, as they serve as the release points for the ensuing emission pulses created by the aircraft. Lastly, the trajectory data is filtered to only include trajectory points in the simulation domain.
+
+If there is more than one flight present in the simulation (n\_ac $>$ 1), the same process is applied except the initial coordinates are shifted according to the user-defined separation minima (sep\_dist). This informs the model of the latitude, longitude and altitude offset to start subsequent flights. See figure \ref{GPAT_flights} for a four-aircraft example Figure \ref{traj_gen_model} portrays the data flow for the Trajectory Model.
+
+\begin{figure}[h!]
+    \centering	
+    \includegraphics[width=0.75\textwidth]{5/traj_gen_model.png}
+    \caption{Process flow diagram for the Trajectory Model. This model takes in fl\_params and outputs the first generation FL dataset.}
+    \label{traj_gen_model}
+\end{figure}
+
+\subsection{Meteorology Model (gen\_met)}
+This model generates meteorological data across all grid cells and time steps in the modelling environment. It takes in arrays of latitudes, longitudes, altitudes and time and downloads 1998 UK Met Office UM archive data for air temperature ($T$), water vapour concentrations [\ce{H2O}] and wind fields. Pressure ($p$) is estimated from the model output levels in table \ref{model_output_levels}. The density of dry air ($\rho_d$) is calculated first \eqref{rho_d}, where $R_d$ is the gas constant of dry air. This is then used to quantify specific humidity ($q$) through \eqref{spec_hum}, where $M_d$ is the molar mass of air and $N_A$ is Avogadro's constant ($N_A = 6.022 \times 10^{23}$).
+
+\begin{equation}
+    \label{rho_d}
+    \rho_d = \frac{p}{R_d \times T}
+\end{equation}
+
+\begin{equation}
+    \label{spec_hum}
+    q = \frac{[\ce{H2O}] \times [\ce{M}]}{N_A \times \rho_d \times 1 \times 10^6}
+\end{equation}
+
+$M_d$ and $\rho_d$ are then used to calculate the number density of air [\ce{M}], where $[\ce{O2}] = 0.208 \times [\ce{M}]$ and $[\ce{N2}] = 0.781 \times [\ce{M}]$:
+
+\begin{equation}
+    [\ce{M}] = \frac{N_A \times 1 \times 10^{6}}{M_d \times \rho_d}
+\end{equation}
+
+Solar zenith angle is then calculated across all grid cells and time steps using the pycontrails in-built SZA calculator function, which largely derives from the methods presented in Jacobson et al. \cite{Jacobson1998}. Knowledge of these meteorological parameters is crucial for estimating the photochemical and microphysical evolution of an aircraft plume and its associated emissions masses.
+
+\begin{figure}[h!]
+    \centering	
+    \includegraphics[width=0.79\textwidth]{5/gen_met_model.png}
+    \caption{Process flow diagram for the Meteorological Model. This model takes in parameters that define the simulation domain, and output a gridded MET dataset across all time steps.}
+    \label{gen_met_model}
+\end{figure}
+
+\subsection{Background Chemistry Model (gen\_bg\_chem)}
+The gen\_bg\_chem model sets an initial baseline for the atmospheric chemistry in the simulated environment, focusing on the dominant species of the upper troposphere where aircraft cruise. This includes nitrogen oxides (\ce{NO_x}), ozone (\ce{O3}) and volatile organic compounds (\ce{VOCs}). The species concentrations are derived from monthly-averaged STOCHEM-CRI global model outputs \cite{Khan2021}. These data are converted from molecules/cm\textsuperscript{3} to parts per billion by volume (ppbv) and then interpolated to the grid resolution specified in the GPAT Simulation Parameters. The BG\_CHEM dataset contains these gridded background concentrations, as shown in figure \ref{bg_chem_model}.
+
+\begin{figure}[h!]
+    \centering	
+    \includegraphics[width=0.77\textwidth]{5/gen_bg_chem_model.png}
+    \caption{Process flow diagram for the Background Chemistry Model. This takes in Simulation Parameters to define the simulation domain, and outputs the gridded BG\_CHEM dataset for the initial time step of the modelling environment.}
+    \label{gen_bg_chem_model}
+\end{figure}
+
+\subsection{Aircraft Performance Model (ac\_perf)}
+The Aircraft Performance Model computes estimates of thrust, fuel flow, fuel burn and aircraft mass throughout flight, using the Poll-Schumann (PS) aircraft performance methodology \cite{Poll2021, Poll2024}. These performance calculations are based on aircraft-specific parameters and trajectory data from FL (figure \ref{ac_perf_model}), as well as temperature and pressure from MET, interpolated and down-selected to fit the flight waypoint positions and time steps. The PS model was selected over other performance models presented in \ref{chapter2}, for its transparency and ease of verification against other models. It is also open-source and has been integrated into the pycontrails repository, deeming it a suitable method for this purpose. The PS model provides estimates of fuel flow, fuel burn, thrust and overall engine efficiency for 53 aircraft types operating in cruise conditions. True airspeed (TAS) is then calculated for each flight waypoint, prior to passing FL parameters to the model.
+
+\begin{figure}[h!]
+    \centering	
+    \includegraphics[width=0.52\textwidth]{5/ac_perf_model.png}
+    \caption{Process flow diagram for the Aircraft Performance Model. This takes in the first generation Flight Dataset and Meteorology Dataset, interpolated and down-selected to the trajectory waypoints. It outputs the second generation FL dataset, updated with performance characteristics.}
+    \label{ac_perf_model}
+\end{figure}
+
+\subsection{Emissions Model (emissions)}
+The emissions model utilises aircraft performance outputs from FL to quantify the emissions speciation in the plume, in terms of the emission indices (EIs) and emissions totals for each waypoint. The mass fractions of unburnt hydrocarbons were estimated from empirical data, presented in figure 9 of Masiol et al. \cite{Masiol2014}. The GPAT Emissions Model is responsible for the emissions masses of carbon dioxide (\ce{CO2}), water vapour (\ce{H2O}), sulphur dioxide (\ce{SO2}), nitric oxide (\ce{NO}), nitrogen dioxide (\ce{NO2}), carbon monoxide (CO), formaldehyde (HCHO), acetaldehyde (\ce{CH3CHO}), ethylene (\ce{C2H4}), propene (\ce{C3H6}), acetylene (\ce{C2H2}), benzene and non-volatile particulate matter (\ce{nvPM}). Emission species and their corresponding emission indices are provided in table \ref{ei_table}. \ce{NO_x}, CO and CO EIs are calculated from interpolation of the International Civil Aviation Organisation's (ICAO) Engine Emissions Databank \cite{ICAOEEDB}.
+
+% EI table
+\begin{table}[]
+    \centering
+    \caption{Emission speciation for primary and secondary combustion products, as well as a breakdown of the hydrocarbon speciation.}
+    \label{ei_table}
+    \begin{tabular}{@{}clll@{}}
+    \toprule
+    \multicolumn{1}{l}{} &
+      \textbf{\begin{tabular}[c]{@{}l@{}}Emission \\ species\end{tabular}} &
+      \textbf{\begin{tabular}[c]{@{}l@{}}Full chemical\\ name\end{tabular}} &
+      \textbf{\begin{tabular}[c]{@{}l@{}}Emission index\\ {[}kg/kg{]}\end{tabular}} \\ \midrule
+    \multirow{3}{*}{\textbf{\begin{tabular}[c]{@{}c@{}}Primary \\ combustion \\ products\end{tabular}}} &
+      \ce{CO2} &
+      Carbon dioxide &
+      3.16 \\
+     &
+      \ce{H2O} &
+      Water vapour &
+      1.23 \\
+     &
+      \ce{SO2} &
+      Sulphur dioxide &
+      $8.4 \times 10^{-4}$ \\ \midrule
+    \multirow{5}{*}{\textbf{\begin{tabular}[c]{@{}c@{}}Secondary \\ combustion\\ products\end{tabular}}} &
+      \ce{nvPM} &
+      Non-volatile particulate matter &
+      nvPM EI (mass) \\
+     &
+      \ce{NO} &
+      Nitric oxide &
+      0.95 $\times$ \ce{NO_x} EI \\
+     &
+      \ce{NO2} &
+      Nitrogen dioxide &
+      0.05 $\times$ \ce{NO_x} EI \\
+     &
+      \ce{CO} &
+      Carbon monoxide &
+      \ce{CO} EI \\
+     &
+      \ce{HC} &
+      Hydrocarbons &
+      \ce{HC} EI \\ \midrule
+    \multicolumn{1}{l}{\multirow{6}{*}{\textbf{\begin{tabular}[c]{@{}l@{}}Hydrocarbon\\ speciation\end{tabular}}}} &
+      \ce{HCHO} &
+      Formaldehyde &
+      0.12 $\times$ HC EI \\
+    \multicolumn{1}{l}{} &
+      \ce{CH3CHO} &
+      Acetaldehyde &
+      0.04 $\times$ HC EI \\
+    \multicolumn{1}{l}{} &
+      \ce{C2H4} &
+      Ethylene &
+      0.15 $\times$ HC EI \\
+    \multicolumn{1}{l}{} &
+      \ce{C3H6} &
+      Propene &
+      0.04 $\times$ HC EI \\
+    \multicolumn{1}{l}{} &
+      \ce{C2H2} &
+      Acetylene &
+      0.04 $\times$ HC EI \\
+    \multicolumn{1}{l}{} &
+      \ce{BENZENE} &
+      Benzene &
+      0.02 $\times$ HC EI \\ \bottomrule
+    \end{tabular}
+    \end{table}
+
+Total emission masses for each plume waypoint in the model are calculated as follows, for primary, secondary and hydrocarbon combustion emissions. Emission masses are denoted by E [kg\textsubscript{emi}], emission indices are EI [kg\textsubscript{emi}/kg\textsubscript{fuel}], fuel flow is FF [kg\textsubscript{fuel}/s] and emission time step is TS [s].
+
+\begin{equation}
+    \ce{E} = \ce{EI} \times \ce{FF} \times \ce{TS}
+\end{equation}
+
+Accurate estimation of emission masses at each flight waypoint are a crucial step for subsequent local atmospheric modelling. An aspect as equally important for investigating local atmospheric effects from aviation, is the dispersion and advection of aircraft exhaust plumes and the emissions contained within them.
+
+\begin{figure}[h!]
+    \centering	
+    \includegraphics[width=0.79\textwidth]{5/emissions_model.png}
+    \caption{Process flow diagram for the Emissions Model. This takes the 2\textsuperscript{nd} gen. FL dataset, calculates emission masses associated with each waypoint, then outputs to PL dataset.}
+    \label{emissions_model}
+\end{figure}
+
+\subsection{Dispersion/Advection Model (sim\_plumes)}
+The sim\_plumes model captures the spread and movement of emissions by simulating the dispersion and advection of all aircraft exhaust plume segments present in the simulation environment. The pycontrails Dry Advection scheme is utilised to approximate the dynamical evolution of all aircraft plumes, which derives from the Contrail Cirrus Prediction Tool Gaussian dispersion methodology \cite{Schumann2012a}. It takes input of the plume integration time step (dt\_integration), plume max age (max\_age), intial plume width and depth. Using knowledge of the wind and wind shear fields, the Dry Advection module estimates the change in plume cross-sectional dimensions and geographical position, at each time step.
+
+% \begin{figure}[h!]
+%     \centering	
+%     \includegraphics[width=0.7\textwidth]{5/GPAT_plume.png}
+%     \caption{Schematic representation of Gaussian dispersion and advection from GPAT plume simulations.}
+%     \label{GPAT_plume}
+% \end{figure}
+
+\begin{figure}[H]
+    \begin{adjustwidth}{0cm}{0cm}
+    \centering
+    \hspace{.5cm}
+        \begin{subfigure}[H]{0.47\textwidth}
+            \includegraphics[width=\textwidth]{5/GPAT_plume.png}
+            %\vspace{0.01cm}
+            \caption{}
+            \label{GPAT_plume}
+        \end{subfigure}
+        \hfill
+        \begin{subfigure}[H]{0.46\textwidth}
+            \includegraphics[width=\textwidth]{5/gaussian_slices.png}
+            \vspace{-0.1cm}	
+            \caption{}
+            \label{gauss_slices}
+        \end{subfigure}
+    \end{adjustwidth}
+    \label{Plume}
+    \caption{\textbf{(a)} Schematic representation of Gaussian dispersion and advection from GPAT plume simulations. \textbf{(b)} Five slice Gaussian aggregation to 2D Eulerian grid. Gaussian starts at half plume width (W/2).}
+    \end{figure}
+
+The output parameters from this model include new latitude, longitude, altitude values, width, height and the covariance matrix ($\sigma$), which defines the Gaussian dispersion characteristics of the plume at each waypoint. These parameters make up the majority of the data contained in PL. The FL dataset is effectively merged into this new Plume Dataset, meaning primary flight and emissions data is carried over for further plume calculations.
+%Models the spread of emissions using a Gaussian plume framework.
+
+\begin{figure}[h!]
+    \centering	
+    \includegraphics[width=1\textwidth]{5/sim_plumes_model.png}
+    \caption{Process flow diagram for the Dispersion/Advection Model. MET is updated by passing plume\_params to it, assigning additional dispersion properties to the dataset. The 2\textsuperscript{nd} gen. MET and FL datasets are passed to the sim\_plumes model which simulates the advection and dispersion of plume waypoints. Plume position and Gaussian dispersion data is then attached to the Plume Dataset.}
+    \label{sim_plumes_model}
+\end{figure}
+
+\subsection{Plume-to-Grid Model (plume\_to\_grid)}
+\label{plume_to_grid_model_section}
+The PL dataset generated previously provides 1D vector data on the temporal evolution of plume waypoints, regarding position, heading, plume cross-sectional dimensions and emissions masses. To simulate the regional-scale chemical and physical processes which occur, and hence capture the cumulative effects due to plume intersections, it is necessary to aggregate the vector data to a common grid. A pre-existing plume aggregation technique from Schumann \cite{Schumann2012a} was tested during the development phase, however this was catered towards non-volumetric contrail properties, and not volumetric species concentrations. This led to vastly different levels of plume mass conservation, depending on the orientation and position of the plume segment. Therefore, a novel plume aggregation method was developed for GPAT, which ensured much higher levels of mass conservation. See section \ref{mc_v_study} for evidence of sufficient conservation of mass following the plume aggregation process.
+
+\subsubsection{Gaussian Segments and Slices}
+The Plume-to-Grid Model uses a newly developed conservative remapping method, which remaps Gaussian plume emission masses onto a 2D Eulerian latitude-longitude grid. It does so by dividing the plume into cross-sectional segments which connect plume waypoints. Each segment is subsequently divided into slices which correspond to a percentage of total plume mass. In figure \ref{gauss_slices}, an example of a five slice aggregation is shown. Each slice is one-fifth or 20\% of the plume mass.
+
+\subsubsection{Aggregating Plume to Grid}
+Based on knowledge of the lateral covariance ($\sigma_{yy}$), plume width (W) and plume waypoint coordinates, the edge coordinates of each slice in a plume segment are calculated. Each slice is then drawn as a polygon using the Shapely Python package \cite{Shapely2024}. The slice polygons are overlaid onto the 2D latitude-longitude grid, and the Shapely intersection function is applied, to determine the overlap proportions with the grid cells occupied by the slice. The slice proportions (e.g. 20\% plume mass in the case of a five slice segment) are then multiplied by the overlap proportions, to determine the aggregation of each segment slice to each occupied grid cell. This process is performed for all emission species and all plume segments across every time step in which emission mass is non-zero. Once a plume segment reaches its maximum age, its emissions are dispersed to the background atmosphere homogeneously, and the segment is removed from the dataset. 
+
+\begin{figure}[h!]
+    \centering	
+    \includegraphics[width=0.46\textwidth]{5/plume_to_grid_model.png}
+    \caption{Process flow diagram for the Plume-to-Grid Model. Gaussian plume and emissions data is passed to the model. Following plume aggregation, a 2D gridded Emissions Dataset is generated.}
+    \label{plume_to_grid_model}
+\end{figure}
+
+\subsection{Contrail Model (run\_cc)}
+This model is still under development, however this section will discuss briefly the intended functions, inputs and outputs, and potential use cases. The Contrail Model will simulate the formation, persistence and climate impact of contrails, aggregated to the common 2D grid. Geovector contrail properties will be estimated using the Contrail Cirrus Prediction Tool (CoCiP) \cite{Schumann2012a}, aggregated to the emissions dataset, and then processed through run\_cc to simulate the evolution of contrails on the grid. This will allow for investigations into the dehydration effect which occurs in contrail clusters, in which overlapping plumes dry the local atmosphere. This effect results in reduced contrail ice mass and radiative forcing, relative to the same contrails formed independent of each other \cite{Schumann2015,Unterstrasser2014}. 
+
+The Contrail Model will take MET (with relative humidity) and EMI data (with additional contrail-related variables), and return these variables after contrail processing, to observe how the cumulative effects of contrail overlap impact the local atmosphere's ability to produce strongly warming contrails.
+
+\begin{figure}[h!]
+    \centering	
+    \includegraphics[width=0.72\textwidth]{5/run_cc_model.png}
+    \caption{}
+    \label{run_cc_model}
+\end{figure}
+
+\subsection{Chemistry Model (run\_boxm)}
+This model is redevelopment of a photochemical trajectory model (BOXM v1.0) \cite{Derwent2010} which employs a gas-phase homogeneous chemical mechanism, describing the oxidation of methane, non-methane VOCs, CO, \ce{SO2} and \ce{NO_x} to form ozone and particulate matter components \cite{Derwent2024}. The scheme contains 219 species, 512 thermal reactions and 96 photolysis reactions, derived from the Master Chemical Mechanism \cite{} (see \ref{Appendix}). 
+
+BOXM v1.0 is an Eulerian photochemical box model implemented in FORTRAN 77, which captures the chemical evolution of a zero-dimensional point in space. It simulates the chemical evolution of a single air parcel, calculating the production and loss of species over time and determining their fate in the troposphere. The focus of BOXM v1.0 is on chemical kinetics, and aids understanding of how thermal chemistry and photochemistry affect the concentrations of key species, under both clean and polluted atmospheric conditions. It includes a feature to capture dispersion effects through a simple homogeneous mixing process, in which a polluted box loses mass to a clean box at a user-specified mixing rate. This approach did not meet the specification of GPAT and hence the requirements of the \ce{NO_x} saturation study (chapter \ref{chapter6}). Therefore, it was necessary to develop a new version of this model which addresses the constraints of the previous version. 
+
+BOXM v2.0 is a vectorised version of the photochemical trajectory model described thus far. It contains the same chemical scheme as its predecessor, however the legacy code has been updated to a new FORTRAN 90 program, readable by the GPAT Python class. This program contains a module of subroutines, some of which are performed before the time integration starts (PRE-INT), throughout (INT) and after the final timestep has been processed (POST-INT). The PRE-INT subroutines handle dynamic array definition and allocation, reading in metadata on a particular job and initialising all necessary variables. Once the integration has finished, POST-INT subroutines deal with array deallocation and the data file is overwritten with the new chemistry data. The following subsections will focus purely on the INT subroutines, as these are most relevant to understand the key functions of the model. 
+
+\begin{figure}[h!]
+    \centering	
+    \includegraphics[width=1\textwidth]{5/run_boxm_model.png}
+    \caption{}
+    \label{run_boxm_model}
+\end{figure}
+
+\subsubsection{GET\_INT\_VARS}
+This first subroutine of the BOXM v2.0 time integration reads in a NetCDF file from GPAT (boxm\_ds.nc). This file contains meteorology, background chemistry and emissions data for each time step (see figure \ref{run_boxm_model}). The corresponding FORTRAN variables are allocated and output to the program.
+
+At the first time step of the simulation, Y is the sum of BG\_CHEM and EMI as calculated in equation \eqref{Y_BGCHEM_EMI}. At subsequent time steps, Y is inferred from the previous time step (YP) (see DERIV subroutine).
+\begin{align}\label{Y_BGCHEM_EMI}
+    \ce{Y(CELL,SPECIES)} &= \ce{BG\_CHEM(CELL,SPECIES)} \notag \\
+    &\quad + \ce{EMI(CELL,EMI\_SPECIES)}
+\end{align}
+\subsubsection{GET\_INT\_VARS Inputs}
+\begin{itemize}
+    \item \textbf{MET}: GPAT Meteorology Dataset
+    \item \textbf{BG\_CHEM}: GPAT Background Chemistry Dataset
+    \item \textbf{EMI}: Emissions Dataset
+\end{itemize}
+
+\subsubsection{GET\_INT\_VARS Outputs}
+\begin{itemize}
+    \item \textbf{TEMP(CELL)}: Air temperature
+    \item \textbf{M(CELL)}: Number density of air
+    \item \textbf{H2O(CELL)}: Water vapour concentrations
+    \item \textbf{O2(CELL)}: Oxygen concentrations
+    \item \textbf{N2(CELL)}: Nitrogen concentrations
+    \item \textbf{SZA(CELL)}: Solar Zenith Angle
+    \item \textbf{BG\_CHEM(CELL,SPECIES)}: Background chemical concentrations
+    \item \textbf{EMI(CELL,EMI\_SPECIES)}: Emissions concentrations
+    \item \textbf{Y(CELL,SPECIES)}: Total concentrations
+    \item \textbf{YP(CELL,SPECIES)}: Previous total concentrations
+\end{itemize}
+
+\subsubsection{CALC\_AEROSOL}
+This calculates aerosol mass of BGOAM to be 0.7 (user defined). SOA is then calculated to be the sum of the products of SOA species and their corresponding rate coefficients. MOM is determined from the sum of BGOAM and SOA.
+
+\subsubsection{CALC\_AEROSOL Inputs}
+\begin{itemize}
+    \item \textbf{Y(CELL,SPECIES)}: Total concentrations
+\end{itemize}
+
+\subsubsection{CALC\_AEROSOL Outputs}
+\begin{itemize}
+    \item \textbf{BGOAM(CELL)}: Background organic aerosol mass
+    \item \textbf{SOA(CELL)}: Secondary organic aerosol mass
+    \item \textbf{MOM(CELL)}: Mass of organic matter
+\end{itemize}
+
+\subsubsection{CHEMCO}
+This firstly calculates all simple and complex rate coefficients. All 512 thermal rate coefficients are then determined, which can vary with TEMP, M and BR. These coefficients control the rate of thermal reactions in the model.
+
+\subsubsection{CHEMCO Inputs}
+\begin{itemize}
+    \item \textbf{TEMP(CELL)}: Air temperature
+    \item \textbf{M(CELL)}: Number density of air
+    \item \textbf{BR}: Branching ratio
+\end{itemize}
+
+\subsubsection{CHEMCO Outputs}
+\begin{itemize}
+    \item \textbf{RC(CELL,THERM\_COEFF)}: Thermal rate coefficients
+\end{itemize}
+
+\subsubsection{CALC\_J}
+This subroutine calculates 34 photolysis parameters from SZA according to equation \eqref{CALC_J}, where l, m and n are coefficients available from the Master Chemical Mechanism website (\url{http://mcm.leeds.ac.uk/MCM}).
+\begin{align}
+    \ce{J(CELL,PHOTOL\_PARAM)} &= \ce{l}(cos(\ce{SZA(CELL)})^{m} \notag \\
+    &\quad \times exp(-\ce{n} \times sec(\ce{SZA(CELL)}))
+\end{align}
+\subsubsection{CALC\_J Inputs}
+\begin{itemize}
+    \item \textbf{SZA(CELL)}: Solar Zenith Angle
+\end{itemize}
+
+\subsubsection{CALC\_J Outputs}
+\begin{itemize}
+    \item \textbf{J(CELL,PHOTOL\_PARAM)}: Photolysis parameters
+\end{itemize}
+
+\subsubsection{PHOTOL}
+This is the photolysis subroutine in which 96 photolysis rate coefficients are calculated from J and BR. These coefficients control the rate of photolysis reactions in the model.
+
+\subsubsection{PHOTOL Inputs}
+\begin{itemize}
+    \item \textbf{J(CELL,PHOTOL\_PARAM)}: Photolysis parameters
+    \item \textbf{BR}: Branching ratio
+\end{itemize}
+
+\subsubsection{PHOTOL Outputs}
+\begin{itemize}
+    \item \textbf{DJ(CELL,PHOTOL\_COEFF)}: Photolysis rate coefficients
+\end{itemize}
+
+\subsubsection{DERIV}
+The DERIV subroutine firstly sets all previous concentrations (YP) to be Y from the previous time step. BOXM v2.0 is then coupled to the Dispersion/Advection Model of GPAT using an ``offline'' approach, in which emissions are aggregated to the 2D grid every time step using the Emissions Model. 
+
+At each time step, emissions are overlaid onto the chemical concentrations from the previous time step, and the chemistry is further processed, to update the concentrations of the current time step. This cycle continues throughout the duration of the simulation, and is encapsulated by the following equation:
+\begin{align}
+    \ce{YP(CELL,SPECIES)} &= \ce{Y(CELL,SPECIES)} \notag \\
+    &\quad - \ce{EMIP(CELL,EMI\_SPECIES)} \\
+    &\quad + \ce{EMI(CELL,EMI\_SPECIES)} \notag
+\end{align}
+Then, the time derivative of species concentrations are determined through calculation of the production and loss of all 219 species. Flux rates for 130 key reactions are also calculated.
+
+The BOXM v2.0 model does not capture dry deposition as it does not include interactions with the surface. It also does not contain wet deposition as no cloud processes are simulated, however future versions could account for this.
+
+% This method sufficiently captures the interplay between chemical and dynamical evolution of chemical species in the upper troposphere, necessary for analysis of chemical saturation due to aircraft exhaust plume intersections.
+
+\subsubsection{DERIV Inputs}
+\begin{itemize}
+    \item \textbf{YP(CELL,SPECIES)}: Previous total concentrations
+    \item \textbf{EMI(CELL,EMI\_SPECIES)}: Emissions concentrations
+    \item \textbf{EMIP(CELL,EMI\_SPECIES)}: Previous emissions concentrations
+    \item \textbf{RC(CELL,THERM\_COEFFS)}: Thermal rate coefficients
+    \item \textbf{DJ(CELL,PHOTOL\_COEFF)}: Photolysis rate coefficients
+    \item \textbf{DTS}: Time step duration
+\end{itemize}
+
+\subsubsection{DERIV Outputs}
+\begin{itemize}
+    \item \textbf{Y(CELL,SPECIES)}: Total concentrations
+    \item \textbf{FL(CELL,REACTION)}: Flux rate of key reactions
+\end{itemize}
+
+\subsubsection{WRITE}
+At the end of each time step, data is written back to the NetCDF file (boxm\_ds.nc). This file serves as input to the GPAT CHEM dataset.
+
+\subsubsection{WRITE Inputs}
+\begin{itemize}
+    \item \textbf{J(CELL,PHOTOL\_PARAM)}: Photolysis parameters
+    \item \textbf{DJ(CELL,PHOTOL\_COEFF)}: Photolysis rate coefficients
+    \item \textbf{Y(CELL,SPECIES)}: Total concentrations
+    \item \textbf{FL(CELL,REACTION)}: Flux rate of key reactions
+\end{itemize}
+
+\subsubsection{WRITE Outputs}
+\begin{itemize}
+    \item \textbf{CHEM}: GPAT Chemistry Dataset
+\end{itemize}
+
+This vectorised photochemical box model, and the wider GPAT modelling framework as a whole, sufficiently capture the interplay between chemical and dynamical evolution of chemical species in the upper troposphere, necessary for analysis of chemical saturation due to aircraft exhaust plume intersections.
+
+

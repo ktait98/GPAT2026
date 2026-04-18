@@ -1,0 +1,191 @@
+\documentclass[
+  ieee        % uncomment for IEEE bibliography style
+]{uob-thesis}
+
+\usepackage{lipsum}
+\usepackage{graphicx}
+\usepackage[version=4]{mhchem}
+\usepackage{longtable}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{changepage}
+\usepackage{adjustbox}
+% \usepackage{url}
+\usepackage{multirow}
+\usepackage{hyperref}
+\usepackage{lscape}
+\captionsetup[subfigure]{justification=centering}
+\graphicspath{{./Figures/}}
+
+% \usepackage[headheight=40.8pt]{geometry} % Adjust headheight
+
+%\usepackage[backend=biber,style=numeric,sorting=none]{biblatex}
+\addbibresource{refs.bib}
+
+\makeatletter
+\newcounter{reaction}
+%%% >> for article <<
+%\renewcommand\thereaction{R\arabic{reaction}}(x, y)
+%%% << for article <<
+%%% >> for report and book >>
+\renewcommand\thereaction{R\,\thechapter.\arabic{reaction}}
+\@addtoreset{reaction}{chapter}
+%%% << for report and book <<
+\newcommand\reactiontag%
+{\refstepcounter{reaction}\tag{\thereaction}}
+\newcommand\reaction@[2][]%
+{\begin{equation}\ce{#2}%
+\ifx\@empty#1\@empty\else\label{#1}\fi%
+\reactiontag\end{equation}}
+\newcommand\reaction@nonumber[1]%
+{\begin{equation*}\ce{#1}\end{equation*}}
+\newcommand\reaction%
+{\@ifstar{\reaction@nonumber}{\reaction@}}
+\makeatother
+
+
+%%%%%%%%%%%%%%%%%%%
+%% AUTHOR DETAILS %
+%%%%%%%%%%%%%%%%%%%
+
+
+\title{Exploring the Potential to Reduce Aviation's Non-CO2 Climate Impact through Controlled Plume Intersections}
+\subtitle{}
+\author{Kieran Tait}
+
+\DTMsavedate{thesisdate}{2024-12-30}        % do not change name, will be re-used
+\date{\printdatewithoutmonth{thesisdate}}
+
+% change as appropriate, e.g.
+%   Master of Science by advanced study in Computer Science (Conversion)
+%   Bachelor of Science in Computer Science
+%   Master of Engineering in Computer Science
+\degree{PhD~in~Aerospace~Engineering}
+
+\school{School~of~Civil,~Aerospace~and~Design~Engineering}
+\faculty{Faculty~of~Engineering}
+
+\wordcount{TBD}
+
+\begin{document}
+
+%%% -------------------------------------------------------------
+%%% THESE TITLE PAGES ARE SPECIFIED BY THE REGULATIONS
+%%% DO NOT CHANGE ORDER 
+%%%
+%%% comment out to remove any section
+
+\maketitle
+\cleardoubleoddemptypage
+
+\begin{abstract}
+
+  % Abstract should be not more than 300 words, for either MSc or PhD.
+
+\end{abstract}
+
+\begin{dedication}
+
+\end{dedication}
+
+\begin{acknowledgements}
+% It is common practice (although totally optional) to acknowledge any third-party advice, contribution or influence you have found useful during your work. Examples include support from friends or family, the input of your Supervisor and/or Advisor, external organisations or persons who  have supplied resources of some kind (e.g., funding, advice or time), and so on.
+\end{acknowledgements}
+
+\begin{declaration}
+  I declare that the work in this dissertation was carried out in accordance
+  with the requirements of the University's Regulations and Code of Practice for
+  the Doctoral Training Partnership (DTP) Programme,  and that it has not been submitted for any other academic award.
+  Except where indicated by specific reference in the text, the work is the
+  candidate's own work. Work done in collaboration with, or with the assistance
+  of, others, is indicated as such. Any views expressed in the
+  dissertation are those of the author.
+  
+  \vspace{2cm}
+
+  \includegraphics[width=4cm]{signature.png}
+\end{declaration}
+
+%%%
+%%% TITLE PAGES END HERE
+%%% -----------------------------------------------------
+
+
+%%%
+%% FRONT MATTER
+%%%
+
+\frontmatter
+
+%% THESE MUST BE IN THIS ORDER ACCORDING TO REGULATIONS
+\tableofcontents
+\listoftables
+\listoffigures
+
+
+%%%%%%%%%%%%%%%%
+%% MAIN MATTER %
+%%%%%%%%%%%%%%%%
+
+\mainmatter
+
+\chapter{Introduction}
+\label{chapter1}
+\input{Chapters/1/1}
+
+\chapter{Aircraft Emissions, Plume Dynamics and Atmospheric Chemistry}
+\label{chapter2}
+\input{Chapters/2/2}
+
+\chapter{The GPAT Aircraft Plume Modelling Framework} 
+\label{chapter3}
+% \input{Chapters/3/3}
+
+\chapter{Model Verification and Chemical Validation}
+\label{chapter4}
+%\input{Chapters/4/4}
+
+\chapter{Experimental Design and Simulation Setup}
+\label{chapter5}
+% \input{Chapters/5/5}
+
+\chapter{Results I: Aircraft Trajectories and Plume Overlap Dynamics}
+\label{chapter6}
+% \input{Chapters/6/6}
+
+\chapter{Results II: Single-Plume Chemistry}
+\label{chapter7}
+% \input{Chapters/7/7}
+
+\chapter{Results III: Plume Overlap and Nonlinear Chemistry}
+\label{chapter8}
+% \input{Chapters/8/8}
+
+\chapter{Discussion}
+\label{chapter9}
+% \input{Chapters/9/9}
+
+\chapter{Conclusions and Further Work}
+\label{chapter10}
+% \input{Chapters/10/10}
+
+
+%%%%%%%%%%%%%%%%
+%% BACK MATTER %
+%%%%%%%%%%%%%%%%
+
+\backmatter
+
+\chapter*{Bibliography}
+\printbibliography[heading=none]
+
+\appendix
+\chapter{Appendix}
+\label{appendix}
+\input{Chapters/A/A}
+
+\end{document}

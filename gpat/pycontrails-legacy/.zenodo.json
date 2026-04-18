@@ -1,0 +1,54 @@
+{
+  "creators": [
+    {
+      "name": "Marc Shapiro",
+      "affiliation": "Breakthrough Energy",
+      "orcid": "0000-0003-0864-6394"
+    },
+    {
+      "name": "Zeb Engberg",
+      "affiliation": "Breakthrough Energy"
+    },
+    {
+      "name": "Roger Teoh",
+      "affiliation": "Imperial College London"
+    },
+    {
+      "name": "Marc Stettler",
+      "affiliation": "Imperial College London"
+    },
+    {
+      "name": "Tom Dean",
+      "affiliation": "Breakthrough Energy"
+    },
+    {
+      "name": "Tristan Abbott",
+      "affiliation": "Breakthrough Energy"
+    }
+  ],
+  "license": "Apache-2.0",
+  "title": "pycontrails: Python library for modeling aviation climate impacts",
+  "description": "<p><strong>pycontrails</strong> is an open source project and Python package for modeling aircraft contrails and other<br>\naviation related climate impacts.</p>\n\n<p><code>pycontrails</code> defines common data structures and interfaces to efficiently build and run models of aircraft performance, emissions, and radiative forcing.</p>\n\n<p>See the <a href=\"https://github.com/contrailcirrus/pycontrails\">Github repository</a> and <a href=\"https://py.contrails.org\">documentation</a> for more information.</p>",
+  "contributors": [
+    {
+      "affiliation": "DLR",
+      "name": "Ulrich Schumann",
+      "type": "Researcher"
+    },
+    {
+      "affiliation": "DLR",
+      "name": "Christiane Voigt",
+      "type": "Researcher"
+    },
+    {
+      "name": "Tharun Sankar",
+      "affiliation": "Google Research",
+      "type": "Researcher"
+    },
+    {
+      "name": "Jakob Smretschnig",
+      "affiliation": "TU Delft",
+      "type": "Researcher"
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+NA
+temp: 235
+spec hum: 0.003
+lat: 47.5
+lon: -32.5
+alt: 12500
+dateime: 12:00:00 20-01-2022
+
+US
+temp: 260 
+spec hum: 0.001
+lat: 37.5
+lon: -97.5
+alt: 6500
+datetime: 12:00:00 10-11-2022
+
+EU
+temp: 250
+spec hum: 0.005
+lat: 42.5
+lon: 7.5
+alt: 8500
+datetime: 12:00:00 20-05-2023
+
+SEA
+temp: 265
+spec hum: 0.006
+lat: 22.5
+lon: 102.5
+alt: 2500
+datetime: 12:00:00 05-03-2022
+
+SA
+temp: 240
+spec hum: 0.002
+lat: -27.5
+lon: -67.5
+alt: 13500
+datetime: 12:00:00 15-08-2022
