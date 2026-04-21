@@ -1,1 +1,0 @@
-"""Contrail modeling support."""
